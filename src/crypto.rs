@@ -669,4 +669,38 @@ mod tests {
         assert_eq!(&decrypt(&ciphertext, &age_id).unwrap()[..], plaintext);
         assert_eq!(&decrypt(&ciphertext, &ssh_id).unwrap()[..], plaintext);
     }
+
+    #[test]
+    fn parse_identity_encrypted_ssh_rejected() {
+        // A passphrase-encrypted OpenSSH key parses as `Encrypted` — murk cannot
+        // prompt for the passphrase, so it must reject with actionable guidance
+        // rather than silently treating the file as an unknown key type.
+        let sk = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABCppyaxrR\nt7gjjxElEDYyPQAAAAGAAAAAEAAAAzAAAAC3NzaC1lZDI1NTE5AAAAIH4f8P5poEqKAj68\nDDdSXG/ynZroSlDI9aJW4Hwr7K2xAAAAkH1LpA6OVeypf2AyaW6uAAA2pzTDzin8xpbdFQ\nMNVWyLZP7JgiR8T21evnyek/7LUhHKDdPMG4H8rO8HC1uosT8lD2GIKHsRZ2ZRwcQeDH53\ntWpQ0MaprgaMjXb39SJn8Zy7ihDU4W6+qfKxZHem9X0IbXckE8vsBvzkZRlL+DRqADbee1\nDqF2zCI5NYNGbSJA==\n-----END OPENSSH PRIVATE KEY-----";
+        let err = parse_identity(sk).unwrap_err().to_string();
+        assert!(
+            err.contains("encrypted SSH keys are not yet supported"),
+            "expected encrypted-key rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_identity_unsupported_ssh_type_rejected() {
+        // age supports ed25519 and rsa SSH keys; an ecdsa key parses as
+        // `Unsupported` and must be rejected, not misfiled as an age key.
+        let sk = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAaAAAABNlY2RzYS\n1zaGEyLW5pc3RwMjU2AAAACG5pc3RwMjU2AAAAQQR64I41Vo0JYyWv5JS/3Tmrj8o8PTaF\ndHLm1k95c1C/lltxquyQ0RhPtsp/g1VwOQkuPAySXQoEtGVt5uaY6vohAAAAmGYLyZNmC8\nmTAAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBHrgjjVWjQljJa/k\nlL/dOauPyjw9NoV0cubWT3lzUL+WW3Gq7JDRGE+2yn+DVXA5CS48DJJdCgS0ZW3m5pjq+i\nEAAAAgdQT/P3W0OB23mvEFBZnbZdwcCSEsVfXK5AHLpklry/0AAAAA\n-----END OPENSSH PRIVATE KEY-----";
+        let err = parse_identity(sk).unwrap_err().to_string();
+        assert!(
+            err.contains("unsupported SSH key type"),
+            "expected unsupported-type rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn is_signing_capable_ssh_ed25519() {
+        // ssh-ed25519 identities sign natively, so they are signing-capable —
+        // the SSH arm that `is_signing_capable_by_identity_kind` never exercised.
+        let sk = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\nQyNTUxOQAAACB7Ci6nqZYaVvrjm8+XbzII89TsXzP111AflR7WeorBjQAAAJCfEwtqnxML\nagAAAAtzc2gtZWQyNTUxOQAAACB7Ci6nqZYaVvrjm8+XbzII89TsXzP111AflR7WeorBjQ\nAAAEADBJvjZT8X6JRJI8xVq/1aU8nMVgOtVnmdwqWwrSlXG3sKLqeplhpW+uObz5dvMgjz\n1OxfM/XXUB+VHtZ6isGNAAAADHN0cjRkQGNhcmJvbgE=\n-----END OPENSSH PRIVATE KEY-----";
+        let id = parse_identity(sk).unwrap();
+        assert!(id.is_signing_capable());
+    }
 }
