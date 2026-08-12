@@ -29,7 +29,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
         with:
           toolchain: nightly # cargo-fuzz needs -Zsanitizer (nightly only)
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: fuzz # fuzz/ is excluded from the main workspace
       - uses: taiki-e/install-action@f092c064826410a38929a5791d2c0225b94432fe # cargo-fuzz
