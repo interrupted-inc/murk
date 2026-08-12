@@ -4,6 +4,14 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # constant_time_eq raised its own rust-version to 1.95 in 0.4.3 (yanked)
+      # and kept it there in 0.5, while murk still builds on 1.89 — cargo refuses
+      # that pairing outright. Neither release changes behaviour over 0.4.2;
+      # upstream bumped only to gate powerpc inline asm. Drop this once our own
+      # rust-version reaches 1.95.
+      - dependency-name: constant_time_eq
+        versions: [">= 0.4.3"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -21,6 +29,12 @@ updates:
     directory: /fuzz
     schedule:
       interval: weekly
+    ignore:
+      # The fuzz crate builds murk-cli by path, so a bump here also rewrites the
+      # root manifest — and leaves the root lockfile untouched, which only the
+      # MSRV job notices. Same reasoning as the root cargo entry above.
+      - dependency-name: constant_time_eq
+        versions: [">= 0.4.3"]
   # Hash-pinned zig toolchain used by the node musl cross-compile job.
   - package-ecosystem: pip
     directory: /.github/requirements
