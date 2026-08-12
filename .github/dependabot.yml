@@ -15,3 +15,14 @@ updates:
       codeql-action:
         patterns:
           - "github/codeql-action*"
+  # The fuzz targets are their own workspace with their own lockfile, so the
+  # root cargo entry never sees them.
+  - package-ecosystem: cargo
+    directory: /fuzz
+    schedule:
+      interval: weekly
+  # Hash-pinned zig toolchain used by the node musl cross-compile job.
+  - package-ecosystem: pip
+    directory: /.github/requirements
+    schedule:
+      interval: weekly

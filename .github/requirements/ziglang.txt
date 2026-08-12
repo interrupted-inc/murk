@@ -1,0 +1,10 @@
+# Zig toolchain used by cargo-zigbuild for the musl cross-compile job in
+# .github/workflows/node.yaml. Installed with --require-hashes so the wheel is
+# verified before it runs in CI.
+#
+# Regenerate after a version bump (both Linux runner architectures):
+#   curl -s https://pypi.org/pypi/ziglang/<version>/json \
+#     | jq -r '.urls[] | select(.filename | test("manylinux.*(x86_64|aarch64)")) | .digests.sha256'
+ziglang==0.16.0 \
+    --hash=sha256:9fcda73f62b851dd72a54b710ad40a209896db14cfb13649e62191243556342b \
+    --hash=sha256:e27d409812b11e0fb89ed0200cf2e55b6464d43f9461553104e4a4f9a94a1fd5
