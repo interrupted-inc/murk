@@ -43,9 +43,8 @@ man ./docs/man/murk.1
 
 ## How they stay in sync
 
-The completions, man pages, the [CLI reference](/reference/cli/), and the
-[environment variables reference](/reference/env/) are all produced by murk's
-dev-only doc generator:
+murk's dev-only doc generator produces the completions, man pages, the
+[CLI reference](/reference/cli/), and the [environment variables reference](/reference/env/):
 
 ```bash
 cargo run --features doc-gen --bin gen-docs

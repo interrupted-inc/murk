@@ -2,11 +2,11 @@
 .el .ds Aq '
 .TH connect 1  "connect " 
 .SH NAME
-connect \- Wire `murk mcp` into an AI editor\*(Aqs MCP config, minting a scoped grant. No CLIENT auto\-detects installed editors; give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it
+connect \- Wire `murk mcp` into an AI editor\*(Aqs MCP config, minting a scoped grant. No CLIENT auto\-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it
 .SH SYNOPSIS
 \fBmurk agent connect\fR [\fB\-\-allow\-tag\fR] [\fB\-\-allow\-exec\fR] [\fB\-\-ttl\fR] [\fB\-\-name\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-only\fR> [\fICLIENT\fR] 
 .SH DESCRIPTION
-Wire `murk mcp` into an AI editor\*(Aqs MCP config, minting a scoped grant. No CLIENT auto\-detects installed editors; give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it
+Wire `murk mcp` into an AI editor\*(Aqs MCP config, minting a scoped grant. No CLIENT auto\-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it
 .SH OPTIONS
 .TP
 \fB\-\-only\fR \fI<ONLY>\fR
@@ -31,4 +31,4 @@ Vault filename
 Print help
 .TP
 [\fICLIENT\fR]
-Editor to configure; omit to auto\-detect (claude, cursor, vscode, zed, gemini, omp, codex)
+Editor to configure. Omit to auto\-detect (claude, cursor, vscode, zed, gemini, omp, codex)

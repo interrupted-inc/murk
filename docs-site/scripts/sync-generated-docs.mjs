@@ -54,7 +54,7 @@ sidebar:
   order: ${order}
 # Generated file — do not edit.
 # Source: ${source.replace("../../", "")} (produced by \`cargo run --features doc-gen --bin gen-docs\`).
-# Regenerate the source, then rebuild the docs site; this file is produced by scripts/sync-generated-docs.mjs.
+# Regenerate the source, then rebuild the docs site. This file is produced by scripts/sync-generated-docs.mjs.
 editUrl: false
 ---
 

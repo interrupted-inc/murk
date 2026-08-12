@@ -105,7 +105,7 @@ pub enum Command {
         /// List keys needing rotation instead of rotating (exits 1 if any)
         #[arg(long, conflicts_with_all = ["key", "all", "generate", "hex"])]
         list: bool,
-        /// Output the listing as JSON (with --list; always exits 0)
+        /// Output the listing as JSON (with --list, always exits 0)
         #[arg(long, requires = "list", conflicts_with_all = ["key", "all", "generate", "hex"])]
         json: bool,
         /// Vault filename
@@ -201,10 +201,10 @@ pub enum Command {
         /// Tag for grouping (repeatable, replaces existing tags)
         #[arg(long)]
         tag: Vec<String>,
-        /// Rotation interval, e.g. `90d` or `90` (days); `never` clears it
+        /// Rotation interval, e.g. `90d` or `90` (days). `never` clears it
         #[arg(long, value_name = "DAYS")]
         rotate_every: Option<String>,
-        /// Hard expiry date, e.g. `2026-09-01`; `never` clears it
+        /// Hard expiry date, e.g. `2026-09-01`. `never` clears it
         #[arg(long, value_name = "DATE")]
         expires: Option<String>,
         /// Vault filename
@@ -509,10 +509,10 @@ pub enum AgentCommand {
     },
 
     /// Wire `murk mcp` into an AI editor's MCP config, minting a scoped grant.
-    /// No CLIENT auto-detects installed editors; give one (claude, cursor,
+    /// No CLIENT auto-detects installed editors. Give one (claude, cursor,
     /// vscode, zed, gemini, omp, codex) to target it.
     Connect {
-        /// Editor to configure; omit to auto-detect
+        /// Editor to configure. Omit to auto-detect
         /// (claude, cursor, vscode, zed, gemini, omp, codex)
         client: Option<String>,
         /// Keys the agent may read (required — fails closed)
@@ -536,9 +536,9 @@ pub enum AgentCommand {
     },
 
     /// Remove murk's entry from an AI editor's MCP config. No CLIENT clears every
-    /// configured editor; `--rotate` also revokes the grant and rotates its keys.
+    /// configured editor. `--rotate` also revokes the grant and rotates its keys.
     Disconnect {
-        /// Editor to disconnect; omit for every configured editor
+        /// Editor to disconnect. Omit for every configured editor
         client: Option<String>,
         /// Revoke the grant and rotate the keys it could read
         #[arg(long)]

@@ -12,7 +12,7 @@ decrypt everything the key is authorized for.
 
 murk doesn't have a first-class "yubikey" flag or subcommand. Instead it
 supports **age plugin identities**: point `MURK_KEY_FILE` at a plugin
-identity file, and the private key material lives in tamper-resistant
+identity file. The private key material lives in tamper-resistant
 hardware and never exists as raw bytes murk (or anything else) can read
 directly. This is the same [age plugin
 mechanism](https://github.com/FiloSottile/age#plugins) the wider age
@@ -53,7 +53,7 @@ murk get SOME_KEY
 The identity file contains a `#    Recipient: age1yubikey1...` header
 followed by an `AGE-PLUGIN-YUBIKEY-1...` pointer. murk reads the public key
 straight from that header (no plugin call needed just to look up a scoped
-secret) and only invokes the plugin binary when actually decrypting, which
+secret). It only invokes the plugin binary when actually decrypting, which
 is when the YubiKey prompts you to tap it.
 
 The same pattern applies to the other plugins in the table: generate an
@@ -66,7 +66,7 @@ If the plugin binary isn't on `$PATH`, murk fails with an
 `age-plugin-<name> unavailable` error. Install it and retry.
 
 `MURK_KEY` (the inline environment variable, as opposed to `MURK_KEY_FILE`)
-rejects `AGE-PLUGIN-...` strings outright: a bare plugin pointer doesn't
+rejects `AGE-PLUGIN-...` strings outright. A bare plugin pointer doesn't
 carry the recipient public key murk needs, so hardware identities only work
 via `MURK_KEY_FILE` pointing at the identity file.
 
@@ -74,7 +74,7 @@ via `MURK_KEY_FILE` pointing at the identity file.
 
 The entire point of a hardware-backed key is that the raw key bytes never
 leave the device, so there are no bytes to encode as a recovery phrase.
-`murk restore` and `murk recover` are age-key-only; running them against a
+`murk restore` and `murk recover` are age-key-only. Running them against a
 plugin identity is a hard error, not a silent no-op.
 
 The recovery strategy for a hardware key is different: **enroll a second
@@ -86,11 +86,11 @@ you need it, not after you've lost the primary.
 
 ## Signing implications
 
-age keys and `ssh-ed25519` keys can produce a vault signature on write;
-hardware/plugin identities and `ssh-rsa` keys cannot (age exposes no signing
-scalar for them), so writes from a hardware-only identity leave the vault
+age keys and `ssh-ed25519` keys can produce a vault signature on write.
+Hardware/plugin identities and `ssh-rsa` keys cannot (age exposes no signing
+scalar for them). Writes from a hardware-only identity leave the vault
 unsigned: a warning on next load, not a hard failure. A team entirely on
-hardware keys relies on git as the integrity anchor; a mixed team is signed
+hardware keys relies on git as the integrity anchor. A mixed team is signed
 whenever a signing-capable holder last wrote. See the [threat
 model](/security/threat-model/) for the full signing story.
 

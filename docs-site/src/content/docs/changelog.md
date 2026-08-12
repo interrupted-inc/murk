@@ -19,7 +19,7 @@ stale between builds, this page points at that single source.
 
 murk is pre-1.0 and follows [Semantic Versioning](https://semver.org/). While on
 the 0.x line, treat **minor** bumps (0.9 → 0.10) as the ones that may carry
-breaking changes; patch bumps are fixes and additions. The vault format is
+breaking changes. Patch bumps are fixes and additions. The vault format is
 stable across 0.x. See the [roadmap](/roadmap/) for the stability guarantees
 1.0 will add.
 

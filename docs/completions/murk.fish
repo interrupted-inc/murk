@@ -83,7 +83,7 @@ complete -c murk -n "__fish_murk_using_subcommand rotate" -l all -d 'Rotate all 
 complete -c murk -n "__fish_murk_using_subcommand rotate" -l generate -d 'Generate random values instead of prompting'
 complete -c murk -n "__fish_murk_using_subcommand rotate" -l hex -d 'Output generated values as hex instead of base64'
 complete -c murk -n "__fish_murk_using_subcommand rotate" -l list -d 'List keys needing rotation instead of rotating (exits 1 if any)'
-complete -c murk -n "__fish_murk_using_subcommand rotate" -l json -d 'Output the listing as JSON (with --list; always exits 0)'
+complete -c murk -n "__fish_murk_using_subcommand rotate" -l json -d 'Output the listing as JSON (with --list, always exits 0)'
 complete -c murk -n "__fish_murk_using_subcommand rotate" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand rm" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand rm" -s h -l help -d 'Print help'
@@ -107,8 +107,8 @@ complete -c murk -n "__fish_murk_using_subcommand import" -l force -d 'Overwrite
 complete -c murk -n "__fish_murk_using_subcommand import" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand describe" -l example -d 'Example value' -r
 complete -c murk -n "__fish_murk_using_subcommand describe" -l tag -d 'Tag for grouping (repeatable, replaces existing tags)' -r
-complete -c murk -n "__fish_murk_using_subcommand describe" -l rotate-every -d 'Rotation interval, e.g. `90d` or `90` (days); `never` clears it' -r
-complete -c murk -n "__fish_murk_using_subcommand describe" -l expires -d 'Hard expiry date, e.g. `2026-09-01`; `never` clears it' -r
+complete -c murk -n "__fish_murk_using_subcommand describe" -l rotate-every -d 'Rotation interval, e.g. `90d` or `90` (days). `never` clears it' -r
+complete -c murk -n "__fish_murk_using_subcommand describe" -l expires -d 'Hard expiry date, e.g. `2026-09-01`. `never` clears it' -r
 complete -c murk -n "__fish_murk_using_subcommand describe" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand describe" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand info" -l tag -d 'Filter by tag (repeatable)' -r
@@ -130,8 +130,8 @@ complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_sub
 complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "init" -d 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely'
 complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "ls" -d 'List active agent grants and their TTLs'
 complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "revoke" -d 'Revoke an agent grant and rotate the keys it could read'
-complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "connect" -d 'Wire `murk mcp` into an AI editor\'s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors; give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it'
-complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "disconnect" -d 'Remove murk\'s entry from an AI editor\'s MCP config. No CLIENT clears every configured editor; `--rotate` also revokes the grant and rotates its keys'
+complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "connect" -d 'Wire `murk mcp` into an AI editor\'s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it'
+complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "disconnect" -d 'Remove murk\'s entry from an AI editor\'s MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys'
 complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from plan" -l tag -d 'Filter by tag (repeatable)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from plan" -s o -l output -d 'Output file (prints to stdout if omitted)' -r
@@ -177,8 +177,8 @@ complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcomm
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from help" -f -a "init" -d 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from help" -f -a "ls" -d 'List active agent grants and their TTLs'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from help" -f -a "revoke" -d 'Revoke an agent grant and rotate the keys it could read'
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from help" -f -a "connect" -d 'Wire `murk mcp` into an AI editor\'s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors; give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it'
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from help" -f -a "disconnect" -d 'Remove murk\'s entry from an AI editor\'s MCP config. No CLIENT clears every configured editor; `--rotate` also revokes the grant and rotates its keys'
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from help" -f -a "connect" -d 'Wire `murk mcp` into an AI editor\'s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it'
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from help" -f -a "disconnect" -d 'Remove murk\'s entry from an AI editor\'s MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c murk -n "__fish_murk_using_subcommand mcp" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand mcp" -l allow-exec -d 'Enable the murk_exec tool (run commands with scoped secrets injected). Off by default: it runs arbitrary commands as this user — the injected secrets are grant-scoped, but the command itself is not sandboxed'
@@ -307,8 +307,8 @@ complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcomma
 complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from agent" -f -a "init" -d 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely'
 complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from agent" -f -a "ls" -d 'List active agent grants and their TTLs'
 complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from agent" -f -a "revoke" -d 'Revoke an agent grant and rotate the keys it could read'
-complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from agent" -f -a "connect" -d 'Wire `murk mcp` into an AI editor\'s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors; give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it'
-complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from agent" -f -a "disconnect" -d 'Remove murk\'s entry from an AI editor\'s MCP config. No CLIENT clears every configured editor; `--rotate` also revokes the grant and rotates its keys'
+complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from agent" -f -a "connect" -d 'Wire `murk mcp` into an AI editor\'s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it'
+complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from agent" -f -a "disconnect" -d 'Remove murk\'s entry from an AI editor\'s MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys'
 complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from policy" -f -a "show" -d 'Show the agent access policy (works without a key)'
 complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from policy" -f -a "set" -d 'Set the agent allow-list: agents may only receive secrets carrying one of these tags'
 complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from policy" -f -a "clear" -d 'Remove the policy — agent mode becomes unrestricted again'

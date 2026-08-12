@@ -16,17 +16,17 @@ could read.
 murk circle revoke carol --rotate
 ```
 
-This removes carol as a recipient, re-encrypts the shared secrets she had
-access to without her key, and, with `--rotate`, prompts you for a new
-value for each of them in the same session. Commit and push the result:
+This removes carol as a recipient and re-encrypts the shared secrets she
+had access to without her key. With `--rotate`, it also prompts you for a
+new value for each of them in the same session. Commit and push the result:
 
 ```bash
 git commit -am "revoke carol, rotate secrets" && git push
 ```
 
 Without `--rotate` on an interactive terminal, `murk circle revoke` offers to
-rotate anyway; run non-interactively (e.g. in a script) it just prints a
-hint instead.
+rotate anyway. When it runs non-interactively (e.g. in a script), it just
+prints a hint instead.
 
 ## Import rotated values from a file
 
@@ -40,14 +40,14 @@ murk import .env.rotated
 
 ## Why rotation matters
 
-Revocation re-encrypts the vault **going forward**: carol's key is dropped
+Revocation re-encrypts the vault **going forward**: it drops carol's key
 from future shared-secret ciphertexts. It does not touch git history:
 
 :::caution
 Revocation doesn't erase git history. The revoked user can still decrypt any
 version of the vault they previously had access to, straight from old git
 commits. Rotation, giving the secret a new value, is the only way to
-actually close the exposure; revocation alone just stops *future* changes
+actually close the exposure. Revocation alone just stops *future* changes
 from being readable to them.
 :::
 

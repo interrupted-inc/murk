@@ -9,7 +9,7 @@ murk's vault is per-recipient: every teammate has their own key, and adding
 or removing someone is a normal git-tracked change to the vault file: no
 shared password to rotate, no separate secrets server to run.
 
-![Alice authorizes Bob as a recipient; Bob then decrypts the shared vault](https://raw.githubusercontent.com/interrupted-inc/murk/demo/team.gif)
+![Alice authorizes Bob as a recipient, then Bob decrypts the shared vault](https://raw.githubusercontent.com/interrupted-inc/murk/demo/team.gif)
 
 ## Adding a teammate
 
@@ -55,7 +55,7 @@ murk circle authorize github:bob
 
 This fetches Bob's SSH public keys from `https://github.com/bob.keys` (no
 authentication required) and adds them as recipients: no pasting an age
-public key over Slack. `ssh-ed25519` keys are accepted by default;
+public key over Slack. murk accepts `ssh-ed25519` keys by default.
 `ssh-rsa` keys need `--allow-ssh-rsa` because ed25519 is recommended.
 
 ### Recipient pinning
@@ -65,11 +65,11 @@ fingerprints of the fetched keys in the encrypted vault metadata. If Bob's
 GitHub keys change later, the next `authorize github:bob` refuses to proceed
 silently: it flags the diff and requires `--force` to accept the new keys.
 This catches both benign key rotation and a compromised GitHub account adding
-an attacker's key, and turns either into something a human has to actively
+an attacker's key. It turns either into something a human has to actively
 confirm rather than something that happens invisibly.
 
-Because this pinning trusts GitHub as a key directory and trusts that the
-username belongs to who you think it does, treat `authorize github:user` with
+This pinning trusts GitHub as a key directory and trusts that the
+username belongs to who you think it does. Treat `authorize github:user` with
 the same care you'd give any access grant: verify identity out of band for
 sensitive vaults. See the [threat model](/security/threat-model/) for the
 full trust analysis.

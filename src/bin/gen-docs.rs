@@ -90,7 +90,7 @@ const ENV_GROUPS: &[(&str, &[EnvVar])] = &[
             },
             EnvVar {
                 name: "MURK_AGENT",
-                summary: "Marks the process as running for an AI agent. Forces strict mode unconditionally; `murk agent exec` sets it on its child.",
+                summary: "Marks the process as running for an AI agent. Forces strict mode unconditionally. `murk agent exec` sets it on its child.",
             },
             EnvVar {
                 name: "MURK_SELF_SCOPE",
@@ -130,7 +130,7 @@ fn env_reference() -> (PathBuf, String) {
     let mut body = String::from(
         "# murk environment variable reference\n\n\
          The environment variables murk reads, and the CLI flags they mirror \
-         where one exists. This is the terse reference; the narrative version \
+         where one exists. This is the terse reference. The narrative version \
          with resolution order and interactions lives in the Environment \
          variables concept page.\n",
     );
@@ -172,7 +172,7 @@ fn man_pages() -> Vec<(PathBuf, String)> {
 
 fn collect_man(cmd: &clap::Command, path: &[&str], out: &mut Vec<(PathBuf, String)>) {
     // `bin_name` (a runtime String) drives the SYNOPSIS, so it shows the real
-    // spaced invocation ("murk agent plan"); the filename uses the git-man
+    // spaced invocation ("murk agent plan"). The filename uses the git-man
     // dashed convention ("murk-agent-plan.1"). Both come from the command path.
     let render_cmd = cmd.clone().bin_name(path.join(" "));
     let mut buf = Vec::new();

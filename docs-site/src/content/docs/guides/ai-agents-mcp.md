@@ -25,9 +25,9 @@ your own key, and you can revoke it. If a task only needs `STRIPE_KEY`, that's
 the only thing the grant can read.
 
 This narrows where secrets are exposed. It doesn't make a leak impossible: a
-command the agent runs can still print a value to its own output, and a grant
-key stored on disk can be read by anything running as your user. murk gives you
-least-privilege, expiring, revocable access, not a sandbox. For real isolation,
+command the agent runs can still print a value to its own output, and
+anything running as your user can read a grant key stored on disk. murk
+gives you least-privilege, expiring, revocable access, not a sandbox. For real isolation,
 run the agent as a separate user or in a container.
 
 ## Rules
@@ -51,7 +51,7 @@ run the agent as a separate user or in a container.
 
    When the agent itself is invoking the command, use `murk agent exec`. It
    requires explicit `--only` keys, clears the inherited environment, strips
-   `MURK_KEY`, and marks the child as an agent context (`MURK_AGENT=1`), so
+   `MURK_KEY`, and marks the child as an agent context (`MURK_AGENT=1`). So
    the run can only see the secrets you named and a nested `murk` won't fall
    back to your stored key:
 
@@ -88,7 +88,7 @@ run the agent as a separate user or in a container.
 ## Agent context
 
 Set `MURK_AGENT=1` to tell murk it's running for an agent. In an agent
-context, **strict mode is forced**: murk won't fall back to your stored key
+context, murk **forces strict mode**: it won't fall back to your stored key
 in `~/.config/murk/keys` (the agent must present its own
 `MURK_KEY`/`MURK_KEY_FILE`, e.g. a [grant](/concepts/grants/) key, or fail
 closed), won't write plaintext secrets to a file, and requires a RAM-backed
@@ -106,12 +106,12 @@ personal key.
 
 **Self-scoping your own key.** The allow-tag policy (see [Restricting which
 secrets agents can touch](#restricting-which-secrets-agents-can-touch),
-below) normally binds only agent grant keys; `murk get`/`export`/`edit`
+below) normally binds only agent grant keys. `murk get`/`export`/`edit`
 with your *own* key ignore it. Set `MURK_SELF_SCOPE=1` (agent context implies
 it) to hold your own reads to the policy too: `get`, `exec` (and `agent
-exec`), and single-key `edit KEY` fail closed on a non-allowed key; `export`
-withholds forbidden keys (with a note on stderr); and bulk `murk edit` is
-refused. Reach for it when you run an agent in your own shell and want the
+exec`), and single-key `edit KEY` fail closed on a non-allowed key. `export`
+withholds forbidden keys, with a note on stderr, and murk refuses bulk
+`murk edit`. Reach for it when you run an agent in your own shell and want the
 guardrail to actually bite. It's still the murk binary enforcing it, not a
 sandbox.
 
@@ -159,7 +159,7 @@ MURK_KEY_FILE=~/.config/murk/agent-keys/<...>-codex MURK_AGENT=1 \
   murk agent exec --only STRIPE_SECRET_KEY -- python scripts/refund.py
 ```
 
-The granted key reads only its keys; anything else returns "key not found".
+The granted key reads only its keys. Anything else returns "key not found".
 It is excluded from the shared layer entirely.
 
 List and revoke grants:
@@ -173,7 +173,7 @@ Three things to keep in mind:
 
 - **The TTL is advisory.** age keys can't self-destruct, and old vault
   versions stay readable in git, so a leaked grant key works until you
-  `agent revoke` and rotate. The TTL tells you *when* to revoke; `agent ls`
+  `agent revoke` and rotate. The TTL tells you *when* to revoke. `agent ls`
   flags expired grants. Revoke + rotate is the real close.
 - **The key is a bearer credential.** Whoever holds the key file has the
   access. Treat it like the secret it unlocks.
@@ -193,10 +193,10 @@ murk describe DATABASE_URL "..." --tag agents   # tag the agent-usable ones
 murk policy set --allow-tag agents              # default-deny everything else
 ```
 
-Now `agent exec` and `agent grant` only work for keys tagged `agents`; asking
+Now `agent exec` and `agent grant` only work for keys tagged `agents`. Asking
 for an untagged or production key fails closed with a clear error. There's
 no override flag, so a misbehaving agent can't talk its way past it.
-`agents` is just an example tag; use whatever tags fit your vault (`dev`,
+`agents` is just an example tag. Use whatever tags fit your vault (`dev`,
 `ci`, ...). The policy lives in the vault header (MAC-covered, readable with
 `murk policy show` even without a key) so it travels with the repo and
 applies in CI. Note this is a guardrail enforced by the murk binary, not
@@ -215,8 +215,8 @@ Agent harnesses that speak the
 [Model Context Protocol](https://modelcontextprotocol.io) (Claude Code,
 Cursor, omp, and others) can reach murk secrets directly through
 `murk mcp`, a stdio MCP server built into the binary. It calls murk
-in-process (no subprocess, no Node runtime) and is bound by the same grant
-and policy machinery as everything above.
+in-process (no subprocess, no Node runtime), and the same grant
+and policy machinery as everything above binds it.
 
 It runs **only** as a scoped agent: it fails closed unless it is launched
 with a grant key **and** `MURK_AGENT=1`. Started with your stored key, a
@@ -261,7 +261,7 @@ expose the exec tool. Because these files are often committed, murk warns and
 offers to add the path to `.gitignore`.
 
 `murk agent disconnect [CLIENT]` removes only murk's entry, leaving other
-servers untouched; add `--rotate` to revoke the grant and rotate the keys it
+servers untouched. Add `--rotate` to revoke the grant and rotate the keys it
 could read.
 
 The server speaks JSON-RPC over stdout and logs only to stderr, so point
@@ -282,7 +282,7 @@ plus an opt-in exec tool:
   `murk mcp --allow-exec`. Runs a command with the named secrets injected
   into its environment (no shell), returning captured stdout, stderr, and
   the exit code. Every key in `only` must be in the grant's scope and
-  policy-allowed, or it fails closed before running anything; output and
+  policy-allowed, or it fails closed before running anything. Output and
   runtime are bounded. The caveat: `only` scopes the injected *secrets*, not
   the command: it runs as your user with your filesystem and network
   access, so it is **not a sandbox**. Enable it only where the server
@@ -301,7 +301,7 @@ printf '%s\n' \
 
 The transport is a local stdio pipe, not a network listener. The grant
 bounds which secret *values* reach the agent (the capability-not-credential
-model), but `murk_exec` (when enabled) runs real commands as your user, so
+model). But `murk_exec` (when enabled) runs real commands as your user, so
 treat it like `murk agent exec`: a safe default, not a sandbox, with
 OS-level isolation the real boundary (see
 [Short-lived agent grants](#short-lived-agent-grants), above).
@@ -327,6 +327,6 @@ murk diff               # the same changes for the latest revision, decoded
 
 Each shows the change attributed to its commit author (and signed, if you
 use git commit signing). What git *can't* show is secret reads on a
-developer's machine (murk never sees those), so don't treat the absence of
+developer's machine (murk never sees those). So don't treat the absence of
 a read trail as proof a secret wasn't used. See the
 [threat model](/security/threat-model/) for the full audit boundary.

@@ -32,7 +32,7 @@ curl -fsSL https://raw.githubusercontent.com/interrupted-inc/murk/main/install.s
 
 ## GitHub Releases
 
-Pre-built binaries are available for Linux (x86_64, aarch64, armhf), macOS
+murk provides pre-built binaries for Linux (x86_64, aarch64, armhf), macOS
 (x86_64, Apple Silicon), and Windows on the
 [releases page](https://github.com/interrupted-inc/murk/releases).
 

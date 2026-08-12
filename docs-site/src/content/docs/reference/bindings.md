@@ -21,13 +21,13 @@ its secrets in memory instead of through `source .env`.
 The bindings read a vault the CLI made, so first you need:
 
 - the [murk CLI](/install/) installed, and a `.murk` vault created with
-  `murk init` and populated with `murk add`;
+  `murk init` and populated with `murk add`.
 - your key available in the environment as `MURK_KEY` or `MURK_KEY_FILE`.
   `murk init` writes a `.env` that references your key file, so `source .env`
   in the project directory is the usual setup. See
   [Environment variables](/concepts/env-vars/) for what each one does.
 
-Both packages ship prebuilt native binaries with release provenance; see
+Both packages ship prebuilt native binaries with release provenance. See
 [Verifying releases](/security/verifying/) to check it.
 
 ## Python
@@ -56,7 +56,7 @@ The module is imported as `murk` even though the package is `murk-secrets`.
 
 ### API
 
-> Every decrypted value murk returns is a plain host-language string; see [Decrypted values in memory](#decrypted-values-in-memory) for the lifetime caveat.
+> Every decrypted value murk returns is a plain host-language string. See [Decrypted values in memory](#decrypted-values-in-memory) for the lifetime caveat.
 
 #### Functions
 
@@ -74,7 +74,7 @@ The module is imported as `murk` even though the package is `murk-secrets`.
 | `vault.get(key)` | `str \| None` | Decrypted value, or `None` if the key is absent |
 | `vault.export()` | `dict[str, str]` | All readable secrets |
 | `vault.keys()` | `list[str]` | Key names |
-| `vault[key]` | `str` | Dict-style access; raises `RuntimeError` if absent |
+| `vault[key]` | `str` | Dict-style access. Raises `RuntimeError` if absent |
 | `key in vault` | `bool` | Membership test |
 | `len(vault)` | `int` | Number of secrets |
 
@@ -106,7 +106,7 @@ exportAll();
 
 ### API
 
-> Every decrypted value murk returns is a plain host-language string; see [Decrypted values in memory](#decrypted-values-in-memory) for the lifetime caveat.
+> Every decrypted value murk returns is a plain host-language string. See [Decrypted values in memory](#decrypted-values-in-memory) for the lifetime caveat.
 
 #### Functions
 
@@ -144,7 +144,7 @@ same gate as `murk agent exec`:
 - `export()` checks the whole readable set first and rejects the call outright
   if any key is out of policy — no partial results.
 
-Python raises `RuntimeError`; Node throws. Operator keys skip the check. A
+Python raises `RuntimeError`. Node throws. Operator keys skip the check. A
 grant can't decrypt out-of-scope secrets in the first place — its ephemeral
 key isn't a recipient of them — so this is a backstop, not the only guard. See
 [AI agents & MCP](/guides/ai-agents-mcp/) for the full model.
@@ -154,7 +154,7 @@ key isn't a recipient of them — so this is a backstop, not the only guard. See
 murk zeroes plaintext from its own memory when a value is dropped, but that
 stops at the FFI boundary. `get()` and `export()` return native values — a
 Python `str`/`dict`, a JavaScript `string`/object — and once a value is in
-your program the runtime owns it; murk can't wipe it. That's unavoidable when
+your program the runtime owns it. murk can't wipe it. That's unavoidable when
 you read secrets into a process, and it's noted in the
 [threat model](/security/threat-model/). It doesn't touch the vault on disk,
 only how long values linger in memory — so don't hold them longer than needed.

@@ -2,7 +2,7 @@
 
 # murk environment variable reference
 
-The environment variables murk reads, and the CLI flags they mirror where one exists. This is the terse reference; the narrative version with resolution order and interactions lives in the Environment variables concept page.
+The environment variables murk reads, and the CLI flags they mirror where one exists. This is the terse reference. The narrative version with resolution order and interactions lives in the Environment variables concept page.
 
 ## Identity and vault selection
 
@@ -17,7 +17,7 @@ The environment variables murk reads, and the CLI flags they mirror where one ex
 | Variable | Description |
 | --- | --- |
 | `MURK_STRICT` | Truthy fails closed rather than let a secret touch disk, and disables the automatic key lookup under `~/.config/murk/keys`. |
-| `MURK_AGENT` | Marks the process as running for an AI agent. Forces strict mode unconditionally; `murk agent exec` sets it on its child. |
+| `MURK_AGENT` | Marks the process as running for an AI agent. Forces strict mode unconditionally. `murk agent exec` sets it on its child. |
 | `MURK_SELF_SCOPE` | Truthy holds your own key to the vault's agent allow-tag policy, as if you were an agent. Implied inside an agent context. |
 | `MURK_NO_SIGNER_PIN` | Opts out of signer-registry pinning (TOFU) on load — an escape hatch for a deliberate signer-key change, not for everyday use. |
 

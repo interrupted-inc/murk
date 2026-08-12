@@ -24,7 +24,7 @@ For a detailed analysis of what murk protects and what it doesn't, see [THREAT_M
 
 ## Supply Chain
 
-Every release artifact is built and published from GitHub Actions on hosted runners, and most carry signed provenance. Release binaries include [Sigstore artifact attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations); verify a downloaded binary:
+Every release artifact is built and published from GitHub Actions on hosted runners, and most carry signed provenance. Release binaries include [Sigstore artifact attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations). Verify a downloaded binary:
 
 ```bash
 gh attestation verify murk-v*.tar.gz --owner interrupted-inc

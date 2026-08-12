@@ -86,7 +86,7 @@ _arguments "${_arguments_options[@]}" : \
 '--generate[Generate random values instead of prompting]' \
 '--hex[Output generated values as hex instead of base64]' \
 '(--all --generate --hex)--list[List keys needing rotation instead of rotating (exits 1 if any)]' \
-'(--all --generate --hex)--json[Output the listing as JSON (with --list; always exits 0)]' \
+'(--all --generate --hex)--json[Output the listing as JSON (with --list, always exits 0)]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '::key -- Secret key name (omit for --all):_default' \
@@ -150,8 +150,8 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '--example=[Example value]:EXAMPLE:_default' \
 '*--tag=[Tag for grouping (repeatable, replaces existing tags)]:TAG:_default' \
-'--rotate-every=[Rotation interval, e.g. \`90d\` or \`90\` (days); \`never\` clears it]:DAYS:_default' \
-'--expires=[Hard expiry date, e.g. \`2026-09-01\`; \`never\` clears it]:DATE:_default' \
+'--rotate-every=[Rotation interval, e.g. \`90d\` or \`90\` (days). \`never\` clears it]:DAYS:_default' \
+'--expires=[Hard expiry date, e.g. \`2026-09-01\`. \`never\` clears it]:DATE:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '-h[Print help]' \
 '--help[Print help]' \
@@ -272,7 +272,7 @@ _arguments "${_arguments_options[@]}" : \
 '--allow-exec[Also expose \`murk agent exec\` to the agent (adds --allow-exec)]' \
 '-h[Print help]' \
 '--help[Print help]' \
-'::client -- Editor to configure; omit to auto-detect (claude, cursor, vscode, zed, gemini, omp, codex):_default' \
+'::client -- Editor to configure. Omit to auto-detect (claude, cursor, vscode, zed, gemini, omp, codex):_default' \
 && ret=0
 ;;
 (disconnect)
@@ -282,7 +282,7 @@ _arguments "${_arguments_options[@]}" : \
 '--rotate[Revoke the grant and rotate the keys it could read]' \
 '-h[Print help]' \
 '--help[Print help]' \
-'::client -- Editor to disconnect; omit for every configured editor:_default' \
+'::client -- Editor to disconnect. Omit for every configured editor:_default' \
 && ret=0
 ;;
 (help)
@@ -1043,8 +1043,8 @@ _murk__subcmd__agent_commands() {
 'init:One-shot onboarding\: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely' \
 'ls:List active agent grants and their TTLs' \
 'revoke:Revoke an agent grant and rotate the keys it could read' \
-'connect:Wire \`murk mcp\` into an AI editor'\''s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors; give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it' \
-'disconnect:Remove murk'\''s entry from an AI editor'\''s MCP config. No CLIENT clears every configured editor; \`--rotate\` also revokes the grant and rotates its keys' \
+'connect:Wire \`murk mcp\` into an AI editor'\''s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it' \
+'disconnect:Remove murk'\''s entry from an AI editor'\''s MCP config. No CLIENT clears every configured editor. \`--rotate\` also revokes the grant and rotates its keys' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
     _describe -t commands 'murk agent commands' commands "$@"
@@ -1078,8 +1078,8 @@ _murk__subcmd__agent__subcmd__help_commands() {
 'init:One-shot onboarding\: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely' \
 'ls:List active agent grants and their TTLs' \
 'revoke:Revoke an agent grant and rotate the keys it could read' \
-'connect:Wire \`murk mcp\` into an AI editor'\''s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors; give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it' \
-'disconnect:Remove murk'\''s entry from an AI editor'\''s MCP config. No CLIENT clears every configured editor; \`--rotate\` also revokes the grant and rotates its keys' \
+'connect:Wire \`murk mcp\` into an AI editor'\''s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it' \
+'disconnect:Remove murk'\''s entry from an AI editor'\''s MCP config. No CLIENT clears every configured editor. \`--rotate\` also revokes the grant and rotates its keys' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
     _describe -t commands 'murk agent help commands' commands "$@"
@@ -1404,8 +1404,8 @@ _murk__subcmd__help__subcmd__agent_commands() {
 'init:One-shot onboarding\: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely' \
 'ls:List active agent grants and their TTLs' \
 'revoke:Revoke an agent grant and rotate the keys it could read' \
-'connect:Wire \`murk mcp\` into an AI editor'\''s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors; give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it' \
-'disconnect:Remove murk'\''s entry from an AI editor'\''s MCP config. No CLIENT clears every configured editor; \`--rotate\` also revokes the grant and rotates its keys' \
+'connect:Wire \`murk mcp\` into an AI editor'\''s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it' \
+'disconnect:Remove murk'\''s entry from an AI editor'\''s MCP config. No CLIENT clears every configured editor. \`--rotate\` also revokes the grant and rotates its keys' \
     )
     _describe -t commands 'murk help agent commands' commands "$@"
 }

@@ -46,6 +46,6 @@ pipx run pypi-attestations verify pypi \
 crates.io does not yet support artifact provenance or attestations, so there is nothing to attach at publish time. Trust here rests on two things:
 
 - the crate is published via crates.io **OIDC Trusted Publishing**, so no long-lived registry token exists to steal, and
-- the crate is published only from a version-tagged CI run, and release preflight requires that tag to sit on `main` and to have been merged through a reviewed pull request before anything publishes.
+- the crate is published only from a version-tagged CI run. Release preflight requires that tag to sit on `main` and to have been merged through a reviewed pull request before anything publishes.
 
 This is the one gap in murk's provenance story, and it is upstream: it closes when crates.io ships attestation support.

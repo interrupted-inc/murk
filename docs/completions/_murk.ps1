@@ -108,7 +108,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             [CompletionResult]::new('--generate', '--generate', [CompletionResultType]::ParameterName, 'Generate random values instead of prompting')
             [CompletionResult]::new('--hex', '--hex', [CompletionResultType]::ParameterName, 'Output generated values as hex instead of base64')
             [CompletionResult]::new('--list', '--list', [CompletionResultType]::ParameterName, 'List keys needing rotation instead of rotating (exits 1 if any)')
-            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Output the listing as JSON (with --list; always exits 0)')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Output the listing as JSON (with --list, always exits 0)')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -160,8 +160,8 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
         'murk;describe' {
             [CompletionResult]::new('--example', '--example', [CompletionResultType]::ParameterName, 'Example value')
             [CompletionResult]::new('--tag', '--tag', [CompletionResultType]::ParameterName, 'Tag for grouping (repeatable, replaces existing tags)')
-            [CompletionResult]::new('--rotate-every', '--rotate-every', [CompletionResultType]::ParameterName, 'Rotation interval, e.g. `90d` or `90` (days); `never` clears it')
-            [CompletionResult]::new('--expires', '--expires', [CompletionResultType]::ParameterName, 'Hard expiry date, e.g. `2026-09-01`; `never` clears it')
+            [CompletionResult]::new('--rotate-every', '--rotate-every', [CompletionResultType]::ParameterName, 'Rotation interval, e.g. `90d` or `90` (days). `never` clears it')
+            [CompletionResult]::new('--expires', '--expires', [CompletionResultType]::ParameterName, 'Hard expiry date, e.g. `2026-09-01`. `never` clears it')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
@@ -201,8 +201,8 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             [CompletionResult]::new('init', 'init', [CompletionResultType]::ParameterValue, 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely')
             [CompletionResult]::new('ls', 'ls', [CompletionResultType]::ParameterValue, 'List active agent grants and their TTLs')
             [CompletionResult]::new('revoke', 'revoke', [CompletionResultType]::ParameterValue, 'Revoke an agent grant and rotate the keys it could read')
-            [CompletionResult]::new('connect', 'connect', [CompletionResultType]::ParameterValue, 'Wire `murk mcp` into an AI editor''s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors; give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it')
-            [CompletionResult]::new('disconnect', 'disconnect', [CompletionResultType]::ParameterValue, 'Remove murk''s entry from an AI editor''s MCP config. No CLIENT clears every configured editor; `--rotate` also revokes the grant and rotates its keys')
+            [CompletionResult]::new('connect', 'connect', [CompletionResultType]::ParameterValue, 'Wire `murk mcp` into an AI editor''s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it')
+            [CompletionResult]::new('disconnect', 'disconnect', [CompletionResultType]::ParameterValue, 'Remove murk''s entry from an AI editor''s MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
@@ -284,8 +284,8 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             [CompletionResult]::new('init', 'init', [CompletionResultType]::ParameterValue, 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely')
             [CompletionResult]::new('ls', 'ls', [CompletionResultType]::ParameterValue, 'List active agent grants and their TTLs')
             [CompletionResult]::new('revoke', 'revoke', [CompletionResultType]::ParameterValue, 'Revoke an agent grant and rotate the keys it could read')
-            [CompletionResult]::new('connect', 'connect', [CompletionResultType]::ParameterValue, 'Wire `murk mcp` into an AI editor''s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors; give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it')
-            [CompletionResult]::new('disconnect', 'disconnect', [CompletionResultType]::ParameterValue, 'Remove murk''s entry from an AI editor''s MCP config. No CLIENT clears every configured editor; `--rotate` also revokes the grant and rotates its keys')
+            [CompletionResult]::new('connect', 'connect', [CompletionResultType]::ParameterValue, 'Wire `murk mcp` into an AI editor''s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it')
+            [CompletionResult]::new('disconnect', 'disconnect', [CompletionResultType]::ParameterValue, 'Remove murk''s entry from an AI editor''s MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
@@ -651,8 +651,8 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             [CompletionResult]::new('init', 'init', [CompletionResultType]::ParameterValue, 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely')
             [CompletionResult]::new('ls', 'ls', [CompletionResultType]::ParameterValue, 'List active agent grants and their TTLs')
             [CompletionResult]::new('revoke', 'revoke', [CompletionResultType]::ParameterValue, 'Revoke an agent grant and rotate the keys it could read')
-            [CompletionResult]::new('connect', 'connect', [CompletionResultType]::ParameterValue, 'Wire `murk mcp` into an AI editor''s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors; give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it')
-            [CompletionResult]::new('disconnect', 'disconnect', [CompletionResultType]::ParameterValue, 'Remove murk''s entry from an AI editor''s MCP config. No CLIENT clears every configured editor; `--rotate` also revokes the grant and rotates its keys')
+            [CompletionResult]::new('connect', 'connect', [CompletionResultType]::ParameterValue, 'Wire `murk mcp` into an AI editor''s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it')
+            [CompletionResult]::new('disconnect', 'disconnect', [CompletionResultType]::ParameterValue, 'Remove murk''s entry from an AI editor''s MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys')
             break
         }
         'murk;help;agent;plan' {
