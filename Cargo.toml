@@ -3,7 +3,7 @@ members = [".", "node"]
 exclude = ["fuzz"]
 
 [workspace.package]
-version = "0.10.2"
+version = "0.10.3"
 
 [package]
 name = "murk-cli"
