@@ -24,19 +24,28 @@ For a detailed analysis of what murk protects and what it doesn't, see [THREAT_M
 
 ## Supply Chain
 
-Every release artifact is built and published from GitHub Actions on hosted runners, and most carry signed provenance. Release binaries include [Sigstore artifact attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations); verify a downloaded binary:
+Every release artifact is built and published from GitHub Actions on hosted runners, and most carry signed provenance. Release binaries include [Sigstore artifact attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations). Verify a downloaded binary:
 
 ```bash
 gh attestation verify murk-v*.tar.gz --owner interrupted-inc
 ```
 
-Release tags are signed with SSH. Verify a tag:
+Release tags are signed with SSH. Verify a tag (replace `vX.Y.Z` with the release tag):
 
 ```bash
-git verify-tag v0.8.0
+git verify-tag vX.Y.Z
 ```
 
 See [VERIFYING.md](VERIFYING.md) for per-channel verification, including the npm, PyPI, and crates.io packages.
+
+### Repository automation secrets
+
+Two long-lived secrets support CI and release automation. Each must be held to the minimum scope required:
+
+- **`HOMEBREW_TAP_TOKEN`** — must be a fine-grained personal access token scoped to the `interrupted-inc/homebrew-murk` repository only, granting `contents: write` and nothing else. It is used solely by the release workflow to push the updated Homebrew formula.
+- **`CODECOV_TOKEN`** — must be a Codecov repository upload token (not a personal account token), used only to upload coverage for this repository.
+
+Workflow `GITHUB_TOKEN` permissions follow least privilege: read-only by default, elevated per job only where a step needs it (for example `id-token: write` for OIDC publishing and build provenance, `security-events: write` for code scanning).
 
 ## Supported Versions
 

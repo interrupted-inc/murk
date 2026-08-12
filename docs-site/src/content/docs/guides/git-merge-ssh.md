@@ -6,7 +6,7 @@ sidebar:
 ---
 
 `.murk` is a single JSON-ish file with encrypted values, which means a naive
-git merge on it doesn't work the way it would for plaintext: git has no
+git merge on it doesn't work the way it would for plaintext. git has no
 idea two different encrypted blobs might represent non-conflicting changes
 to different keys. murk ships its own merge driver to handle this correctly,
 plus first-class support for SSH keys as recipients so you don't need a
@@ -23,7 +23,7 @@ murk setup-merge-driver
 This configures git to use `murk merge-driver` for `.murk` files by writing
 the driver definition to `.git/config` and pointing `.murk` at it via
 `.gitattributes`. Run it once per clone (it's local git config, not
-something that travels with the repo automatically; everyone who works on
+something that travels with the repo automatically — everyone who works on
 the vault needs to run it in their own checkout).
 
 Once configured, git invokes `murk merge-driver ANCESTOR OURS THEIRS`
@@ -31,7 +31,7 @@ automatically during a merge or rebase that touches `.murk`, instead of
 falling back to a text-based three-way merge on the raw file. It merges
 non-conflicting secret changes (different keys added or changed on each
 side) automatically. It does not decide to vouch for the merged content:
-the result is left **unsigned** (`sig: null`), carrying the existing signer
+it leaves the result **unsigned** (`sig: null`), carrying the existing signer
 registry forward. Re-sign it by running any write command (e.g. `murk add`,
 `murk rotate`) with a signing-capable key after reviewing what actually
 changed:
@@ -59,7 +59,7 @@ murk circle authorize ssh:~/.ssh/id_ed25519.pub --name you@example.com
 from a GitHub account. See [working in teams](/guides/teams/) for the
 GitHub-based flow and its pinning behavior.
 
-`ssh-ed25519` keys are accepted by default. `ssh-rsa` keys are rejected
+murk accepts `ssh-ed25519` keys by default. murk rejects `ssh-rsa` keys
 unless you pass `--allow-ssh-rsa`: ed25519 is recommended, and this default
 nudges teams away from the weaker key type.
 
@@ -69,10 +69,10 @@ nudges teams away from the weaker key type.
   directly with them. The verifying key is embedded in the recipient string
   itself, so the signature is self-authenticating: no separate registry
   entry needed.
-- **`ssh-rsa`** keys cannot sign (age exposes no signing scalar for RSA), so
-  writes made with an `ssh-rsa` identity leave the vault unsigned: a
+- **`ssh-rsa`** keys cannot sign (age exposes no signing scalar for RSA).
+  Writes made with an `ssh-rsa` identity leave the vault unsigned: a
   warning on next load, not a hard failure. This is the same "sign when
-  capable" behavior hardware-backed identities have; see [hardware
+  capable" behavior hardware-backed identities have. See [hardware
   keys](/guides/hardware-keys/) and the [threat
   model](/security/threat-model/) for the full signing story.
 

@@ -17,7 +17,7 @@ for what murk protects and what it doesn't.
 over MCP, team management, and BIP39 recovery) is already in place. What 1.0
 adds is validation and stability guarantees. It ships when all of these hold:
 
-- **Vault-format stability**: 1.x reads every 0.x vault; any format change
+- **Vault-format stability**: 1.x reads every 0.x vault. Any format change
   ships with a documented, tested migration.
 - **External security review**: an independent review of the age recipient
   management and grant-scope enforcement, with findings published and addressed.
@@ -44,7 +44,7 @@ These are deliberate boundaries, not gaps waiting to be filled:
   if you need one.
 - **Custom cryptographic primitives**: murk uses [age](https://age-encryption.org/).
 - **Fine-grained cryptographic access control**: all recipients can read shared
-  secrets by design; see [grants](/concepts/grants/) for the scoped-access model
+  secrets by design. See [grants](/concepts/grants/) for the scoped-access model
   that does exist.
 - **Regulated/compliance environments**: no audit trail beyond git, no provable
   access controls.

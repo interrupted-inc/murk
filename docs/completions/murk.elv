@@ -98,7 +98,7 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand --generate 'Generate random values instead of prompting'
             cand --hex 'Output generated values as hex instead of base64'
             cand --list 'List keys needing rotation instead of rotating (exits 1 if any)'
-            cand --json 'Output the listing as JSON (with --list; always exits 0)'
+            cand --json 'Output the listing as JSON (with --list, always exits 0)'
             cand -h 'Print help'
             cand --help 'Print help'
         }
@@ -143,8 +143,8 @@ set edit:completion:arg-completer[murk] = {|@words|
         &'murk;describe'= {
             cand --example 'Example value'
             cand --tag 'Tag for grouping (repeatable, replaces existing tags)'
-            cand --rotate-every 'Rotation interval, e.g. `90d` or `90` (days); `never` clears it'
-            cand --expires 'Hard expiry date, e.g. `2026-09-01`; `never` clears it'
+            cand --rotate-every 'Rotation interval, e.g. `90d` or `90` (days). `never` clears it'
+            cand --expires 'Hard expiry date, e.g. `2026-09-01`. `never` clears it'
             cand --vault 'Vault filename'
             cand -h 'Print help'
             cand --help 'Print help'
@@ -180,8 +180,8 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand init 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely'
             cand ls 'List active agent grants and their TTLs'
             cand revoke 'Revoke an agent grant and rotate the keys it could read'
-            cand connect 'Wire `murk mcp` into an AI editor''s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors; give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it'
-            cand disconnect 'Remove murk''s entry from an AI editor''s MCP config. No CLIENT clears every configured editor; `--rotate` also revokes the grant and rotates its keys'
+            cand connect 'Wire `murk mcp` into an AI editor''s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it'
+            cand disconnect 'Remove murk''s entry from an AI editor''s MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
         &'murk;agent;plan'= {
@@ -254,8 +254,8 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand init 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely'
             cand ls 'List active agent grants and their TTLs'
             cand revoke 'Revoke an agent grant and rotate the keys it could read'
-            cand connect 'Wire `murk mcp` into an AI editor''s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors; give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it'
-            cand disconnect 'Remove murk''s entry from an AI editor''s MCP config. No CLIENT clears every configured editor; `--rotate` also revokes the grant and rotates its keys'
+            cand connect 'Wire `murk mcp` into an AI editor''s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it'
+            cand disconnect 'Remove murk''s entry from an AI editor''s MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
         &'murk;agent;help;plan'= {
@@ -550,8 +550,8 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand init 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely'
             cand ls 'List active agent grants and their TTLs'
             cand revoke 'Revoke an agent grant and rotate the keys it could read'
-            cand connect 'Wire `murk mcp` into an AI editor''s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors; give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it'
-            cand disconnect 'Remove murk''s entry from an AI editor''s MCP config. No CLIENT clears every configured editor; `--rotate` also revokes the grant and rotates its keys'
+            cand connect 'Wire `murk mcp` into an AI editor''s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it'
+            cand disconnect 'Remove murk''s entry from an AI editor''s MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys'
         }
         &'murk;help;agent;plan'= {
         }

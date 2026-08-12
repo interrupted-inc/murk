@@ -31,9 +31,9 @@ the project directory, and unset again when you leave it.
 ## Where the key lives
 
 Your private key is stored in `~/.config/murk/keys/` with restricted
-permissions, outside the repository, and is auto-discovered by the CLI based
-on the vault's absolute path, so under direnv nothing about the key needs to
-live in the repo at all; the `.envrc` just runs `murk export`. (For shells that
+permissions, outside the repository, and the CLI auto-discovers it based
+on the vault's absolute path. So under direnv nothing about the key needs to
+live in the repo at all. The `.envrc` just runs `murk export`. (For shells that
 don't use direnv, `murk init` also writes a `.env` holding a `MURK_KEY_FILE`
 *reference* to that path, never the key itself, so `source .env` works too.)
 Either way, no secret material lands in the repo directory.

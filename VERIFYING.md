@@ -7,11 +7,12 @@ per distribution channel.
 
 ## Release tag
 
-Tags are signed with SSH. Verify the tag you build from (requires the
-maintainer's public key configured as an allowed signer):
+Tags are signed with SSH. Verify the tag you build from, replacing `vX.Y.Z`
+with the release tag (requires the maintainer's public key configured as an
+allowed signer):
 
 ```bash
-git verify-tag v0.8.0
+git verify-tag vX.Y.Z
 ```
 
 ## GitHub release binaries
@@ -21,7 +22,7 @@ signed build provenance (`actions/attest-build-provenance`, Sigstore/Fulcio).
 Verify a downloaded artifact:
 
 ```bash
-gh attestation verify murk-v0.8.0-<target>.tar.gz --owner interrupted-inc
+gh attestation verify murk-<version>-<target>.tar.gz --owner interrupted-inc
 ```
 
 This confirms the artifact was produced by this repository's release workflow —
@@ -50,7 +51,7 @@ a downloaded file against its published provenance:
 ```bash
 pipx run pypi-attestations verify pypi \
   --repository https://github.com/interrupted-inc/murk \
-  pypi:murk_secrets-0.8.0-<...>.whl
+  pypi:murk_secrets-<version>-<...>.whl
 ```
 
 `pip` does not verify attestations natively yet.
@@ -60,8 +61,8 @@ pipx run pypi-attestations verify pypi \
 crates.io does not yet support artifact provenance or attestations, so there is
 nothing to attach at publish time. Trust here rests on two things:
 
-- the crate is published via crates.io **OIDC Trusted Publishing** — no
-  long-lived registry token exists to steal; and
+- the crate is published via crates.io **OIDC Trusted Publishing**, so no
+  long-lived registry token exists to steal, and
 - the release tag above is signed, and the crate is published only from that
   tagged CI run.
 

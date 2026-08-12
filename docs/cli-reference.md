@@ -209,7 +209,7 @@ Rotate secrets with new values
   Default value: `32`
 * `--hex` — Output generated values as hex instead of base64
 * `--list` — List keys needing rotation instead of rotating (exits 1 if any)
-* `--json` — Output the listing as JSON (with --list; always exits 0)
+* `--json` — Output the listing as JSON (with --list, always exits 0)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`
@@ -341,8 +341,8 @@ Add or update a key description
 
 * `--example <EXAMPLE>` — Example value
 * `--tag <TAG>` — Tag for grouping (repeatable, replaces existing tags)
-* `--rotate-every <DAYS>` — Rotation interval, e.g. `90d` or `90` (days); `never` clears it
-* `--expires <DATE>` — Hard expiry date, e.g. `2026-09-01`; `never` clears it
+* `--rotate-every <DAYS>` — Rotation interval, e.g. `90d` or `90` (days). `never` clears it
+* `--expires <DATE>` — Hard expiry date, e.g. `2026-09-01`. `never` clears it
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`
@@ -415,8 +415,8 @@ Agent-oriented commands (schema-only output for AI agent prompts)
 * `init` — One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely
 * `ls` — List active agent grants and their TTLs
 * `revoke` — Revoke an agent grant and rotate the keys it could read
-* `connect` — Wire `murk mcp` into an AI editor's MCP config, minting a scoped grant. No CLIENT auto-detects installed editors; give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it
-* `disconnect` — Remove murk's entry from an AI editor's MCP config. No CLIENT clears every configured editor; `--rotate` also revokes the grant and rotates its keys
+* `connect` — Wire `murk mcp` into an AI editor's MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it
+* `disconnect` — Remove murk's entry from an AI editor's MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys
 
 
 
@@ -533,13 +533,13 @@ Revoke an agent grant and rotate the keys it could read
 
 ## `murk agent connect`
 
-Wire `murk mcp` into an AI editor's MCP config, minting a scoped grant. No CLIENT auto-detects installed editors; give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it
+Wire `murk mcp` into an AI editor's MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it
 
 **Usage:** `murk agent connect [OPTIONS] --only <ONLY> [CLIENT]`
 
 ###### **Arguments:**
 
-* `<CLIENT>` — Editor to configure; omit to auto-detect (claude, cursor, vscode, zed, gemini, omp, codex)
+* `<CLIENT>` — Editor to configure. Omit to auto-detect (claude, cursor, vscode, zed, gemini, omp, codex)
 
 ###### **Options:**
 
@@ -560,13 +560,13 @@ Wire `murk mcp` into an AI editor's MCP config, minting a scoped grant. No CLIEN
 
 ## `murk agent disconnect`
 
-Remove murk's entry from an AI editor's MCP config. No CLIENT clears every configured editor; `--rotate` also revokes the grant and rotates its keys
+Remove murk's entry from an AI editor's MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys
 
 **Usage:** `murk agent disconnect [OPTIONS] [CLIENT]`
 
 ###### **Arguments:**
 
-* `<CLIENT>` — Editor to disconnect; omit for every configured editor
+* `<CLIENT>` — Editor to disconnect. Omit for every configured editor
 
 ###### **Options:**
 

@@ -13,7 +13,7 @@ Two separate mechanisms protect a `.murk` file: the **recipient list** controls 
 
 Display names are stored only inside the encrypted `meta` blob, never in the plaintext `recipients` list, so the pubkey-to-person mapping is itself protected, even though the existence of a pubkey isn't.
 
-`murk circle revoke RECIPIENT [--rotate]` removes a recipient's pubkey, re-encrypts shared secrets without it, and drops that recipient's private entries. **Revocation doesn't erase git history**: the revoked recipient can still decrypt any vault version they previously had access to. `--rotate` (or the interactive prompt) walks through generating new values for everything they could read; that's the only way to actually close the exposure.
+`murk circle revoke RECIPIENT [--rotate]` removes a recipient's pubkey, re-encrypts shared secrets without it, and drops that recipient's private entries. **Revocation doesn't erase git history**: the revoked recipient can still decrypt any vault version they previously had access to. `--rotate` (or the interactive prompt) walks through generating new values for everything they could read. That's the only way to actually close the exposure.
 
 ## The integrity MAC
 
@@ -27,7 +27,7 @@ murk signs the vault with Ed25519 on every save where the writer holds a signing
 
 Two identity types can sign: an **age** key (an Ed25519 key derived from the raw age key bytes via a domain-separated KDF, so the same BIP39 phrase recovers both), and an **ssh-ed25519** key (which signs directly, since the key itself is already Ed25519). `ssh-rsa` keys and hardware/plugin identities can't sign, so vaults saved with those identities are written unsigned.
 
-On load, if a signature is present, murk requires the signer to be a current recipient and the signature to match the vault's content: **a present-but-invalid signature fails the load as tampering**, not a warning. An absent signature loads with an "unsigned" warning instead; integrity then rests entirely on git. The merge driver deliberately leaves merged vaults unsigned, since resolving a merge automatically isn't the same as vouching for the result. The next person to write the vault re-signs it after reviewing `murk diff`.
+On load, if a signature is present, murk requires the signer to be a current recipient and the signature to match the vault's content: **a present-but-invalid signature fails the load as tampering**, not a warning. An absent signature loads with an "unsigned" warning instead. Integrity then rests entirely on git. The merge driver deliberately leaves merged vaults unsigned, since resolving a merge automatically isn't the same as vouching for the result. The next person to write the vault re-signs it after reviewing `murk diff`.
 
 ## Signer-registry pinning (TOFU)
 

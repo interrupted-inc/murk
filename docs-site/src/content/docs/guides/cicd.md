@@ -24,8 +24,8 @@ steps:
 ```
 
 Store your `MURK_KEY` as a GitHub Actions secret (`Settings → Secrets and
-variables → Actions`). Decrypted values are registered with GitHub's log
-masking, but masking depends on GitHub's runner behavior: it is a
+variables → Actions`). GitHub's log masking registers decrypted values,
+but masking depends on GitHub's runner behavior: it is a
 convenience, not a hard security boundary. Don't `echo` a decrypted value in
 a step if you can avoid it.
 
@@ -48,7 +48,7 @@ own ambient environment.
 ## Prefer a scoped grant over a full key
 
 Handing CI the same `MURK_KEY` a human recipient uses means CI can decrypt
-everything in the shared layer, and a leaked CI secret is as bad as a leaked
+everything in the shared layer. A leaked CI secret is as bad as a leaked
 developer key. If the job only needs a handful of secrets (deploy
 credentials, not every key in the vault), consider a short-lived, narrowly
 scoped **agent grant** instead:
@@ -63,7 +63,7 @@ MCP](/guides/ai-agents-mcp/) for the full grant/revoke lifecycle and the
 [CLI reference](/reference/cli/#murk-agent-grant) for the flag surface. The
 TTL is advisory: age keys can't self-destruct and old `.murk` versions stay
 readable in git, so it doesn't cut access on its own. Treat a CI grant the
-same way you'd treat any credential: revoke it (`murk agent revoke NAME
+same way you'd treat any credential. Revoke it (`murk agent revoke NAME
 --rotate`) once you no longer need it, and rotate what it exposed if the CI
 runner or logs might have leaked it.
 

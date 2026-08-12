@@ -9,7 +9,7 @@ A `.murk` file is a single JSON document. Every field is plaintext except the pe
 
 ## The plaintext header
 
-- **`version`**: semver. murk validates the major version on load (a vault with a different major version is rejected); minor bumps are accepted transparently.
+- **`version`**: semver. murk validates the major version on load (rejecting a vault with a different major version). It accepts minor bumps transparently.
 - **`created`, `vault_name`, `repo`**: informational metadata about the vault.
 - **`recipients`**: the list of authorized public keys (age, SSH, or hardware-plugin), and nothing else. No names or emails live here. See [Recipients & signatures](/concepts/recipients-signatures/) for where those go and why.
 - **`schema`**: one entry per key name, with a `description` and optional `example` and `tags`, plus optional lifecycle fields (`created`, `updated`, `rotation_interval_days`, `expires_at`, `revoked_at`) that `murk doctor` and `murk rotate --list` use to flag overdue or expiring credentials. This is public and readable without a key: it's what `murk info` and `murk ls` show. Key names must be valid shell identifiers.
@@ -20,10 +20,10 @@ A `.murk` file is a single JSON document. Every field is plaintext except the pe
 Each key in `secrets` carries up to three ciphertext fields, one age blob per tier:
 
 - **`shared`**: encrypted to every recipient (the `everyone` group).
-- **`scoped`**: a map of recipient pubkey → ciphertext, one entry per recipient with a private override (the `me` tier; the field is still named `scoped` on disk for backward compatibility with vaults written before that tier was renamed).
+- **`scoped`**: a map of recipient pubkey → ciphertext, one entry per recipient with a private override (the `me` tier — the field is still named `scoped` on disk for backward compatibility with vaults written before that tier was renamed).
 - **`grouped`**: a map of group name → ciphertext, for secrets whose base tier is a named group rather than `everyone`.
 
-A secret's base tier is exactly one of `shared` or a single `grouped` entry: assigning it to a named group drops any existing shared value. The private (`me`) override layers on top of whichever base tier is active. Because age determines readability from the ciphertext's recipients, a non-member of a group can't decrypt its `grouped` entry; there's no separate access check.
+A secret's base tier is exactly one of `shared` or a single `grouped` entry: assigning it to a named group drops any existing shared value. The private (`me`) override layers on top of whichever base tier is active. Because age determines readability from the ciphertext's recipients, a non-member of a group can't decrypt its `grouped` entry. There's no separate access check.
 
 ## The encrypted meta blob
 
