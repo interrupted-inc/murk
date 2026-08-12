@@ -105,7 +105,8 @@ jobs:
         if: ${{ matrix.settings.cross }}
         working-directory: node
         run: |
-          python3 -m pip install --user ziglang==0.16.0
+          python3 -m pip install --user --require-hashes --no-deps \
+            -r "$GITHUB_WORKSPACE/.github/requirements/ziglang.txt"
           mkdir -p "$HOME/.local/bin"
           printf '#!/bin/sh\nexec python3 -m ziglang "$@"\n' > "$HOME/.local/bin/zig"
           chmod +x "$HOME/.local/bin/zig"

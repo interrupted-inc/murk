@@ -30,7 +30,14 @@ jobs:
       - uses: taiki-e/install-action@f092c064826410a38929a5791d2c0225b94432fe # cargo-audit
         with:
           tool: cargo-audit
-      - run: cargo audit --ignore RUSTSEC-2023-0071
+      # Unmaintained and unsound advisories are warnings by default, but OSV
+      # counts them, so deny them here to catch drift before a scan does. The
+      # fuzz targets are a separate workspace and need their own lockfile pass.
+      - name: Audit dependencies
+        run: |
+          audit() { cargo audit --ignore RUSTSEC-2023-0071 --deny unmaintained --deny unsound "$@"; }
+          audit
+          audit --file fuzz/Cargo.lock
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"

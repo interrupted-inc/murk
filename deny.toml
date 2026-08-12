@@ -7,10 +7,6 @@ ignore = [
     # queries against a server; murk is a local CLI). Prefer ed25519 keys.
     # Revisit when the rsa crate ships a fix.
     "RUSTSEC-2023-0071",
-    # proc-macro-error2 unmaintained — build-time proc-macro dependency only,
-    # pulled in via age -> i18n-embed-fl. Not a vulnerability; no runtime code.
-    # No upstream fix path until age drops i18n-embed-fl. Revisit on age updates.
-    "RUSTSEC-2026-0173",
 ]
 
 [licenses]
