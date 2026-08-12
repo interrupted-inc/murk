@@ -22,7 +22,7 @@ Type `echo "postgres://prod:s3cr3t@db.example.com/app" | murk add DATABASE_URL -
 Enter
 Type `echo "sk_live_xyz789" | murk add STRIPE_SECRET --desc "Stripe secret key" 2>/dev/null`
 Enter
-Type `printf '#!/bin/sh\ntest -n "$DATABASE_URL" && echo "PASS — connected using DATABASE_URL" || echo "FAIL — DATABASE_URL missing"\n' > run-tests.sh`
+Type `printf '#!/bin/sh\ntest -n "$DATABASE_URL" && echo "PASS - connected using DATABASE_URL" || echo "FAIL - DATABASE_URL missing"\n' > run-tests.sh`
 Enter
 Type `chmod +x run-tests.sh`
 Enter
@@ -37,7 +37,7 @@ Type "# The agent must run the test suite, which needs DATABASE_URL."
 Enter
 Sleep 1500ms
 
-Type "# Give it that one value in the subprocess only — never your key:"
+Type "# Give it that one value in the subprocess only, never your key:"
 Enter
 Sleep 1s
 
@@ -45,11 +45,11 @@ Type "murk agent exec --only DATABASE_URL -- ./run-tests.sh"
 Enter
 Sleep 3s
 
-Type "# Tests pass. Only DATABASE_URL was injected — nothing else, and no key."
+Type "# Tests pass. Only DATABASE_URL was injected, and no key."
 Enter
 Sleep 2s
 
-Type "# The agent can't reach any other secret — no key, and out of scope:"
+Type "# It cannot reach any other secret. No key, and out of scope:"
 Enter
 Sleep 1500ms
 
@@ -57,6 +57,6 @@ Type "murk agent exec --only DATABASE_URL -- murk get STRIPE_SECRET"
 Enter
 Sleep 3s
 
-Type "# Fails closed: it got one value and no key, so every other secret is out of reach."
+Type "# Fails closed. One value, no key, nothing else in reach."
 Enter
 Sleep 2500ms

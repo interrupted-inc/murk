@@ -3991,11 +3991,24 @@ fn agent_grant_scopes_access_to_only_keys() {
         .success()
         .stdout(predicate::str::contains("sk_live_secret"));
 
-    // The agent cannot read a non-granted shared secret.
+    // The agent cannot read a non-granted shared secret, and the refusal names
+    // the real reason: the key exists (its name is in the plaintext schema, which
+    // the agent can read) but sits outside this grant's scope.
     murk(&dir, &agent_key)
         .args(["get", "DB_URL", "--vault", "test.murk"])
         .assert()
-        .failure();
+        .failure()
+        .stderr(predicate::str::contains(
+            "DB_URL is outside this grant's scope",
+        ));
+
+    // A key that genuinely does not exist still reports that, so the scoped
+    // message never masks a typo.
+    murk(&dir, &agent_key)
+        .args(["get", "NOPE", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("key not found"));
 
     // The operator sees the grant listed.
     murk(&dir, &key)

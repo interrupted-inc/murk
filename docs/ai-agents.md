@@ -29,7 +29,7 @@ murk gives agents access to secrets without exposing them in plaintext.
    murk agent plan --json     # machine-readable
    murk agent plan --tag db   # filter by tag
    ```
-   Paste the output into agent system prompts so they know what env vars exist and how to reference them, without ever seeing the values.
+   It needs no key at all, so it works anywhere the vault file is: the agent can run it itself, a harness can call the `murk_plan` MCP tool (see below), or you can drop the output into a system prompt. However it arrives, the agent learns what env vars exist and how to reference them without ever seeing a value.
 
    Reach for `murk info` when you want a fuller picture (recipients, your key source, private overrides). Reach for `murk skeleton` when you want a distributable vault file shaped like the real one but with `recipients` / `secrets` / `meta` blanked.
 
@@ -70,7 +70,7 @@ MURK_KEY_FILE=~/.config/murk/agent-keys/<...>-codex MURK_AGENT=1 \
   murk agent exec --only STRIPE_SECRET_KEY -- python scripts/refund.py
 ```
 
-The granted key reads only its keys — anything else returns "key not found". It is excluded from the shared layer entirely.
+The granted key reads only its keys — anything else fails closed with `KEY is outside this grant's scope`. That is a decryption boundary rather than a check: the grant is excluded from the shared layer entirely, so the other values were never encrypted to it in the first place.
 
 List and revoke grants:
 

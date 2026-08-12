@@ -444,7 +444,7 @@ pub enum AgentCommand {
         command: Vec<String>,
     },
 
-    /// Mint a short-lived ephemeral key that can read only the named secrets
+    /// Mint a scoped ephemeral key that can read only the named secrets
     Grant {
         /// Grant name (used to revoke it later)
         #[arg(long)]

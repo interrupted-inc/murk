@@ -189,7 +189,7 @@ test-vhs:
 	@command -v cross >/dev/null 2>&1 || { echo "error: cross not found — install with: cargo install cross --locked"; exit 1; }
 	cross build --release --target $(MUSL_TARGET)
 	@printf 'FROM ghcr.io/charmbracelet/vhs\nRUN apt-get update --allow-releaseinfo-change && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*\n' | docker build -t vhs-git -
-	@for tape in hero team offboard eve recovery github direnv mallory ssh; do \
+	@for tape in hero team offboard eve recovery github direnv mallory ssh agent agent-exec agent-scan; do \
 		printf "  %-12s" "$$tape" && \
 		docker run --rm -v $(CURDIR):/vhs -e PATH="/vhs/target/$(MUSL_TARGET)/release:$$PATH" vhs-git demo/$$tape.tape && \
 		echo "ok"; \

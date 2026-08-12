@@ -19,16 +19,18 @@ secrets exist. `murk agent plan` prints the schema — key names, descriptions,
 and tags — with no decryption and no key involved. The agent writes code and
 config against those names without seeing a value.
 
-To run a command, you mint a grant: a short-lived key that decrypts only the
-secrets you name, with a time limit. The agent runs against that grant, never
-your own key, and you can revoke it. If a task only needs `STRIPE_KEY`, that's
-the only thing the grant can read.
+To run a command, you mint a grant: an ephemeral key that decrypts only the
+secrets you name. The agent runs against that grant, never your own key, and
+you can revoke it. If a task only needs `STRIPE_KEY`, that's the only thing
+the grant can read.
 
 This narrows where secrets are exposed. It doesn't make a leak impossible: a
 command the agent runs can still print a value to its own output, and
-anything running as your user can read a grant key stored on disk. murk
-gives you least-privilege, expiring, revocable access, not a sandbox. For real isolation,
-run the agent as a separate user or in a container.
+anything running as your user can read a grant key stored on disk. A grant's
+TTL is a reminder to revoke rather than an expiry — nothing stops an old
+grant key from working until you revoke and rotate. murk gives you
+least-privilege, revocable access, not a sandbox. For real isolation, run the
+agent as a separate user or in a container.
 
 ## Rules
 
@@ -72,8 +74,10 @@ run the agent as a separate user or in a container.
    murk agent plan --tag db   # filter by tag
    ```
 
-   Paste the output into agent system prompts so they know what env vars
-   exist and how to reference them, without ever seeing the values.
+   It needs no key at all, so it works anywhere the vault file is: the agent
+   can run it itself, a harness can call the `murk_plan` MCP tool, or you can
+   drop the output into a system prompt. However it arrives, the agent learns
+   what env vars exist and how to reference them without ever seeing a value.
 
    Reach for `murk info` when you want a fuller picture (recipients, your key
    source, private overrides). Reach for `murk skeleton` when you want a
@@ -83,7 +87,7 @@ run the agent as a separate user or in a container.
    Full flags for every command here are in the [CLI reference](/reference/cli/).
 
 
-![murk agent plan: key names, descriptions, and tags, never values](/demos/agent-plan.gif)
+![murk agent plan, then a scoped grant the agent runs against: the schema has no values, and every key outside the grant is refused](/demos/agent.gif)
 
 ## Agent context
 
@@ -159,8 +163,10 @@ MURK_KEY_FILE=~/.config/murk/agent-keys/<...>-codex MURK_AGENT=1 \
   murk agent exec --only STRIPE_SECRET_KEY -- python scripts/refund.py
 ```
 
-The granted key reads only its keys. Anything else returns "key not found".
-It is excluded from the shared layer entirely.
+The granted key reads only its keys. Anything else fails closed with
+`KEY is outside this grant's scope`. That is a decryption boundary rather
+than a check: the grant is excluded from the shared layer entirely, so the
+other values were never encrypted to it in the first place.
 
 List and revoke grants:
 

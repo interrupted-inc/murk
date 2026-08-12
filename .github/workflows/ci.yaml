@@ -268,7 +268,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        tape: [hero, team, offboard, eve, recovery, github, direnv, mallory, ssh, agent-plan, agent-exec, agent-scan]
+        tape: [hero, team, offboard, eve, recovery, github, direnv, mallory, ssh, agent, agent-exec, agent-scan]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1

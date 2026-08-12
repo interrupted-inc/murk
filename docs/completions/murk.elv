@@ -176,7 +176,7 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand --help 'Print help'
             cand plan 'Emit schema-only context safe to paste into an AI agent prompt'
             cand exec 'Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only)'
-            cand grant 'Mint a short-lived ephemeral key that can read only the named secrets'
+            cand grant 'Mint a scoped ephemeral key that can read only the named secrets'
             cand init 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely'
             cand ls 'List active agent grants and their TTLs'
             cand revoke 'Revoke an agent grant and rotate the keys it could read'
@@ -250,7 +250,7 @@ set edit:completion:arg-completer[murk] = {|@words|
         &'murk;agent;help'= {
             cand plan 'Emit schema-only context safe to paste into an AI agent prompt'
             cand exec 'Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only)'
-            cand grant 'Mint a short-lived ephemeral key that can read only the named secrets'
+            cand grant 'Mint a scoped ephemeral key that can read only the named secrets'
             cand init 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely'
             cand ls 'List active agent grants and their TTLs'
             cand revoke 'Revoke an agent grant and rotate the keys it could read'
@@ -546,7 +546,7 @@ set edit:completion:arg-completer[murk] = {|@words|
         &'murk;help;agent'= {
             cand plan 'Emit schema-only context safe to paste into an AI agent prompt'
             cand exec 'Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only)'
-            cand grant 'Mint a short-lived ephemeral key that can read only the named secrets'
+            cand grant 'Mint a scoped ephemeral key that can read only the named secrets'
             cand init 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely'
             cand ls 'List active agent grants and their TTLs'
             cand revoke 'Revoke an agent grant and rotate the keys it could read'
