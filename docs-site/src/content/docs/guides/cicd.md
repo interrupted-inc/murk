@@ -50,8 +50,8 @@ own ambient environment.
 Handing CI the same `MURK_KEY` a human recipient uses means CI can decrypt
 everything in the shared layer. A leaked CI secret is as bad as a leaked
 developer key. If the job only needs a handful of secrets (deploy
-credentials, not every key in the vault), consider a short-lived, narrowly
-scoped **agent grant** instead:
+credentials, not every key in the vault), consider a narrowly scoped
+**agent grant** instead:
 
 ```bash
 murk agent grant --name ci-deploy --only DEPLOY_TOKEN --ttl 1h

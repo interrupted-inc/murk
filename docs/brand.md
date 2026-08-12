@@ -95,16 +95,17 @@ and precise. The full narrative and the security boundary live in the AI agents
 **Headline:** Let coding agents use your secrets without giving them your key.
 
 **Subhead:** Agents read the vault's schema (names and descriptions, no values)
-to write code and config. When they need to run something, you mint a
-short-lived grant scoped to only the secrets you name. They never get the key
-that decrypts everything.
+to write code and config. When they need to run something, you mint a grant
+scoped to only the secrets you name. They never get the key that decrypts
+everything.
 
 **One-liner:** Scoped, revocable secret access for coding agents.
 
 **Two-sentence pitch:** murk lets coding agents work with your secrets without
 handing over the key to your vault. They read the schema to plan, then run
-against a short-lived grant scoped to only the secrets you name.
+against a grant scoped to only the secrets you name.
 
 **Boundary line** (include wherever the claim appears): This reduces where
 secrets are exposed; it doesn't prevent a commanded process from printing one.
-It's least-privilege, not a sandbox.
+A grant's TTL is a reminder to revoke, not an expiry. It's least-privilege, not
+a sandbox.

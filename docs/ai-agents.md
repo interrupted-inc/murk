@@ -41,7 +41,7 @@ Set `MURK_AGENT=1` to tell murk it's running for an agent. In an agent context, 
 
 **Self-scoping your own key.** The allow-tag policy (see *Restricting which secrets agents can touch*, below) normally binds only agent grant keys — `murk get`/`export`/`edit` with your *own* key ignore it. Set `MURK_SELF_SCOPE=1` (agent context implies it) to hold your own reads to the policy too: `get`, `exec` (and `agent exec`), and single-key `edit KEY` fail closed on a non-allowed key; `export` withholds forbidden keys (with a note on stderr); and bulk `murk edit` is refused. Reach for it when you run an agent in your own shell and want the guardrail to actually bite — it's still the murk binary enforcing it, not a sandbox.
 
-## Short-lived agent grants
+## Scoped agent grants
 
 `murk agent exec` is the safest pattern: the agent's command gets secret *values* in its environment and never sees a key. Reach for a **grant** when the agent has to run `murk` itself over a session — for example a long-running agent that calls `murk get` as it works.
 
@@ -125,7 +125,7 @@ printf '%s\n' \
   | MURK_KEY_FILE=<grant> MURK_AGENT=1 murk mcp
 ```
 
-The transport is a local stdio pipe, not a network listener. The grant bounds which secret *values* reach the agent — the capability-not-credential model — but `murk_exec` (when enabled) runs real commands as your user, so treat it like `murk agent exec`: a safe default, not a sandbox, with OS-level isolation the real boundary (see *Short-lived agent grants* above). Harness-specific wiring (e.g. an `.omp/mcp.json` entry) lives in that harness's setup docs.
+The transport is a local stdio pipe, not a network listener. The grant bounds which secret *values* reach the agent — the capability-not-credential model — but `murk_exec` (when enabled) runs real commands as your user, so treat it like `murk agent exec`: a safe default, not a sandbox, with OS-level isolation the real boundary (see *Scoped agent grants* above). Harness-specific wiring (e.g. an `.omp/mcp.json` entry) lives in that harness's setup docs.
 
 ## Auditing agent activity
 
