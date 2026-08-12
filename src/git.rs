@@ -211,4 +211,124 @@ mod tests {
         std::env::set_current_dir(original_dir).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
     }
+
+    #[test]
+    fn last_commit_signature_unsigned_commit() {
+        let _lock = CWD_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::fs::write(dir.join("vault.murk"), "data\n").unwrap();
+        Command::new("git")
+            .args(["add", "vault.murk"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        // Explicit identity + gpgsign=false so the commit lands unsigned
+        // regardless of the runner's global git config.
+        Command::new("git")
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "add vault",
+            ])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir).unwrap();
+        let sig = last_commit_signature("vault.murk");
+        std::env::set_current_dir(original_dir).unwrap();
+
+        assert_eq!(sig, Some(CommitSignature::Unsigned));
+    }
+
+    #[test]
+    fn last_commit_signature_untracked_path_is_none() {
+        let _lock = CWD_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        // A commit exists, but for a *different* file — so `git log` succeeds
+        // with empty output for the queried path: the "no anchor" branch.
+        std::fs::write(dir.join("other.txt"), "x\n").unwrap();
+        Command::new("git")
+            .args(["add", "other.txt"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        let commit = Command::new("git")
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "seed",
+            ])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        // If the seed commit fails, `git log` would error (not return empty) and
+        // the None below would come from the wrong branch — assert it landed.
+        assert!(
+            commit.status.success(),
+            "seed commit must succeed: {}",
+            String::from_utf8_lossy(&commit.stderr)
+        );
+
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir).unwrap();
+        let sig = last_commit_signature("never-committed.murk");
+        std::env::set_current_dir(original_dir).unwrap();
+
+        assert_eq!(sig, None);
+    }
+
+    #[test]
+    fn setup_merge_driver_outside_repo_errors() {
+        let _lock = CWD_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // No `git init`: `git config` has no repo to write to and must fail,
+        // surfacing the "are you in a git repo?" guidance rather than silently
+        // claiming the merge driver was configured.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir).unwrap();
+        let result = setup_merge_driver();
+        std::env::set_current_dir(original_dir).unwrap();
+
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("git config") && err.contains("failed"),
+            "expected git-config failure guidance, got: {err}"
+        );
+    }
 }
