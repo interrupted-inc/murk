@@ -59,7 +59,7 @@ ed25519-dalek = "3"
 # features are deliberately off: we only need ed25519, and keeping RSA out avoids
 # widening the Marvin-attack surface (RUSTSEC-2023-0071, already tracked in deny.toml).
 ssh-key = { version = "0.6", default-features = false, features = ["ed25519", "alloc"] }
-constant_time_eq = "0.5"
+constant_time_eq = "0.4"
 tempfile = "3.27.0"
 clap_complete = "4.6.5"
 # Dev-only doc generation (the `doc-gen` feature + `gen-docs` bin). Optional so
