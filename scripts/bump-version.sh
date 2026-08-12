@@ -22,6 +22,11 @@ rm -f Cargo.toml.bak
 # Sync Cargo.lock to the new workspace version (and sanity-check the build).
 cargo check --quiet
 
+# The fuzz crate is a separate workspace whose lockfile pins murk-cli by path,
+# so the root `cargo check` above never touches it. `cargo metadata` re-resolves
+# and rewrites fuzz/Cargo.lock without building the nightly-only fuzz targets.
+cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null
+
 # Verify everything agrees before handing back.
 node scripts/check-versions.cjs
 echo "bumped murk to $ver"
