@@ -122,7 +122,7 @@ sandbox.
 
 ![murk agent exec: run a command with only the named secret injected, and no key](/demos/agent-exec.gif)
 
-## Short-lived agent grants
+## Scoped agent grants
 
 `murk agent exec` is the safest pattern: the agent's command gets secret
 *values* in its environment and never sees a key. Reach for a
@@ -310,7 +310,7 @@ bounds which secret *values* reach the agent (the capability-not-credential
 model). But `murk_exec` (when enabled) runs real commands as your user, so
 treat it like `murk agent exec`: a safe default, not a sandbox, with
 OS-level isolation the real boundary (see
-[Short-lived agent grants](#short-lived-agent-grants), above).
+[Scoped agent grants](#scoped-agent-grants), above).
 For an editor murk doesn't wire automatically yet, add the same `murk mcp`
 entry (with `MURK_KEY_FILE` and `MURK_AGENT=1`) to that harness's MCP config
 by hand.
