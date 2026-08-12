@@ -30,10 +30,10 @@ Every release artifact is built and published from GitHub Actions on hosted runn
 gh attestation verify murk-v*.tar.gz --owner interrupted-inc
 ```
 
-Release tags are signed with SSH. Verify a tag:
+Release tags are signed with SSH. Verify a tag (replace `vX.Y.Z` with the release tag):
 
 ```bash
-git verify-tag v0.8.0
+git verify-tag vX.Y.Z
 ```
 
 See [VERIFYING.md](VERIFYING.md) for per-channel verification, including the npm, PyPI, and crates.io packages.
