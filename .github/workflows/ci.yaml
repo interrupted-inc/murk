@@ -61,10 +61,11 @@ jobs:
         with:
           toolchain: "1.89"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      # The runner image has a current stable installed alongside the toolchain
-      # we ask for, and this check has failed on a dependency's declared
-      # rust-version — something a 1.89 cargo does not do. Which cargo actually
-      # runs here is unresolved, so record it rather than assume it.
+      # The runner image also carries a current stable, so record the pair this
+      # job really compiles with. A gate that has quietly drifted off the pinned
+      # toolchain still goes green and still tells you nothing — and the same
+      # mismatch is easy to hit locally, where a distro or Homebrew rustc can
+      # shadow the toolchain a `cargo` was launched from.
       - name: Record the toolchain this job runs
         run: |
           cargo --version
