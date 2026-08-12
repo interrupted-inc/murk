@@ -373,6 +373,33 @@ pub fn agent_key_file_path(vault_path: &str, name: &str) -> Result<std::path::Pa
     Ok(agent_keys_dir()?.join(format!("{short_hash}-{name}")))
 }
 
+/// Collapse a leading `$HOME` in `path` to `~` for display. Grant key paths live
+/// under `~/.config/murk/agent-keys/`, so the absolute form eats 30+ columns of
+/// every line that prints one — and a shell expands `~` back, so a printed
+/// command stays copy-pasteable.
+pub fn home_short(path: &str) -> String {
+    match std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+        Ok(home) => shorten_home(path, &home),
+        Err(_) => path.to_string(),
+    }
+}
+
+/// The pure prefix rule behind [`home_short`], split out so it can be tested
+/// without mutating the process environment (same shape as
+/// `hardening::effective_strict_from`). Only a whole path component matches, so
+/// `/home/mickeybob` keeps its full path when `$HOME` is `/home/mickey`.
+fn shorten_home(path: &str, home: &str) -> String {
+    let home = home.trim_end_matches('/');
+    if home.is_empty() {
+        return path.to_string();
+    }
+    match path.strip_prefix(home) {
+        Some("") => "~".to_string(),
+        Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+        _ => path.to_string(),
+    }
+}
+
 /// Return `~/.config/murk/agent-keys/`, creating it if needed (dir `0700`).
 pub fn agent_keys_dir() -> Result<std::path::PathBuf, String> {
     let home = std::env::var("HOME")
@@ -1480,5 +1507,32 @@ mod tests {
                 .is_some_and(|n| n.ends_with("-cursor")),
             "agent key file {agent_path:?} should end with the grant name"
         );
+    }
+
+    #[test]
+    fn shorten_home_collapses_only_whole_components() {
+        // The display path a grant handoff prints: $HOME becomes `~`, and a
+        // shell expands it back, so the printed command stays runnable.
+        assert_eq!(
+            shorten_home(
+                "/home/mickey/.config/murk/agent-keys/ab-codex",
+                "/home/mickey"
+            ),
+            "~/.config/murk/agent-keys/ab-codex"
+        );
+        // Exactly $HOME.
+        assert_eq!(shorten_home("/home/mickey", "/home/mickey"), "~");
+        // A trailing slash on $HOME must not leave a doubled separator.
+        assert_eq!(shorten_home("/home/mickey/k", "/home/mickey/"), "~/k");
+        // Sibling directories that merely share a prefix keep their full path —
+        // collapsing these would print a path pointing at the wrong user.
+        assert_eq!(
+            shorten_home("/home/mickeybob/k", "/home/mickey"),
+            "/home/mickeybob/k"
+        );
+        // Unrelated paths, and an empty $HOME, are passed through untouched.
+        assert_eq!(shorten_home("/etc/murk/k", "/home/mickey"), "/etc/murk/k");
+        assert_eq!(shorten_home("/home/mickey/k", ""), "/home/mickey/k");
+        assert_eq!(shorten_home("relative/k", "/home/mickey"), "relative/k");
     }
 }

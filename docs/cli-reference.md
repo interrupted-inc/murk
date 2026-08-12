@@ -411,7 +411,7 @@ Agent-oriented commands (schema-only output for AI agent prompts)
 
 * `plan` — Emit schema-only context safe to paste into an AI agent prompt
 * `exec` — Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only)
-* `grant` — Mint a short-lived ephemeral key that can read only the named secrets
+* `grant` — Mint a scoped ephemeral key that can read only the named secrets
 * `init` — One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely
 * `ls` — List active agent grants and their TTLs
 * `revoke` — Revoke an agent grant and rotate the keys it could read
@@ -458,7 +458,7 @@ Run a command with strict agent-safe defaults (clears the inherited environment,
 
 ## `murk agent grant`
 
-Mint a short-lived ephemeral key that can read only the named secrets
+Mint a scoped ephemeral key that can read only the named secrets
 
 **Usage:** `murk agent grant [OPTIONS] --name <NAME> --only <ONLY>`
 

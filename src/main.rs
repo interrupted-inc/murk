@@ -895,16 +895,31 @@ fn cmd_get(key: &str, vault_path: &str) {
 
     if let Some(value) = murk_cli::get_secret(&murk, key, &pubkey) {
         println!("{value}");
-    } else {
+        return;
+    }
+
+    // A granted agent sees every key *name* (the schema is plaintext header) but
+    // can only decrypt its scope. Saying "key not found" for a key whose name it
+    // can read is misleading — name the real reason the read failed closed.
+    let out_of_scope = murk
+        .grants
+        .values()
+        .any(|g| g.pubkey == pubkey && !g.scope.iter().any(|k| k == key));
+    if out_of_scope && vault.schema.contains_key(key) {
         die(
-            &format_args!(
-                "key not found: {}. Run {} to see available keys",
-                key.bold(),
-                "murk ls".bold()
-            ),
+            &format_args!("{} is outside this grant's scope", key.bold()),
             1,
         );
     }
+
+    die(
+        &format_args!(
+            "key not found: {}. Run {} to see available keys",
+            key.bold(),
+            "murk ls".bold()
+        ),
+        1,
+    );
 }
 
 fn cmd_ls(tags: &[String], json: bool, vault_path: &str) {
@@ -2805,7 +2820,7 @@ fn print_ttl_advisory() {
     eprintln!();
     eprintln!(
         "  {}",
-        "the TTL is advisory — run `murk agent revoke` and rotate to truly close access".dimmed()
+        "the TTL is advisory — `murk agent revoke` + rotate is the real close".dimmed()
     );
 }
 
@@ -2817,25 +2832,34 @@ fn cmd_agent_grant(name: &str, only: &[String], ttl: &str, out: Option<&str>, va
 }
 
 /// Print how to run an agent with a grant key file, and the containment caveat.
+///
+/// The run command is split across two indented lines with a shell continuation
+/// so the block fits an 80-column terminal: a grant key path is ~48 columns even
+/// with `$HOME` collapsed, and one-lining it wrapped on every real invocation.
+/// `--only` is repeated per key — clap takes one value per occurrence, so a
+/// space-joined list silently fed the extra keys to the child command.
 fn print_grant_handoff(only: &[String], key_path: &str) {
+    let key_path = murk_cli::home_short(key_path);
+    let only_args = only
+        .iter()
+        .map(|k| format!("--only {k}"))
+        .collect::<Vec<_>>()
+        .join(" ");
     eprintln!();
     eprintln!(
         "{} agent key written to {}",
         "ok".green().bold(),
         key_path.bold()
     );
+    eprintln!("  {}", "run the agent with:".dimmed());
+    eprintln!("    {}", format!("MURK_KEY_FILE={key_path} \\").dimmed());
     eprintln!(
-        "  {}",
-        format!(
-            "run the agent with: MURK_KEY_FILE={key_path} MURK_AGENT=1 murk agent exec --only {} -- <cmd>",
-            only.join(" ")
-        )
-        .dimmed()
+        "    {}",
+        format!("MURK_AGENT=1 murk agent exec {only_args} -- <cmd>").dimmed()
     );
     eprintln!(
         "  {}",
-        "for real isolation, run the agent in a sandbox that can't read ~/.config/murk/keys"
-            .dimmed()
+        "for real isolation, run it where it can't read ~/.config/murk/keys".dimmed()
     );
 }
 
@@ -3098,15 +3122,15 @@ fn print_isolation_snippet() {
     eprintln!();
     eprintln!(
         "  {}",
-        "isolation (murk is a guardrail, not a sandbox): run the command above under an".dimmed()
+        "isolation (murk is a guardrail, not a sandbox): run the command".dimmed()
     );
     eprintln!(
         "  {}",
-        "  identity that CANNOT read ~/.config/murk — a separate user or a container —".dimmed()
+        "  above as an identity that CANNOT read ~/.config/murk — a separate".dimmed()
     );
     eprintln!(
         "  {}",
-        "  with only the grant key file above made readable to it.".dimmed()
+        "  user or container — with only the grant key file readable to it.".dimmed()
     );
 }
 

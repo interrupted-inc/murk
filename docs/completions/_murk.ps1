@@ -197,7 +197,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('plan', 'plan', [CompletionResultType]::ParameterValue, 'Emit schema-only context safe to paste into an AI agent prompt')
             [CompletionResult]::new('exec', 'exec', [CompletionResultType]::ParameterValue, 'Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only)')
-            [CompletionResult]::new('grant', 'grant', [CompletionResultType]::ParameterValue, 'Mint a short-lived ephemeral key that can read only the named secrets')
+            [CompletionResult]::new('grant', 'grant', [CompletionResultType]::ParameterValue, 'Mint a scoped ephemeral key that can read only the named secrets')
             [CompletionResult]::new('init', 'init', [CompletionResultType]::ParameterValue, 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely')
             [CompletionResult]::new('ls', 'ls', [CompletionResultType]::ParameterValue, 'List active agent grants and their TTLs')
             [CompletionResult]::new('revoke', 'revoke', [CompletionResultType]::ParameterValue, 'Revoke an agent grant and rotate the keys it could read')
@@ -280,7 +280,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
         'murk;agent;help' {
             [CompletionResult]::new('plan', 'plan', [CompletionResultType]::ParameterValue, 'Emit schema-only context safe to paste into an AI agent prompt')
             [CompletionResult]::new('exec', 'exec', [CompletionResultType]::ParameterValue, 'Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only)')
-            [CompletionResult]::new('grant', 'grant', [CompletionResultType]::ParameterValue, 'Mint a short-lived ephemeral key that can read only the named secrets')
+            [CompletionResult]::new('grant', 'grant', [CompletionResultType]::ParameterValue, 'Mint a scoped ephemeral key that can read only the named secrets')
             [CompletionResult]::new('init', 'init', [CompletionResultType]::ParameterValue, 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely')
             [CompletionResult]::new('ls', 'ls', [CompletionResultType]::ParameterValue, 'List active agent grants and their TTLs')
             [CompletionResult]::new('revoke', 'revoke', [CompletionResultType]::ParameterValue, 'Revoke an agent grant and rotate the keys it could read')
@@ -647,7 +647,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
         'murk;help;agent' {
             [CompletionResult]::new('plan', 'plan', [CompletionResultType]::ParameterValue, 'Emit schema-only context safe to paste into an AI agent prompt')
             [CompletionResult]::new('exec', 'exec', [CompletionResultType]::ParameterValue, 'Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only)')
-            [CompletionResult]::new('grant', 'grant', [CompletionResultType]::ParameterValue, 'Mint a short-lived ephemeral key that can read only the named secrets')
+            [CompletionResult]::new('grant', 'grant', [CompletionResultType]::ParameterValue, 'Mint a scoped ephemeral key that can read only the named secrets')
             [CompletionResult]::new('init', 'init', [CompletionResultType]::ParameterValue, 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely')
             [CompletionResult]::new('ls', 'ls', [CompletionResultType]::ParameterValue, 'List active agent grants and their TTLs')
             [CompletionResult]::new('revoke', 'revoke', [CompletionResultType]::ParameterValue, 'Revoke an agent grant and rotate the keys it could read')
