@@ -30,9 +30,8 @@ const manifestVersion = (name) => {
   return p && p.version;
 };
 
-const lockToml = read("Cargo.lock");
-const lockVersion = (name) => {
-  const m = lockToml.match(new RegExp(`name = "${name}"\\nversion = "([^"]+)"`));
+const lockVersion = (file, name) => {
+  const m = read(file).match(new RegExp(`name = "${name}"\\nversion = "([^"]+)"`));
   return m && m[1];
 };
 
@@ -42,8 +41,13 @@ const lock = JSON.parse(read("node/package-lock.json"));
 const locations = {
   "manifest: murk-cli": manifestVersion("murk-cli"),
   "manifest: murk-napi": manifestVersion("murk-napi"),
-  "Cargo.lock: murk-cli": lockVersion("murk-cli"),
-  "Cargo.lock: murk-napi": lockVersion("murk-napi"),
+  "Cargo.lock: murk-cli": lockVersion("Cargo.lock", "murk-cli"),
+  "Cargo.lock: murk-napi": lockVersion("Cargo.lock", "murk-napi"),
+  // The fuzz crate is its own workspace with its own lockfile, and it depends
+  // on murk-cli by path — so a release bump leaves it stale unless something
+  // regenerates it. Nothing in CI passes --locked there, which is why this
+  // drifted silently from v0.10.2 to v0.10.3; catch it here instead.
+  "fuzz/Cargo.lock: murk-cli": lockVersion("fuzz/Cargo.lock", "murk-cli"),
   "node/package.json": pkg.version,
   "node/package-lock.json (root)": lock.version,
   "node/package-lock.json (packages[''])": lock.packages?.[""]?.version,
