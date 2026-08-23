@@ -143,14 +143,15 @@ complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcomm
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from exec" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l name -d 'Grant name (used to revoke it later)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l only -d 'Keys this grant can read (required — fails closed)' -r
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l ttl -d 'Time to live, e.g. 30m, 2h, 7d (advisory — see `agent revoke`)' -r
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l ttl -d 'Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l out -d 'Where to write the agent key: a path, or `-` for stdout' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l vault -d 'Vault filename' -r
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l renew -d 'Replace a live grant with this name: revoke its key, mint a fresh one'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l name -d 'Grant name (used to revoke it later)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l only -d 'Keys the agent can read (required — fails closed)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l allow-tag -d 'Set the agent allow-list to these tags before granting (repeatable)' -r
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l ttl -d 'Time to live, e.g. 30m, 2h, 7d (advisory — see `agent revoke`)' -r
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l ttl -d 'Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l out -d 'Where to write the agent key: a path, or `-` for stdout' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -s h -l help -d 'Print help'
@@ -162,7 +163,7 @@ complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcomm
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from revoke" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from connect" -l only -d 'Keys the agent may read (required — fails closed)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from connect" -l allow-tag -d 'Set the agent allow-list to these tags before granting (repeatable)' -r
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from connect" -l ttl -d 'Grant time to live, e.g. 30m, 2h, 7d (advisory — see `agent revoke`)' -r
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from connect" -l ttl -d 'Grant time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from connect" -l name -d 'Grant name (used to disconnect/revoke it later)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from connect" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from connect" -l allow-exec -d 'Also expose `murk agent exec` to the agent (adds --allow-exec)'

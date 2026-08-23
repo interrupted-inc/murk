@@ -60,8 +60,10 @@ murk agent init --name codex --only DATABASE_URL --allow-tag agents --ttl 30m
 
 ```bash
 murk agent grant --name codex --only STRIPE_SECRET_KEY --ttl 2h
-murk agent grant --name codex --only DATABASE_URL --only PG_PASSWORD --ttl 30m
+murk agent grant --name codex --only DATABASE_URL --only PG_PASSWORD --ttl 30m --renew
 ```
+
+A grant name stays unique: re-minting a live name is refused unless you pass `--renew`, which revokes the old key and mints a fresh one under the same name in a single vault write — handy when a short TTL lapses mid-session.
 
 It writes the agent key to `~/.config/murk/agent-keys/<vault-hash>-<name>` (or `--out PATH`, or `--out -` to stream it to stdout) and prints how to use it. Run the agent with that key and `MURK_AGENT=1` (agent context — strict is forced) so it won't fall back to your stored key:
 
@@ -81,7 +83,7 @@ murk agent revoke codex --rotate    # remove the grant and rotate its keys
 
 Three things to keep in mind:
 
-- **The TTL is advisory.** age keys can't self-destruct, and old vault versions stay readable in git, so a leaked grant key works until you `agent revoke` and rotate. The TTL tells you *when* to revoke; `agent ls` flags expired grants. Revoke + rotate is the real close.
+- **The TTL is enforced at read time — by murk, not cryptography.** Past its expiry a grant fails closed at every entry point (`murk get`, `agent exec`, MCP, the bindings), and `agent ls` flags it. But age keys can't self-destruct, and old vault versions stay readable in git, so a leaked grant key still decrypts history with raw age. Revoke + rotate is the real close.
 - **The key is a bearer credential.** Whoever holds the key file has the access. Treat it like the secret it unlocks.
 - **Real isolation is the OS's job.** An agent running as you, with read access to your home directory, can read `~/.config/murk/keys` directly and bypass murk. `MURK_STRICT` stops murk from *handing over* your key, but for true containment run the agent in a sandbox, container, or under a separate user that can't read your key directory.
 

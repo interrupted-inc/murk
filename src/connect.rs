@@ -229,7 +229,7 @@ fn line_indent(b: &[u8], idx: usize) -> String {
     let ws_end = b[line_start..idx]
         .iter()
         .position(|&c| c != b' ' && c != b'\t')
-        .map_or(idx - line_start, |p| p);
+        .unwrap_or(idx - line_start);
     String::from_utf8_lossy(&b[line_start..line_start + ws_end]).into_owned()
 }
 

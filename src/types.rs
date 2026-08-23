@@ -106,9 +106,10 @@ pub struct GrantEntry {
     pub scope: Vec<String>,
     /// When the grant was issued (ISO-8601 UTC).
     pub issued_at: String,
-    /// Advisory expiry (ISO-8601 UTC). `agent ls` flags grants past this; nothing
-    /// auto-revokes. age keys cannot self-destruct, so the real close is
-    /// `agent revoke` + rotate.
+    /// Expiry (ISO-8601 UTC), enforced at read time: an expired grant fails
+    /// closed at every murk entry point (CLI, MCP, bindings). age keys cannot
+    /// self-destruct, though, so the key still decrypts old `.murk` revisions
+    /// with raw age — the real close is `agent revoke` + rotate.
     pub expires_at: String,
     /// Pubkey of the recipient who issued the grant (minimal accountability).
     pub issuer: String,

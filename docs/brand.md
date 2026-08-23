@@ -95,9 +95,9 @@ and precise. The full narrative and the security boundary live in the AI agents
 **Headline:** Let coding agents use your secrets without giving them your key.
 
 **Subhead:** Agents read the vault's schema (names and descriptions, no values)
-to write code and config. When they need to run something, you mint a grant
-scoped to only the secrets you name. They never get the key that decrypts
-everything.
+to write code and config. When they need to run something, you mint a
+short-lived grant scoped to only the secrets you name. They never get the
+key that decrypts everything.
 
 **One-liner:** Scoped, revocable secret access for coding agents.
 

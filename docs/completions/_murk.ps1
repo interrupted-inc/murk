@@ -226,9 +226,10 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
         'murk;agent;grant' {
             [CompletionResult]::new('--name', '--name', [CompletionResultType]::ParameterName, 'Grant name (used to revoke it later)')
             [CompletionResult]::new('--only', '--only', [CompletionResultType]::ParameterName, 'Keys this grant can read (required — fails closed)')
-            [CompletionResult]::new('--ttl', '--ttl', [CompletionResultType]::ParameterName, 'Time to live, e.g. 30m, 2h, 7d (advisory — see `agent revoke`)')
+            [CompletionResult]::new('--ttl', '--ttl', [CompletionResultType]::ParameterName, 'Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)')
             [CompletionResult]::new('--out', '--out', [CompletionResultType]::ParameterName, 'Where to write the agent key: a path, or `-` for stdout')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
+            [CompletionResult]::new('--renew', '--renew', [CompletionResultType]::ParameterName, 'Replace a live grant with this name: revoke its key, mint a fresh one')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -237,7 +238,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             [CompletionResult]::new('--name', '--name', [CompletionResultType]::ParameterName, 'Grant name (used to revoke it later)')
             [CompletionResult]::new('--only', '--only', [CompletionResultType]::ParameterName, 'Keys the agent can read (required — fails closed)')
             [CompletionResult]::new('--allow-tag', '--allow-tag', [CompletionResultType]::ParameterName, 'Set the agent allow-list to these tags before granting (repeatable)')
-            [CompletionResult]::new('--ttl', '--ttl', [CompletionResultType]::ParameterName, 'Time to live, e.g. 30m, 2h, 7d (advisory — see `agent revoke`)')
+            [CompletionResult]::new('--ttl', '--ttl', [CompletionResultType]::ParameterName, 'Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)')
             [CompletionResult]::new('--out', '--out', [CompletionResultType]::ParameterName, 'Where to write the agent key: a path, or `-` for stdout')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
@@ -261,7 +262,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
         'murk;agent;connect' {
             [CompletionResult]::new('--only', '--only', [CompletionResultType]::ParameterName, 'Keys the agent may read (required — fails closed)')
             [CompletionResult]::new('--allow-tag', '--allow-tag', [CompletionResultType]::ParameterName, 'Set the agent allow-list to these tags before granting (repeatable)')
-            [CompletionResult]::new('--ttl', '--ttl', [CompletionResultType]::ParameterName, 'Grant time to live, e.g. 30m, 2h, 7d (advisory — see `agent revoke`)')
+            [CompletionResult]::new('--ttl', '--ttl', [CompletionResultType]::ParameterName, 'Grant time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)')
             [CompletionResult]::new('--name', '--name', [CompletionResultType]::ParameterName, 'Grant name (used to disconnect/revoke it later)')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('--allow-exec', '--allow-exec', [CompletionResultType]::ParameterName, 'Also expose `murk agent exec` to the agent (adds --allow-exec)')

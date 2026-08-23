@@ -2726,6 +2726,7 @@ fn mint_grant(
     name: &str,
     only: &[String],
     ttl: &str,
+    renew: bool,
     out: Option<&str>,
     allow_tags: Option<&[String]>,
     vault_path: &str,
@@ -2739,6 +2740,23 @@ fn mint_grant(
     let issuer = identity.pubkey_string().unwrap_or_else(|e| die(&e, 1));
     let original = murk.clone();
     let mut current = murk;
+
+    // Renewal: drop the existing grant and revoke its key before minting the
+    // replacement — one vault write covers both, so there is no window with two
+    // live keys and no partial revoke-without-regrant state on failure.
+    if renew && current.grants.contains_key(name) {
+        let old = try_or_die(murk_cli::remove_grant(&mut current, name));
+        try_or_die(murk_cli::revoke_recipient(
+            &mut vault,
+            &mut current,
+            &old.pubkey,
+        ));
+        eprintln!(
+            "{} renewing {} — its previous key is revoked",
+            "◆".magenta(),
+            name.bold()
+        );
+    }
 
     // Set the allow-list before validating scope so a single save covers both the
     // policy and the grant — no policy-without-grant partial state. (The key-file
@@ -2815,17 +2833,25 @@ fn mint_grant(
     }
 }
 
-/// The advisory printed after any grant handoff.
+/// The reminder printed after any grant handoff.
 fn print_ttl_advisory() {
     eprintln!();
     eprintln!(
         "  {}",
-        "the TTL is advisory — `murk agent revoke` + rotate is the real close".dimmed()
+        "reads fail closed after the TTL — `murk agent revoke` + rotate is still the real close"
+            .dimmed()
     );
 }
 
-fn cmd_agent_grant(name: &str, only: &[String], ttl: &str, out: Option<&str>, vault_path: &str) {
-    if let Some(path) = mint_grant(name, only, ttl, out, None, vault_path) {
+fn cmd_agent_grant(
+    name: &str,
+    only: &[String],
+    ttl: &str,
+    renew: bool,
+    out: Option<&str>,
+    vault_path: &str,
+) {
+    if let Some(path) = mint_grant(name, only, ttl, renew, out, None, vault_path) {
         print_grant_handoff(only, &path);
     }
     print_ttl_advisory();
@@ -2992,7 +3018,7 @@ fn cmd_agent_connect(
         );
         p.display().to_string()
     } else {
-        let Some(p) = mint_grant(name, only, ttl, None, allow, vault_path) else {
+        let Some(p) = mint_grant(name, only, ttl, false, None, allow, vault_path) else {
             return;
         };
         p
@@ -3108,7 +3134,7 @@ fn cmd_agent_init(
     } else {
         Some(allow_tags)
     };
-    if let Some(path) = mint_grant(name, only, ttl, out, allow, vault_path) {
+    if let Some(path) = mint_grant(name, only, ttl, false, out, allow, vault_path) {
         print_grant_handoff(only, &path);
         print_isolation_snippet();
     }
@@ -3988,12 +4014,14 @@ fn run() {
                 name,
                 only,
                 ttl,
+                renew,
                 out,
                 vault,
             } => cmd_agent_grant(
                 &name,
                 &only,
                 &ttl,
+                renew,
                 out.as_deref(),
                 &murk_cli::resolve_vault_path(&vault),
             ),

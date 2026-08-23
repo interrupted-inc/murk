@@ -452,9 +452,12 @@ pub enum AgentCommand {
         /// Keys this grant can read (required — fails closed)
         #[arg(long, required = true)]
         only: Vec<String>,
-        /// Time to live, e.g. 30m, 2h, 7d (advisory — see `agent revoke`)
+        /// Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)
         #[arg(long, default_value = "2h")]
         ttl: String,
+        /// Replace a live grant with this name: revoke its key, mint a fresh one
+        #[arg(long)]
+        renew: bool,
         /// Where to write the agent key: a path, or `-` for stdout
         #[arg(long)]
         out: Option<String>,
@@ -475,7 +478,7 @@ pub enum AgentCommand {
         /// Set the agent allow-list to these tags before granting (repeatable)
         #[arg(long = "allow-tag")]
         allow_tag: Vec<String>,
-        /// Time to live, e.g. 30m, 2h, 7d (advisory — see `agent revoke`)
+        /// Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)
         #[arg(long, default_value = "2h")]
         ttl: String,
         /// Where to write the agent key: a path, or `-` for stdout
@@ -524,7 +527,7 @@ pub enum AgentCommand {
         /// Also expose `murk agent exec` to the agent (adds --allow-exec)
         #[arg(long)]
         allow_exec: bool,
-        /// Grant time to live, e.g. 30m, 2h, 7d (advisory — see `agent revoke`)
+        /// Grant time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)
         #[arg(long, default_value = "2h")]
         ttl: String,
         /// Grant name (used to disconnect/revoke it later)

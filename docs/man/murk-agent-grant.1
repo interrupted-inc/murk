@@ -4,7 +4,7 @@
 .SH NAME
 grant \- Mint a scoped ephemeral key that can read only the named secrets
 .SH SYNOPSIS
-\fBmurk agent grant\fR [\fB\-\-ttl\fR] [\fB\-\-out\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-name\fR> <\fB\-\-only\fR> 
+\fBmurk agent grant\fR [\fB\-\-ttl\fR] [\fB\-\-renew\fR] [\fB\-\-out\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-name\fR> <\fB\-\-only\fR> 
 .SH DESCRIPTION
 Mint a scoped ephemeral key that can read only the named secrets
 .SH OPTIONS
@@ -16,7 +16,10 @@ Grant name (used to revoke it later)
 Keys this grant can read (required — fails closed)
 .TP
 \fB\-\-ttl\fR \fI<TTL>\fR [default: 2h]
-Time to live, e.g. 30m, 2h, 7d (advisory — see `agent revoke`)
+Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)
+.TP
+\fB\-\-renew\fR
+Replace a live grant with this name: revoke its key, mint a fresh one
 .TP
 \fB\-\-out\fR \fI<OUT>\fR
 Where to write the agent key: a path, or `\-` for stdout

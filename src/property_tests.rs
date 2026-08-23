@@ -339,7 +339,8 @@ fn agent_grant_reads_only_scoped_never_shared() {
             pubkey: agent.pubkey.clone(),
             scope: vec!["GRANTED".into()],
             issued_at: "2026-02-28T00:00:00Z".into(),
-            expires_at: "2026-02-28T02:00:00Z".into(),
+            // Far future: this test is about scoping; expiry has its own tests.
+            expires_at: "2200-01-01T00:00:00Z".into(),
             issuer: op.pubkey.clone(),
         },
     );

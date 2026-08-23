@@ -226,9 +226,10 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '--name=[Grant name (used to revoke it later)]:NAME:_default' \
 '*--only=[Keys this grant can read (required — fails closed)]:ONLY:_default' \
-'--ttl=[Time to live, e.g. 30m, 2h, 7d (advisory — see \`agent revoke\`)]:TTL:_default' \
+'--ttl=[Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)]:TTL:_default' \
 '--out=[Where to write the agent key\: a path, or \`-\` for stdout]:OUT:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
+'--renew[Replace a live grant with this name\: revoke its key, mint a fresh one]' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0
@@ -238,7 +239,7 @@ _arguments "${_arguments_options[@]}" : \
 '--name=[Grant name (used to revoke it later)]:NAME:_default' \
 '*--only=[Keys the agent can read (required — fails closed)]:ONLY:_default' \
 '*--allow-tag=[Set the agent allow-list to these tags before granting (repeatable)]:ALLOW_TAG:_default' \
-'--ttl=[Time to live, e.g. 30m, 2h, 7d (advisory — see \`agent revoke\`)]:TTL:_default' \
+'--ttl=[Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)]:TTL:_default' \
 '--out=[Where to write the agent key\: a path, or \`-\` for stdout]:OUT:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '-h[Print help]' \
@@ -266,7 +267,7 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '*--only=[Keys the agent may read (required — fails closed)]:ONLY:_default' \
 '*--allow-tag=[Set the agent allow-list to these tags before granting (repeatable)]:ALLOW_TAG:_default' \
-'--ttl=[Grant time to live, e.g. 30m, 2h, 7d (advisory — see \`agent revoke\`)]:TTL:_default' \
+'--ttl=[Grant time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)]:TTL:_default' \
 '--name=[Grant name (used to disconnect/revoke it later)]:NAME:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '--allow-exec[Also expose \`murk agent exec\` to the agent (adds --allow-exec)]' \

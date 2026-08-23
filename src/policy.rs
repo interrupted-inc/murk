@@ -6,12 +6,13 @@
 //! (`MURK_SELF_SCOPE`/`MURK_AGENT`). It lives in the plaintext header and is
 //! MAC-covered (see [`crate::compute_mac`]) so it can't be silently weakened.
 //!
-//! The only policy today is a tag allow-list: in agent mode a secret may be
-//! injected or granted only if it carries at least one allowed tag. Once a
-//! policy is set it is default-deny — untagged or wrong-tagged keys are refused.
+//! Two policies apply here today: a tag allow-list (in agent mode a secret may
+//! be injected or granted only if it carries an allowed tag; once a policy is
+//! set it is default-deny) and grant expiry (an agent grant past its TTL fails
+//! closed at read time, from every entry point).
 
 use crate::error::MurkError;
-use crate::types::{Murk, Policy, Vault};
+use crate::types::{GrantEntry, Murk, Policy, Vault};
 
 /// Check that every key in `keys` is permitted to agents by the vault's policy.
 ///
@@ -56,15 +57,17 @@ pub fn is_agent_identity(murk: &Murk, pubkey: &str) -> bool {
     murk.grants.values().any(|g| g.pubkey == pubkey)
 }
 
-/// Apply [`check_agent_keys`] when the caller is a granted agent, or when the
+/// Apply the agent guardrails when the caller is a granted agent, or when the
 /// operator has opted into self-scope ([`crate::hardening::self_scope`]).
 ///
 /// The library bindings (Python/Node) load a vault and read secrets directly,
 /// without the CLI's `agent exec` policy gate. This is that gate for them: when
 /// the loaded identity is an agent grant — or the caller is self-scoping — the
 /// same policy the CLI enforces at `agent exec` applies here too, so a policy
-/// vault is enforced from every entry point. For a plain operator identity with
-/// no self-scope it is a no-op, matching the CLI's ungated `get`/`export`.
+/// vault is enforced from every entry point. A granted agent is additionally
+/// held to its TTL: an expired grant fails closed before any key check. For a
+/// plain operator identity with no self-scope it is a no-op, matching the CLI's
+/// ungated `get`/`export`.
 ///
 /// The real boundary is cryptographic: an agent's ephemeral key is not a
 /// recipient of out-of-scope secrets, so it cannot decrypt them regardless. This
@@ -77,8 +80,50 @@ pub fn enforce_agent_policy(
     pubkey: &str,
     keys: &[String],
 ) -> Result<(), MurkError> {
-    if is_agent_identity(murk, pubkey) || crate::hardening::self_scope() {
+    // Check every grant bound to this pubkey, not just the first: `create_grant`
+    // refuses duplicate bindings, but a hand-built vault could carry them, and an
+    // expired duplicate must not hide behind a valid one. Fail closed on any.
+    let mut is_agent = false;
+    let now = chrono::Utc::now();
+    for (name, grant) in murk.grants.iter().filter(|(_, g)| g.pubkey == pubkey) {
+        is_agent = true;
+        check_grant_expiry(name, grant, now)?;
+    }
+    if is_agent || crate::hardening::self_scope() {
         check_agent_keys(vault, keys)?;
+    }
+    Ok(())
+}
+
+/// Refuse an expired (or unreadable) grant at read time.
+///
+/// An empty `expires_at` — a grant written before TTLs existed — is allowed. A
+/// non-empty value must parse as RFC-3339 and lie in the future: a past
+/// timestamp is expired, and an unparseable one fails closed too, because murk
+/// writes grant metadata itself, so a malformed expiry means corruption or
+/// tampering, never a formatting choice. (`agent ls` display stays lenient;
+/// this gate does not.) Like the allow-tag policy this is a binary-level
+/// guardrail, not access control: the key still decrypts old `.murk` revisions
+/// with raw age, so `agent revoke` + rotate remains the real close.
+pub(crate) fn check_grant_expiry(
+    name: &str,
+    grant: &GrantEntry,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<(), MurkError> {
+    if grant.expires_at.is_empty() {
+        return Ok(());
+    }
+    let Ok(exp) = chrono::DateTime::parse_from_rfc3339(&grant.expires_at) else {
+        return Err(MurkError::Grant(format!(
+            "grant {name} has an unreadable expiry ({:?}) — refusing to read; renew with `murk agent grant --renew` or close it with `murk agent revoke {name}`",
+            grant.expires_at
+        )));
+    };
+    if exp.with_timezone(&chrono::Utc) <= now {
+        return Err(MurkError::Grant(format!(
+            "grant {name} expired {} — renew with `murk agent grant --renew` or close it with `murk agent revoke {name}`",
+            grant.expires_at
+        )));
     }
     Ok(())
 }
@@ -110,6 +155,9 @@ mod tests {
     use crate::types::{GrantEntry, Murk, Policy, SchemaEntry, Vault};
     use std::collections::BTreeMap;
 
+    // Note: `..Default::default()` leaves `expires_at` empty — the legacy
+    // no-TTL shape, which the expiry gate deliberately allows. Tests that
+    // exercise expiry use `agent_murk_expiring`.
     fn agent_murk(pubkey: &str) -> Murk {
         let mut grants = BTreeMap::new();
         grants.insert(
@@ -123,6 +171,12 @@ mod tests {
             grants,
             ..Default::default()
         }
+    }
+
+    fn agent_murk_expiring(pubkey: &str, expires_at: &str) -> Murk {
+        let mut murk = agent_murk(pubkey);
+        murk.grants.get_mut("codex").unwrap().expires_at = expires_at.to_string();
+        murk
     }
 
     fn vault_with(tags: &[(&str, &[&str])], policy: Option<Policy>) -> Vault {
@@ -203,8 +257,51 @@ mod tests {
         assert!(!is_agent_identity(&Murk::default(), "age1agent"));
     }
 
+    /// Clear the ambient agent/self-scope env for the duration of a test, under
+    /// `ENV_LOCK`. `self_scope()` reads `MURK_AGENT`/`MURK_SELF_SCOPE` from the
+    /// process env, so operator no-op tests would fail under a shell that
+    /// exports them — most likely an AI agent's shell, working on murk itself.
+    struct OperatorEnv {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        prev_agent: Option<String>,
+        prev_self_scope: Option<String>,
+    }
+
+    impl OperatorEnv {
+        fn clear() -> Self {
+            let lock = crate::testutil::ENV_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let prev_agent = std::env::var("MURK_AGENT").ok();
+            let prev_self_scope = std::env::var("MURK_SELF_SCOPE").ok();
+            unsafe {
+                std::env::remove_var("MURK_AGENT");
+                std::env::remove_var("MURK_SELF_SCOPE");
+            }
+            Self {
+                _lock: lock,
+                prev_agent,
+                prev_self_scope,
+            }
+        }
+    }
+
+    impl Drop for OperatorEnv {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(v) = &self.prev_agent {
+                    std::env::set_var("MURK_AGENT", v);
+                }
+                if let Some(v) = &self.prev_self_scope {
+                    std::env::set_var("MURK_SELF_SCOPE", v);
+                }
+            }
+        }
+    }
+
     #[test]
     fn enforce_agent_policy_is_noop_for_operator() {
+        let _env = OperatorEnv::clear();
         // A policy that would forbid PROD_DB, but the caller is not an agent.
         let v = vault_with(&[("PROD_DB", &["production"])], Some(policy(&["agents"])));
         let operator = Murk::default();
@@ -254,5 +351,88 @@ mod tests {
         assert!(is_agent_key_allowed(&v, "TEST_KEY"));
         assert!(!is_agent_key_allowed(&v, "UNTAGGED"));
         assert!(!is_agent_key_allowed(&v, "OTHER_KEY"));
+    }
+
+    #[test]
+    fn enforce_refuses_expired_grant_even_without_policy() {
+        // No allow-tag policy at all: the TTL gate still bites.
+        let v = vault_with(&[("TEST_KEY", &["agents"])], None);
+        let agent = agent_murk_expiring("age1agent", "2000-01-01T00:00:00Z");
+        let err = enforce_agent_policy(&v, &agent, "age1agent", &["TEST_KEY".into()]).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("expired"), "unexpected message: {msg}");
+        assert!(msg.contains("codex"), "should name the grant: {msg}");
+        assert!(
+            msg.contains("agent revoke"),
+            "should point at renewal: {msg}"
+        );
+    }
+
+    #[test]
+    fn expired_duplicate_grant_cannot_hide_behind_a_valid_one() {
+        // Two grants bound to the same pubkey (only possible in a hand-built
+        // vault — `create_grant` refuses it). "aaa" sorts first and is valid;
+        // the expired "zzz" must still fail the read.
+        let v = vault_with(&[("TEST_KEY", &["agents"])], None);
+        let mut murk = agent_murk_expiring("age1agent", "2200-01-01T00:00:00Z");
+        let valid = murk.grants.remove("codex").unwrap();
+        murk.grants.insert("aaa".into(), valid);
+        murk.grants.insert(
+            "zzz".into(),
+            GrantEntry {
+                pubkey: "age1agent".into(),
+                expires_at: "2000-01-01T00:00:00Z".into(),
+                ..Default::default()
+            },
+        );
+        let err = enforce_agent_policy(&v, &murk, "age1agent", &["TEST_KEY".into()]).unwrap_err();
+        assert!(
+            err.to_string().contains("zzz"),
+            "must name the expired grant"
+        );
+    }
+
+    #[test]
+    fn enforce_allows_unexpired_grant() {
+        let v = vault_with(&[("TEST_KEY", &["agents"])], Some(policy(&["agents"])));
+        let agent = agent_murk_expiring("age1agent", "2200-01-01T00:00:00Z");
+        assert!(enforce_agent_policy(&v, &agent, "age1agent", &["TEST_KEY".into()]).is_ok());
+    }
+
+    #[test]
+    fn enforce_fails_closed_on_unreadable_expiry() {
+        // Grant metadata is written by murk itself: a malformed expiry means
+        // corruption or tampering, so the gate refuses rather than waves through.
+        let v = vault_with(&[("TEST_KEY", &["agents"])], None);
+        let agent = agent_murk_expiring("age1agent", "not-a-timestamp");
+        let err = enforce_agent_policy(&v, &agent, "age1agent", &["TEST_KEY".into()]).unwrap_err();
+        assert!(err.to_string().contains("unreadable expiry"));
+    }
+
+    #[test]
+    fn expiry_gate_does_not_touch_operators() {
+        let _env = OperatorEnv::clear();
+        // An expired grant for someone ELSE must not affect an operator read.
+        let v = vault_with(&[("TEST_KEY", &["agents"])], None);
+        let murk = agent_murk_expiring("age1agent", "2000-01-01T00:00:00Z");
+        assert!(enforce_agent_policy(&v, &murk, "age1operator", &["TEST_KEY".into()]).is_ok());
+    }
+
+    #[test]
+    fn check_grant_expiry_boundary_is_inclusive() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-06-16T02:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let grant = GrantEntry {
+            expires_at: "2026-06-16T02:00:00Z".into(),
+            ..Default::default()
+        };
+        // Exactly at the expiry instant counts as expired.
+        assert!(check_grant_expiry("codex", &grant, now).is_err());
+        let later = GrantEntry {
+            expires_at: "2026-06-16T02:00:01Z".into(),
+            ..Default::default()
+        };
+        assert!(check_grant_expiry("codex", &later, now).is_ok());
     }
 }
