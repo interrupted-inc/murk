@@ -466,9 +466,10 @@ Mint a scoped ephemeral key that can read only the named secrets
 
 * `--name <NAME>` — Grant name (used to revoke it later)
 * `--only <ONLY>` — Keys this grant can read (required — fails closed)
-* `--ttl <TTL>` — Time to live, e.g. 30m, 2h, 7d (advisory — see `agent revoke`)
+* `--ttl <TTL>` — Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)
 
   Default value: `2h`
+* `--renew` — Replace a live grant with this name: revoke its key, mint a fresh one
 * `--out <OUT>` — Where to write the agent key: a path, or `-` for stdout
 * `--vault <VAULT>` — Vault filename
 
@@ -487,7 +488,7 @@ One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, a
 * `--name <NAME>` — Grant name (used to revoke it later)
 * `--only <ONLY>` — Keys the agent can read (required — fails closed)
 * `--allow-tag <ALLOW_TAG>` — Set the agent allow-list to these tags before granting (repeatable)
-* `--ttl <TTL>` — Time to live, e.g. 30m, 2h, 7d (advisory — see `agent revoke`)
+* `--ttl <TTL>` — Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)
 
   Default value: `2h`
 * `--out <OUT>` — Where to write the agent key: a path, or `-` for stdout
@@ -546,7 +547,7 @@ Wire `murk mcp` into an AI editor's MCP config, minting a scoped grant. No CLIEN
 * `--only <ONLY>` — Keys the agent may read (required — fails closed)
 * `--allow-tag <ALLOW_TAG>` — Set the agent allow-list to these tags before granting (repeatable)
 * `--allow-exec` — Also expose `murk agent exec` to the agent (adds --allow-exec)
-* `--ttl <TTL>` — Grant time to live, e.g. 30m, 2h, 7d (advisory — see `agent revoke`)
+* `--ttl <TTL>` — Grant time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)
 
   Default value: `2h`
 * `--name <NAME>` — Grant name (used to disconnect/revoke it later)

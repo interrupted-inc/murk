@@ -50,8 +50,8 @@ own ambient environment.
 Handing CI the same `MURK_KEY` a human recipient uses means CI can decrypt
 everything in the shared layer. A leaked CI secret is as bad as a leaked
 developer key. If the job only needs a handful of secrets (deploy
-credentials, not every key in the vault), consider a narrowly scoped
-**agent grant** instead:
+credentials, not every key in the vault), consider a short-lived, narrowly
+scoped **agent grant** instead:
 
 ```bash
 murk agent grant --name ci-deploy --only DEPLOY_TOKEN --ttl 1h
@@ -60,12 +60,12 @@ murk agent grant --name ci-deploy --only DEPLOY_TOKEN --ttl 1h
 This mints a time-limited key that can only read the named secret(s). It's
 the same mechanism murk uses to scope AI agent access. See [AI agents &
 MCP](/guides/ai-agents-mcp/) for the full grant/revoke lifecycle and the
-[CLI reference](/reference/cli/#murk-agent-grant) for the flag surface. The
-TTL is advisory: age keys can't self-destruct and old `.murk` versions stay
-readable in git, so it doesn't cut access on its own. Treat a CI grant the
-same way you'd treat any credential. Revoke it (`murk agent revoke NAME
---rotate`) once you no longer need it, and rotate what it exposed if the CI
-runner or logs might have leaked it.
+[CLI reference](/reference/cli/#murk-agent-grant) for the flag surface.
+murk enforces the TTL at read time — an expired grant fails closed — but
+age keys can't self-destruct and old `.murk` versions stay readable in
+git, so treat a CI grant the same way you'd treat any credential. Revoke
+it (`murk agent revoke NAME --rotate`) once you no longer need it, and
+rotate what it exposed if the CI runner or logs might have leaked it.
 
 Whichever path you use, keep [shared vs scoped
 secrets](/guides/shared-vs-scoped/) in mind: production values used by CI

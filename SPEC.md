@@ -206,7 +206,7 @@ The `meta` field is a single age blob encrypted to all recipients. It contains:
 
 `groups` maps a group name to its member pubkeys (a subset of `recipients`). Stored here, not in the plaintext header, so org structure — who is in which group — does not leak. Members are covered by the MAC. The field is omitted entirely when the vault has no named groups, keeping group-free vaults byte-identical to pre-groups murk.
 
-`grants` maps an agent grant name to its metadata: the agent's ephemeral `pubkey` (also a `recipients` entry), the `scope` of keys it may read, `issued_at`/`expires_at` timestamps, and the `issuer` pubkey. The agent is excluded from the `everyone` layer — its access is the set of `scoped` ciphertexts encrypted to its pubkey, one per scope key. Stored here (not in the header) so an agent's existence and scope don't leak. Covered by the MAC so TTL/scope/issuer can't be altered undetected. The field is omitted entirely when the vault has no grants. The `expires_at` TTL is advisory: it is not cryptographically enforced (see THREAT_MODEL.md).
+`grants` maps an agent grant name to its metadata: the agent's ephemeral `pubkey` (also a `recipients` entry), the `scope` of keys it may read, `issued_at`/`expires_at` timestamps, and the `issuer` pubkey. The agent is excluded from the `everyone` layer — its access is the set of `scoped` ciphertexts encrypted to its pubkey, one per scope key. Stored here (not in the header) so an agent's existence and scope don't leak. Covered by the MAC so TTL/scope/issuer can't be altered undetected. The field is omitted entirely when the vault has no grants. The `expires_at` TTL is enforced by the murk binary at read time — an expired grant fails closed — though not cryptographically (see THREAT_MODEL.md).
 
 ### Integrity
 
@@ -367,9 +367,9 @@ Emits schema-only context safe to paste into an AI agent prompt — key names, d
 
 ---
 
-### `murk agent grant --name NAME --only KEY [--ttl DUR] [--out PATH] [--vault NAME]`
+### `murk agent grant --name NAME --only KEY [--ttl DUR] [--renew] [--out PATH] [--vault NAME]`
 
-Mints a fresh ephemeral age identity and gives it read access to exactly the `--only` keys (repeatable, required) — never the operator's own key. The agent becomes a recipient of the encrypted meta and gets a private (per-recipient) ciphertext of each `--only` key's shared value, but is excluded from the `everyone` layer. Records grant metadata (scope, TTL, issuer) in the encrypted meta. `--ttl` accepts `30m`/`2h`/`7d` (default `2h`); it is advisory (see THREAT_MODEL.md). The agent key is written to `~/.config/murk/agent-keys/<vault-hash>-NAME` (or `--out PATH`, or `--out -` to stream it to stdout). Run the agent with `MURK_KEY_FILE` pointing at that key and `MURK_STRICT=1` so it can't fall back to the operator's stored key.
+Mints a fresh ephemeral age identity and gives it read access to exactly the `--only` keys (repeatable, required) — never the operator's own key. The agent becomes a recipient of the encrypted meta and gets a private (per-recipient) ciphertext of each `--only` key's shared value, but is excluded from the `everyone` layer. Records grant metadata (scope, TTL, issuer) in the encrypted meta. A live grant name is refused unless `--renew` is passed, which revokes the existing key and mints the replacement in one vault write. `--ttl` accepts `30m`/`2h`/`7d` (default `2h`). Reads fail closed after expiry, though the enforcement is binary-level, not cryptographic (see THREAT_MODEL.md). The agent key is written to `~/.config/murk/agent-keys/<vault-hash>-NAME` (or `--out PATH`, or `--out -` to stream it to stdout). Run the agent with `MURK_KEY_FILE` pointing at that key and `MURK_STRICT=1` so it can't fall back to the operator's stored key.
 
 ---
 

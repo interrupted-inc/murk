@@ -19,7 +19,7 @@ Set the agent allow\-list to these tags before granting (repeatable)
 Also expose `murk agent exec` to the agent (adds \-\-allow\-exec)
 .TP
 \fB\-\-ttl\fR \fI<TTL>\fR [default: 2h]
-Grant time to live, e.g. 30m, 2h, 7d (advisory — see `agent revoke`)
+Grant time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)
 .TP
 \fB\-\-name\fR \fI<NAME>\fR [default: mcp]
 Grant name (used to disconnect/revoke it later)

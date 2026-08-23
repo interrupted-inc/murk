@@ -4019,6 +4019,134 @@ fn agent_grant_scopes_access_to_only_keys() {
 }
 
 #[test]
+fn agent_grant_fails_closed_after_ttl() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+
+    murk(&dir, &key)
+        .args(["add", "STRIPE_KEY", "--vault", "test.murk"])
+        .write_stdin("sk_live_secret\n")
+        .assert()
+        .success();
+
+    let agent_key_path = dir.path().join("agent.key");
+    murk(&dir, &key)
+        .args(["agent", "grant", "--name", "codex", "--only", "STRIPE_KEY"])
+        .args(["--ttl", "1s", "--out"])
+        .arg(&agent_key_path)
+        .args(["--vault", "test.murk"])
+        .assert()
+        .success();
+    let agent_key = read_agent_key(&agent_key_path);
+
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+
+    // Past the TTL every read with the grant key fails closed, naming the
+    // grant and pointing at re-issue. (In-TTL reads are covered by
+    // `agent_grant_scopes_access_to_only_keys`.)
+    murk(&dir, &agent_key)
+        .args(["get", "STRIPE_KEY", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("expired")
+                .and(predicate::str::contains("codex"))
+                .and(predicate::str::contains("agent revoke")),
+        );
+
+    // Someone else's expired grant never affects the operator's own reads.
+    murk(&dir, &key)
+        .args(["get", "STRIPE_KEY", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("sk_live_secret"));
+
+    // The operator can still list and revoke the expired grant.
+    murk(&dir, &key)
+        .args(["agent", "ls", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("codex").and(predicate::str::contains("expired")));
+}
+
+#[test]
+fn agent_grant_renew_replaces_grant_in_one_command() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+
+    murk(&dir, &key)
+        .args(["add", "STRIPE_KEY", "--vault", "test.murk"])
+        .write_stdin("sk_live_secret\n")
+        .assert()
+        .success();
+
+    let old_key_path = dir.path().join("agent-old.key");
+    murk(&dir, &key)
+        .args(["agent", "grant", "--name", "codex", "--only", "STRIPE_KEY"])
+        .args(["--out"])
+        .arg(&old_key_path)
+        .args(["--vault", "test.murk"])
+        .assert()
+        .success();
+    let old_key = read_agent_key(&old_key_path);
+
+    // Re-minting a live name without --renew stays refused, pointing at --renew.
+    murk(&dir, &key)
+        .args(["agent", "grant", "--name", "codex", "--only", "STRIPE_KEY"])
+        .args(["--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("grant already exists")
+                .and(predicate::str::contains("--renew")),
+        );
+
+    // One command renews: revoke the old key, mint a fresh one, same name.
+    let new_key_path = dir.path().join("agent-new.key");
+    murk(&dir, &key)
+        .args(["agent", "grant", "--name", "codex", "--only", "STRIPE_KEY"])
+        .args(["--renew", "--out"])
+        .arg(&new_key_path)
+        .args(["--vault", "test.murk"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("renewing codex"));
+    let new_key = read_agent_key(&new_key_path);
+
+    // The new key reads; the old key is fully revoked, not just descoped.
+    murk(&dir, &new_key)
+        .args(["get", "STRIPE_KEY", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("sk_live_secret"));
+    murk(&dir, &old_key)
+        .args(["get", "STRIPE_KEY", "--vault", "test.murk"])
+        .assert()
+        .failure();
+
+    // Exactly one grant named codex remains.
+    let out = murk(&dir, &key)
+        .args(["agent", "ls", "--json", "--vault", "test.murk"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout).to_string();
+    assert_eq!(
+        stdout.matches("\"codex\"").count(),
+        1,
+        "one grant: {stdout}"
+    );
+
+    // --renew on a name that does not exist yet simply creates the grant, so
+    // renewal is safe to script unconditionally.
+    murk(&dir, &key)
+        .args(["agent", "grant", "--name", "fresh", "--only", "STRIPE_KEY"])
+        .args(["--renew", "--out", "-"])
+        .args(["--vault", "test.murk"])
+        .assert()
+        .success();
+}
+
+#[test]
 fn agent_revoke_removes_grant_and_access() {
     let dir = TempDir::new().unwrap();
     let (key, _) = init_vault(&dir);

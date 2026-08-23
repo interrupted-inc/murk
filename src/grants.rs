@@ -9,10 +9,12 @@
 //! [`crate::types::Meta::grants`]) and is covered by the keyed MAC, so it cannot
 //! be tampered with undetected.
 //!
-//! The TTL is advisory: age keys cannot self-destruct and old `.murk` versions
-//! stay readable in git, so a leaked grant key works until `agent revoke` +
-//! rotate regardless of expiry. The TTL tells you *when* to revoke; `agent ls`
-//! flags grants that are past it.
+//! The TTL is enforced at read time by the murk binary: an expired grant fails
+//! closed at every entry point (CLI, MCP, bindings — see
+//! [`crate::enforce_agent_policy`]). That is a guardrail, not cryptography:
+//! age keys cannot self-destruct and old `.murk` versions stay readable in
+//! git, so a leaked grant key works against history until `agent revoke` +
+//! rotate. `agent ls` flags grants that are past their TTL.
 
 use chrono::{DateTime, Duration, Utc};
 
@@ -87,7 +89,20 @@ pub fn create_grant(
 ) -> Result<types::GrantEntry, MurkError> {
     validate_grant_name(name)?;
     if current.grants.contains_key(name) {
-        return Err(MurkError::Grant(format!("grant already exists: {name}")));
+        return Err(MurkError::Grant(format!(
+            "grant already exists: {name} — pass --renew to replace it"
+        )));
+    }
+    // One key, one grant: a pubkey shared across grants would make read-time
+    // expiry ambiguous (which TTL applies?), so refuse before mutating anything.
+    if let Some(existing) = current
+        .grants
+        .iter()
+        .find_map(|(n, g)| (g.pubkey == agent_pubkey).then_some(n))
+    {
+        return Err(MurkError::Grant(format!(
+            "agent key is already bound to grant {existing} — mint a fresh identity per grant"
+        )));
     }
     if scope.is_empty() {
         return Err(MurkError::Grant(
@@ -230,6 +245,37 @@ mod tests {
         assert!(err.to_string().contains("NOPE"));
         // Nothing recorded on failure.
         assert!(current.grants.is_empty());
+    }
+
+    #[test]
+    fn create_grant_rejects_pubkey_already_bound_to_another_grant() {
+        let mut current = murk_with(&[("STRIPE_KEY", "sk"), ("DB_URL", "pg")]);
+        let issued = Utc::now();
+        create_grant(
+            &mut current,
+            "codex",
+            "age1agent",
+            &["STRIPE_KEY".into()],
+            "age1owner",
+            issued,
+            Duration::hours(1),
+        )
+        .unwrap();
+
+        let err = create_grant(
+            &mut current,
+            "other-bot",
+            "age1agent",
+            &["DB_URL".into()],
+            "age1owner",
+            issued,
+            Duration::hours(1),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("already bound to grant codex"));
+        // Refused before mutating: no private copy staged for the second scope.
+        assert!(!current.private.contains_key("DB_URL"));
+        assert!(!current.grants.contains_key("other-bot"));
     }
 
     #[test]

@@ -431,7 +431,19 @@ pub fn decrypt_vault(
     // it skips them rather than erroring. A normal recipient that fails to decrypt
     // shared is a genuine problem (a true outsider already failed at meta
     // decryption above), so it still gets the clear "not a recipient" error.
-    let is_agent = grants.values().any(|g| g.pubkey == pubkey);
+    //
+    // A granted agent past its TTL fails closed right here, before any secret is
+    // decrypted, so every command and binding that loads a vault enforces the
+    // expiry. Every grant bound to the pubkey is checked — `create_grant` refuses
+    // duplicate bindings, but a hand-built vault could carry them, and an expired
+    // duplicate must not hide behind a valid one. Long-lived holders of decrypted
+    // state (the MCP server, bindings) re-check per read in `enforce_agent_policy`.
+    let mut is_agent = false;
+    let now = chrono::Utc::now();
+    for (name, grant) in grants.iter().filter(|(_, g)| g.pubkey == pubkey) {
+        is_agent = true;
+        policy::check_grant_expiry(name, grant, now)?;
+    }
 
     // Decrypt shared values (skip scoped-only entries with empty shared ciphertext).
     let mut values: HashMap<String, Zeroizing<String>> = HashMap::new();
