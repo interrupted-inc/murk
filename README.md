@@ -80,7 +80,7 @@ murk env
 direnv allow
 ```
 
-Your key is stored in `~/.config/murk/keys/` with restricted permissions and is auto-discovered by the CLI based on the vault's absolute path. The `.env` file in your project contains a `MURK_KEY_FILE` reference for shells that don't use direnv — no secrets in the repo directory.
+Your key is stored in `~/.config/murk/keys/` with restricted permissions and is auto-discovered by the CLI based on the vault's absolute path — including from a git worktree of the same repo, so a fresh checkout needs no setup. The `.env` file in your project contains a `MURK_KEY_FILE` reference for shells that don't use direnv — no secrets in the repo directory.
 
 Without direnv, use `murk exec`:
 

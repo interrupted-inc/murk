@@ -1927,6 +1927,152 @@ fn diff_no_git_vault_shows_all_added() {
         .stdout(predicate::str::contains("FRESH"));
 }
 
+// ── worktree key discovery ──
+
+/// Run git in `dir` with a fixed identity, asserting it succeeded.
+fn git_ok(dir: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@test.com")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@test.com")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// An original checkout holding a vault with a discovered key, plus a fresh
+/// linked worktree of it that carries only the committed vault — no `.env`,
+/// no key env, exactly what an agent harness hands you.
+///
+/// Returns `(home, repo, worktree)`.
+fn worktree_fixture(
+    base: &std::path::Path,
+) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let base = fs::canonicalize(base).unwrap();
+    let home = base.join("home");
+    let repo = base.join("repo");
+    let worktree = base.join("worktree");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&repo).unwrap();
+
+    murk_bin(&home)
+        .args(["init", "--vault", "test.murk"])
+        .current_dir(&repo)
+        .write_stdin("testuser\n")
+        .assert()
+        .success();
+
+    // No MURK_KEY here either: the original checkout also relies on the stored
+    // key, so this asserts single-checkout discovery still works.
+    murk_bin(&home)
+        .args(["add", "API_KEY", "--vault", "test.murk"])
+        .current_dir(&repo)
+        .write_stdin("s3cret\n")
+        .assert()
+        .success();
+
+    git_ok(&repo, &["init"]);
+    git_ok(&repo, &["add", "test.murk"]);
+    git_ok(&repo, &["commit", "-m", "vault"]);
+    git_ok(
+        &repo,
+        &["worktree", "add", "--detach", worktree.to_str().unwrap()],
+    );
+
+    assert!(worktree.join("test.murk").exists());
+    assert!(
+        !worktree.join(".env").exists(),
+        "a fresh worktree must not carry the original checkout's .env"
+    );
+
+    (home, repo, worktree)
+}
+
+#[test]
+fn worktree_reads_the_original_checkouts_key() {
+    let base = TempDir::new().unwrap();
+    let (home, _repo, worktree) = worktree_fixture(base.path());
+
+    murk_bin(&home)
+        .args(["get", "API_KEY", "--vault", "test.murk"])
+        .current_dir(&worktree)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("s3cret"));
+
+    murk_bin(&home)
+        .args(["export", "--vault", "test.murk"])
+        .current_dir(&worktree)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("API_KEY"));
+}
+
+#[test]
+fn worktree_key_discovery_still_fails_closed_for_agents() {
+    let base = TempDir::new().unwrap();
+    let (home, _repo, worktree) = worktree_fixture(base.path());
+
+    for var in ["MURK_AGENT", "MURK_STRICT"] {
+        murk_bin(&home)
+            .args(["get", "API_KEY", "--vault", "test.murk"])
+            .current_dir(&worktree)
+            .env(var, "1")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("MURK_KEY not set"));
+    }
+}
+
+#[test]
+fn unrelated_repo_does_not_borrow_a_vaults_key() {
+    // Discovery widens to sibling worktrees of the *same* repository. A second
+    // repo that merely holds a copy of the vault at the same relative path is
+    // not one, and must still fail closed.
+    let base = TempDir::new().unwrap();
+    let (home, repo, _worktree) = worktree_fixture(base.path());
+
+    let other = fs::canonicalize(base.path()).unwrap().join("other");
+    fs::create_dir_all(&other).unwrap();
+    fs::copy(repo.join("test.murk"), other.join("test.murk")).unwrap();
+    git_ok(&other, &["init"]);
+
+    murk_bin(&home)
+        .args(["get", "API_KEY", "--vault", "test.murk"])
+        .current_dir(&other)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("MURK_KEY not set"));
+}
+
+#[test]
+fn planted_worktree_pointer_does_not_borrow_a_vaults_key() {
+    // The sharper version of the same attack: a copied vault in a directory
+    // that claims, via a hand-written `.git` file, to be a worktree of the
+    // victim's repo. Only checkouts git itself records may borrow a key.
+    let base = TempDir::new().unwrap();
+    let (home, repo, worktree) = worktree_fixture(base.path());
+
+    let evil = fs::canonicalize(base.path()).unwrap().join("evil");
+    fs::create_dir_all(&evil).unwrap();
+    fs::copy(repo.join("test.murk"), evil.join("test.murk")).unwrap();
+    fs::copy(worktree.join(".git"), evil.join(".git")).unwrap();
+
+    murk_bin(&home)
+        .args(["get", "API_KEY", "--vault", "test.murk"])
+        .current_dir(&evil)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("MURK_KEY not set"));
+}
+
 // ── merge-driver ──
 
 /// Helper: write a vault JSON file for merge driver tests.

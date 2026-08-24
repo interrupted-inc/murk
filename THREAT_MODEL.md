@@ -89,6 +89,8 @@ murk signs the vault with an Ed25519 key so that tampering by someone with write
 
 **What crosses the boundary in plaintext:** key names, key descriptions, example values, recipient public keys, vault metadata (version, creation date, repo URL).
 
+**What the stored key is bound to.** Auto-discovery in `~/.config/murk/keys/` is keyed on the vault's absolute path, so a vault copied into another directory finds no key and fails closed — murk will not decrypt an attacker-supplied vault with your key just because it sits in your current directory. Git worktrees extend that binding, not loosen it: the same vault in a sibling checkout of the same repository resolves to the same key. Since a `.git` entry is a file any local process can write, the worktree relationship is treated as untrusted input and verified in both directions against git's own metadata — the current checkout must be one the repository records, and each sibling must point back at the same common directory. A directory that merely claims kinship gets no key. Discovery is disabled outright under `MURK_STRICT` and in agent context.
+
 ## GitHub SSH key onboarding
 
 `murk authorize github:username` fetches SSH public keys from `https://github.com/username.keys` without authentication. This introduces trust assumptions:
