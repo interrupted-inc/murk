@@ -164,6 +164,18 @@ murk import .env.rotated  # bulk-update from a file
   <img src="https://raw.githubusercontent.com/interrupted-inc/murk/demo/offboard.gif" alt="murk offboarding demo" width="900">
 </p>
 
+## Git worktrees
+
+A fresh worktree checks out tracked files and nothing else, so every gitignored `.env` you depend on is missing — the reason worktree setups usually involve copying or symlinking one in. murk needs neither: the vault is committed, so it arrives with the checkout, and the key was never in the repo. murk resolves it from a sibling checkout of the same repository.
+
+```bash
+git worktree add ../murk-feature-x
+cd ../murk-feature-x
+murk exec ./deploy.sh   # works immediately — nothing to provision
+```
+
+Only real worktrees of the repo count, verified against git's own metadata; a copy of the vault elsewhere on disk still gets nothing. Key discovery stays disabled under `MURK_STRICT` and in agent context, so an agent in a worktree still needs its own scoped grant.
+
 ## CI/CD
 
 [![GitHub Marketplace](https://img.shields.io/badge/GitHub%20Marketplace-murk--action-2ea44f?logo=github&logoColor=white)](https://github.com/marketplace/actions/murk-action)

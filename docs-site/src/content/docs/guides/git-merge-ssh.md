@@ -2,7 +2,7 @@
 title: Git merge driver & SSH
 description: Set up the merge driver and SSH-key authorization.
 sidebar:
-  order: 8
+  order: 9
 ---
 
 `.murk` is a single JSON-ish file with encrypted values, which means a naive
