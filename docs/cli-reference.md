@@ -157,6 +157,7 @@ Add or update a secret
 ###### **Options:**
 
 * `--desc <DESC>` — Description for this key
+* `--example <EXAMPLE>` — Example value
 * `--group <GROUP>` — Who can read it: a group name, `everyone` (default), or `me`
 * `--tag <TAG>` — Tag for grouping (repeatable)
 * `--vault <VAULT>` — Vault filename
@@ -182,6 +183,7 @@ Generate a random secret and store it
   Default value: `32`
 * `--hex` — Output as hex instead of base64
 * `--desc <DESC>` — Description for this key
+* `--example <EXAMPLE>` — Example value
 * `--group <GROUP>` — Who can read it: a group name, `everyone` (default), or `me`
 * `--tag <TAG>` — Tag for grouping (repeatable)
 * `--vault <VAULT>` — Vault filename
@@ -320,6 +322,7 @@ Import secrets from a .env file
 
 * `--force` — Overwrite existing secrets without prompting
 * `--group <GROUP>` — Assign imported secrets to this group (default: everyone)
+* `--example <EXAMPLE>` — Example value applied to every imported key
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`

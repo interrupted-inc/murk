@@ -1,3 +1,8 @@
+// Command handlers thread many CLI flags straight into the library's
+// multi-field secret calls, which the library already allows crate-wide
+// (see lib.rs). Apply the same policy to the binary crate.
+#![allow(clippy::too_many_arguments)]
+
 use murk_cli::cli::{
     AgentCommand, CircleCommand, Cli, Command, CompletionAction, GroupCommand, PolicyCommand,
 };
@@ -509,6 +514,7 @@ fn cmd_add(
     key: &str,
     value: &str,
     desc: Option<&str>,
+    example: Option<&str>,
     group: Option<&str>,
     scoped: bool,
     tags: &[String],
@@ -539,6 +545,7 @@ fn cmd_add(
                 key,
                 value,
                 desc,
+                example,
                 name,
                 tags,
                 &pubkey,
@@ -553,6 +560,7 @@ fn cmd_add(
                 key,
                 value,
                 desc,
+                example,
                 scoped,
                 tags,
                 &identity,
@@ -580,7 +588,13 @@ fn cmd_add(
     save_vault(vault_path, &mut vault, &original, &current);
 }
 
-fn cmd_import(file: &str, force: bool, group: Option<&str>, vault_path: &str) {
+fn cmd_import(
+    file: &str,
+    force: bool,
+    group: Option<&str>,
+    example: Option<&str>,
+    vault_path: &str,
+) {
     let tier = resolve_secret_tier(group, false);
     // Wrap the raw file contents in Zeroizing so the plaintext is wiped
     // from memory as soon as parsing completes, not when the function returns.
@@ -657,7 +671,7 @@ fn cmd_import(file: &str, force: bool, group: Option<&str>, vault_path: &str) {
     }
 
     let imported: Vec<String> = match &tier {
-        SecretTier::Everyone => murk_cli::import_secrets(&mut vault, &mut current, &pairs),
+        SecretTier::Everyone => murk_cli::import_secrets(&mut vault, &mut current, &pairs, example),
         SecretTier::Me => {
             for (key, value) in &pairs {
                 murk_cli::add_secret(
@@ -666,6 +680,7 @@ fn cmd_import(file: &str, force: bool, group: Option<&str>, vault_path: &str) {
                     key,
                     value,
                     None,
+                    example,
                     true,
                     &[],
                     &identity,
@@ -682,6 +697,7 @@ fn cmd_import(file: &str, force: bool, group: Option<&str>, vault_path: &str) {
                     key,
                     value,
                     None,
+                    example,
                     name,
                     &[],
                     &pubkey,
@@ -714,6 +730,7 @@ fn cmd_generate(
     length: usize,
     hex: bool,
     desc: Option<&str>,
+    example: Option<&str>,
     group: Option<&str>,
     tags: &[String],
     vault_path: &str,
@@ -744,6 +761,7 @@ fn cmd_generate(
                 key,
                 &value,
                 desc,
+                example,
                 name,
                 tags,
                 &pubkey,
@@ -758,6 +776,7 @@ fn cmd_generate(
                 key,
                 &value,
                 desc,
+                example,
                 scoped,
                 tags,
                 &identity,
@@ -828,6 +847,7 @@ fn cmd_rotate(
             &mut current,
             k,
             &new_value,
+            None,
             None,
             false,
             &[],
@@ -2234,6 +2254,7 @@ fn rotate_exposed(
             &mut current,
             k,
             &new_value,
+            None,
             None,
             false,
             &[],
@@ -3816,18 +3837,21 @@ fn run() {
             file,
             force,
             group,
+            example,
             vault,
         } => {
             cmd_import(
                 &file,
                 force,
                 group.as_deref(),
+                example.as_deref(),
                 &murk_cli::resolve_vault_path(&vault),
             );
         }
         Command::Add {
             key,
             desc,
+            example,
             group,
             scoped,
             tag,
@@ -3839,6 +3863,7 @@ fn run() {
                 &key,
                 &resolved,
                 desc.as_deref(),
+                example.as_deref(),
                 group.as_deref(),
                 scoped,
                 &tag,
@@ -3850,6 +3875,7 @@ fn run() {
             length,
             hex,
             desc,
+            example,
             group,
             tag,
             vault,
@@ -3858,6 +3884,7 @@ fn run() {
             length,
             hex,
             desc.as_deref(),
+            example.as_deref(),
             group.as_deref(),
             &tag,
             &murk_cli::resolve_vault_path(&vault),

@@ -430,13 +430,17 @@ _murk() {
             return 0
             ;;
         murk__subcmd__add)
-            opts="-h --desc --group --scoped --tag --vault --help"
+            opts="-h --desc --example --group --scoped --tag --vault --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
                 --desc)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --example)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -1226,7 +1230,7 @@ _murk() {
             return 0
             ;;
         murk__subcmd__generate)
-            opts="-h --length --hex --desc --group --tag --vault --help"
+            opts="-h --length --hex --desc --example --group --tag --vault --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1237,6 +1241,10 @@ _murk() {
                     return 0
                     ;;
                 --desc)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --example)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -2184,13 +2192,17 @@ _murk() {
             return 0
             ;;
         murk__subcmd__import)
-            opts="-h --force --group --vault --help"
+            opts="-h --force --group --example --vault --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
                 --group)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --example)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;

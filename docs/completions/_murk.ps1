@@ -82,6 +82,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
         }
         'murk;add' {
             [CompletionResult]::new('--desc', '--desc', [CompletionResultType]::ParameterName, 'Description for this key')
+            [CompletionResult]::new('--example', '--example', [CompletionResultType]::ParameterName, 'Example value')
             [CompletionResult]::new('--group', '--group', [CompletionResultType]::ParameterName, 'Who can read it: a group name, `everyone` (default), or `me`')
             [CompletionResult]::new('--tag', '--tag', [CompletionResultType]::ParameterName, 'Tag for grouping (repeatable)')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
@@ -93,6 +94,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
         'murk;generate' {
             [CompletionResult]::new('--length', '--length', [CompletionResultType]::ParameterName, 'Length in bytes (default 32)')
             [CompletionResult]::new('--desc', '--desc', [CompletionResultType]::ParameterName, 'Description for this key')
+            [CompletionResult]::new('--example', '--example', [CompletionResultType]::ParameterName, 'Example value')
             [CompletionResult]::new('--group', '--group', [CompletionResultType]::ParameterName, 'Who can read it: a group name, `everyone` (default), or `me`')
             [CompletionResult]::new('--tag', '--tag', [CompletionResultType]::ParameterName, 'Tag for grouping (repeatable)')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
@@ -151,6 +153,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
         }
         'murk;import' {
             [CompletionResult]::new('--group', '--group', [CompletionResultType]::ParameterName, 'Assign imported secrets to this group (default: everyone)')
+            [CompletionResult]::new('--example', '--example', [CompletionResultType]::ParameterName, 'Example value applied to every imported key')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('--force', '--force', [CompletionResultType]::ParameterName, 'Overwrite existing secrets without prompting')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')

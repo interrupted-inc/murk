@@ -65,6 +65,7 @@ complete -c murk -n "__fish_murk_using_subcommand restore" -l vault -d 'Vault fi
 complete -c murk -n "__fish_murk_using_subcommand restore" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand recover" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand add" -l desc -d 'Description for this key' -r
+complete -c murk -n "__fish_murk_using_subcommand add" -l example -d 'Example value' -r
 complete -c murk -n "__fish_murk_using_subcommand add" -l group -d 'Who can read it: a group name, `everyone` (default), or `me`' -r
 complete -c murk -n "__fish_murk_using_subcommand add" -l tag -d 'Tag for grouping (repeatable)' -r
 complete -c murk -n "__fish_murk_using_subcommand add" -l vault -d 'Vault filename' -r
@@ -72,6 +73,7 @@ complete -c murk -n "__fish_murk_using_subcommand add" -l scoped -d 'Deprecated 
 complete -c murk -n "__fish_murk_using_subcommand add" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand generate" -l length -d 'Length in bytes (default 32)' -r
 complete -c murk -n "__fish_murk_using_subcommand generate" -l desc -d 'Description for this key' -r
+complete -c murk -n "__fish_murk_using_subcommand generate" -l example -d 'Example value' -r
 complete -c murk -n "__fish_murk_using_subcommand generate" -l group -d 'Who can read it: a group name, `everyone` (default), or `me`' -r
 complete -c murk -n "__fish_murk_using_subcommand generate" -l tag -d 'Tag for grouping (repeatable)' -r
 complete -c murk -n "__fish_murk_using_subcommand generate" -l vault -d 'Vault filename' -r
@@ -102,6 +104,7 @@ complete -c murk -n "__fish_murk_using_subcommand export" -l vault -d 'Vault fil
 complete -c murk -n "__fish_murk_using_subcommand export" -l json -d 'Output as JSON'
 complete -c murk -n "__fish_murk_using_subcommand export" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand import" -l group -d 'Assign imported secrets to this group (default: everyone)' -r
+complete -c murk -n "__fish_murk_using_subcommand import" -l example -d 'Example value applied to every imported key' -r
 complete -c murk -n "__fish_murk_using_subcommand import" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand import" -l force -d 'Overwrite existing secrets without prompting'
 complete -c murk -n "__fish_murk_using_subcommand import" -s h -l help -d 'Print help'

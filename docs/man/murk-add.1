@@ -4,13 +4,16 @@
 .SH NAME
 add \- Add or update a secret
 .SH SYNOPSIS
-\fBmurk add\fR [\fB\-\-desc\fR] [\fB\-\-group\fR] [\fB\-\-tag\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIKEY\fR> 
+\fBmurk add\fR [\fB\-\-desc\fR] [\fB\-\-example\fR] [\fB\-\-group\fR] [\fB\-\-tag\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIKEY\fR> 
 .SH DESCRIPTION
 Add or update a secret
 .SH OPTIONS
 .TP
 \fB\-\-desc\fR \fI<DESC>\fR
 Description for this key
+.TP
+\fB\-\-example\fR \fI<EXAMPLE>\fR
+Example value
 .TP
 \fB\-\-group\fR \fI<GROUP>\fR
 Who can read it: a group name, `everyone` (default), or `me`

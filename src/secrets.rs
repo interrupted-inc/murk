@@ -13,6 +13,7 @@ pub fn add_secret(
     key: &str,
     value: &str,
     desc: Option<&str>,
+    example: Option<&str>,
     scoped: bool,
     tags: &[String],
     identity: &crypto::MurkIdentity,
@@ -35,7 +36,7 @@ pub fn add_secret(
             .insert(key.into(), Zeroizing::new(value.to_owned()));
     }
 
-    upsert_schema(vault, key, desc, tags)
+    upsert_schema(vault, key, desc, example, tags)
 }
 
 /// Add or update a secret encrypted to a named group. The operator must be a
@@ -49,6 +50,7 @@ pub fn add_grouped_secret(
     key: &str,
     value: &str,
     desc: Option<&str>,
+    example: Option<&str>,
     group: &str,
     tags: &[String],
     operator_pubkey: &str,
@@ -71,19 +73,28 @@ pub fn add_grouped_secret(
     entry.clear();
     entry.insert(group.into(), Zeroizing::new(value.to_owned()));
 
-    Ok(upsert_schema(vault, key, desc, tags))
+    Ok(upsert_schema(vault, key, desc, example, tags))
 }
 
 /// Insert or update the schema entry for a key, bumping `updated`. Returns true
 /// if the key was new and no description was supplied (the caller uses this to
 /// decide whether to print a "describe this key" hint).
-fn upsert_schema(vault: &mut types::Vault, key: &str, desc: Option<&str>, tags: &[String]) -> bool {
+fn upsert_schema(
+    vault: &mut types::Vault,
+    key: &str,
+    desc: Option<&str>,
+    example: Option<&str>,
+    tags: &[String],
+) -> bool {
     let is_new = !vault.schema.contains_key(key);
 
     let now = now_utc();
     if let Some(entry) = vault.schema.get_mut(key) {
         if let Some(d) = desc {
             entry.description = d.into();
+        }
+        if let Some(e) = example {
+            entry.example = Some(e.into());
         }
         if !tags.is_empty() {
             for t in tags {
@@ -101,7 +112,7 @@ fn upsert_schema(vault: &mut types::Vault, key: &str, desc: Option<&str>, tags: 
             key.into(),
             types::SchemaEntry {
                 description: desc.unwrap_or("").into(),
-                example: None,
+                example: example.map(Into::into),
                 tags: tags.to_vec(),
                 created: Some(now.clone()),
                 updated: Some(now),
@@ -173,6 +184,7 @@ pub fn import_secrets(
     vault: &mut types::Vault,
     murk: &mut types::Murk,
     pairs: &[(String, Zeroizing<String>)],
+    example: Option<&str>,
 ) -> Vec<String> {
     let now = now_utc();
     let mut imported = Vec::new();
@@ -183,6 +195,9 @@ pub fn import_secrets(
 
         if let Some(entry) = vault.schema.get_mut(key.as_str()) {
             entry.updated = Some(now.clone());
+            if let Some(e) = example {
+                entry.example = Some(e.into());
+            }
             // A value write clears any outstanding post-revoke rotation marker.
             entry.revoked_at = None;
         } else {
@@ -190,7 +205,7 @@ pub fn import_secrets(
                 key.clone(),
                 types::SchemaEntry {
                     description: String::new(),
-                    example: None,
+                    example: example.map(Into::into),
                     tags: vec![],
                     created: Some(now.clone()),
                     updated: Some(now.clone()),
@@ -398,6 +413,7 @@ mod tests {
             "KEY",
             "value",
             None,
+            None,
             false,
             &[],
             &identity,
@@ -422,6 +438,7 @@ mod tests {
             "KEY",
             "value",
             Some("a desc"),
+            None,
             false,
             &[],
             &identity,
@@ -444,6 +461,7 @@ mod tests {
             "KEY",
             "scoped_val",
             None,
+            None,
             true,
             &[],
             &identity,
@@ -462,20 +480,20 @@ mod tests {
 
         let tags1 = vec!["db".into()];
         add_secret(
-            &mut vault, &mut murk, "KEY", "v1", None, false, &tags1, &identity,
+            &mut vault, &mut murk, "KEY", "v1", None, None, false, &tags1, &identity,
         );
         assert_eq!(vault.schema["KEY"].tags, vec!["db"]);
 
         let tags2 = vec!["backend".into()];
         add_secret(
-            &mut vault, &mut murk, "KEY", "v2", None, false, &tags2, &identity,
+            &mut vault, &mut murk, "KEY", "v2", None, None, false, &tags2, &identity,
         );
         assert_eq!(vault.schema["KEY"].tags, vec!["db", "backend"]);
 
         // Adding duplicate tag should not create duplicates.
         let tags3 = vec!["db".into()];
         add_secret(
-            &mut vault, &mut murk, "KEY", "v3", None, false, &tags3, &identity,
+            &mut vault, &mut murk, "KEY", "v3", None, None, false, &tags3, &identity,
         );
         assert_eq!(vault.schema["KEY"].tags, vec!["db", "backend"]);
     }
@@ -493,6 +511,7 @@ mod tests {
             "KEY",
             "v1",
             Some("old"),
+            None,
             false,
             &[],
             &identity,
@@ -503,11 +522,79 @@ mod tests {
             "KEY",
             "v2",
             Some("new"),
+            None,
             false,
             &[],
             &identity,
         );
         assert_eq!(vault.schema["KEY"].description, "new");
+    }
+
+    #[test]
+    fn add_secret_sets_example() {
+        let (secret, _) = generate_keypair();
+        let identity = make_identity(&secret);
+        let mut vault = empty_vault();
+        let mut murk = empty_murk();
+
+        add_secret(
+            &mut vault,
+            &mut murk,
+            "KEY",
+            "value",
+            None,
+            Some("ex-value"),
+            false,
+            &[],
+            &identity,
+        );
+        assert_eq!(vault.schema["KEY"].example.as_deref(), Some("ex-value"));
+    }
+
+    #[test]
+    fn add_secret_none_example_preserves_existing() {
+        let (secret, _) = generate_keypair();
+        let identity = make_identity(&secret);
+        let mut vault = empty_vault();
+        let mut murk = empty_murk();
+
+        add_secret(
+            &mut vault,
+            &mut murk,
+            "KEY",
+            "v1",
+            None,
+            Some("keep-me"),
+            false,
+            &[],
+            &identity,
+        );
+        // A later value write that omits --example must not clear the example.
+        add_secret(
+            &mut vault,
+            &mut murk,
+            "KEY",
+            "v2",
+            None,
+            None,
+            false,
+            &[],
+            &identity,
+        );
+        assert_eq!(vault.schema["KEY"].example.as_deref(), Some("keep-me"));
+    }
+
+    #[test]
+    fn import_secrets_applies_example_to_all() {
+        let mut vault = empty_vault();
+        let mut murk = empty_murk();
+        let pairs = vec![
+            ("A".into(), Zeroizing::new("a".into())),
+            ("B".into(), Zeroizing::new("b".into())),
+        ];
+        import_secrets(&mut vault, &mut murk, &pairs, Some("shared-example"));
+        assert_eq!(vault.schema["A"].example.as_deref(), Some("shared-example"));
+        assert_eq!(vault.schema["B"].example.as_deref(), Some("shared-example"));
     }
 
     #[test]
@@ -717,6 +804,7 @@ mod tests {
             "KEY",
             "shared_val",
             None,
+            None,
             false,
             &[],
             &identity,
@@ -728,6 +816,7 @@ mod tests {
             &mut murk,
             "KEY",
             "scoped_val",
+            None,
             None,
             true,
             &[],
@@ -751,6 +840,7 @@ mod tests {
             "KEY",
             "",
             None,
+            None,
             false,
             &[],
             &identity,
@@ -767,7 +857,7 @@ mod tests {
             ("KEY1".into(), Zeroizing::new("val1".into())),
             ("KEY2".into(), Zeroizing::new("val2".into())),
         ];
-        let imported = import_secrets(&mut vault, &mut murk, &pairs);
+        let imported = import_secrets(&mut vault, &mut murk, &pairs, None);
 
         assert_eq!(imported, vec!["KEY1", "KEY2"]);
         assert_eq!(murk.values["KEY1"].as_str(), "val1");
@@ -791,7 +881,7 @@ mod tests {
         let mut murk = empty_murk();
 
         let pairs = vec![("KEY1".into(), Zeroizing::new("new_val".into()))];
-        import_secrets(&mut vault, &mut murk, &pairs);
+        import_secrets(&mut vault, &mut murk, &pairs, None);
 
         assert_eq!(murk.values["KEY1"].as_str(), "new_val");
         assert_eq!(vault.schema["KEY1"].description, "existing desc");
@@ -801,7 +891,7 @@ mod tests {
     fn import_secrets_empty() {
         let mut vault = empty_vault();
         let mut murk = empty_murk();
-        let imported = import_secrets(&mut vault, &mut murk, &[]);
+        let imported = import_secrets(&mut vault, &mut murk, &[], None);
         assert!(imported.is_empty());
     }
 
@@ -981,7 +1071,7 @@ mod tests {
             ..Default::default()
         });
         let mut murk = empty_murk();
-        import_secrets(&mut vault, &mut murk, &[("K".into(), secret("new"))]);
+        import_secrets(&mut vault, &mut murk, &[("K".into(), secret("new"))], None);
         assert_eq!(vault.schema["K"].revoked_at, None);
         assert!(rotation_health(&vault, ts("2030-01-01T00:00:00Z")).is_empty());
     }
@@ -1000,6 +1090,7 @@ mod tests {
             &mut murk,
             "K",
             "v",
+            None,
             None,
             "team",
             &[],
@@ -1036,6 +1127,7 @@ mod tests {
             &mut murk,
             "K",
             "v",
+            None,
             None,
             "team",
             &[],
