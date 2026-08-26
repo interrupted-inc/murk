@@ -13,6 +13,8 @@ Encrypted secrets manager for developers.
 murk stores encrypted secrets in a single `.murk` file designed to be committed to git. Values are encrypted with [age](https://age-encryption.org/), key names remain readable. It works with [direnv](https://direnv.net/) and supports teams — one binary, no runtime dependencies.
 
 > murk is pre-1.0 and has not been independently audited. Use good judgment with production secrets.
+>
+> Deciding whether to adopt it? See [Is murk right for you?](https://murk.interrupted.sh/suitability/) for a suitability matrix and the 0.x release contract.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/interrupted-inc/murk/demo/hero.gif" alt="murk demo" width="900">

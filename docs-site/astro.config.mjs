@@ -82,6 +82,7 @@ export default defineConfig({
       // IA per the docs-site epic. Content lives in src/content/docs/.
       sidebar: [
         { label: "Overview", link: "/" },
+        { label: "Is murk for you?", link: "/suitability/" },
         { label: "Install & verify", link: "/install/" },
         { label: "Quick start", link: "/quick-start/" },
         {
