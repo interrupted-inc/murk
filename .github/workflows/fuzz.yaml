@@ -4,9 +4,22 @@ on:
   schedule:
     - cron: "0 5 * * *" # nightly 05:00 UTC
   workflow_dispatch:
+  pull_request:
+    # Only fuzz when code that a fuzz target can actually reach changes.
+    paths:
+      - "src/**"
+      - "fuzz/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/fuzz.yaml"
 
 permissions:
   contents: read
+
+# Cancel superseded PR runs to save minutes; never cancel the nightly/manual run.
+concurrency:
+  group: fuzz-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -35,9 +48,49 @@ jobs:
       - uses: taiki-e/install-action@f092c064826410a38929a5791d2c0225b94432fe # cargo-fuzz
         with:
           tool: cargo-fuzz
+
+      # Restore the evolving corpus grown by earlier runs so coverage compounds
+      # instead of starting cold each time. The nightly run on the default branch
+      # owns the canonical corpus (it is the only event that saves it below); PR
+      # runs restore it read-only to seed their short session.
+      - name: Restore fuzz corpus
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-
+
       - name: Fuzz ${{ matrix.target }}
-        # Short per-target run; -timeout flags a single slow input as a bug.
-        run: cargo fuzz run ${{ matrix.target }} --target x86_64-unknown-linux-gnu -- -max_total_time=60 -timeout=10
+        # PRs get a short budget for fast pre-merge feedback and fail the check on
+        # any crash; the nightly/manual run fuzzes longer now that the restored
+        # corpus carries progress across runs. -timeout flags a single slow input.
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            budget=90
+          else
+            budget=300
+          fi
+          mkdir -p "fuzz/corpus/${{ matrix.target }}"
+          # Seed the corpus with the committed inputs (idempotent; hash-named).
+          if [ -d "fuzz/seeds/${{ matrix.target }}" ]; then
+            cp -n fuzz/seeds/${{ matrix.target }}/* "fuzz/corpus/${{ matrix.target }}/" 2>/dev/null || true
+          fi
+          cargo fuzz run "${{ matrix.target }}" --target x86_64-unknown-linux-gnu \
+            -- -max_total_time="$budget" -timeout=10
+
+      # Persist the grown corpus. Save only on the default branch (nightly cron
+      # or a manual dispatch from it), so that one ref owns the single canonical
+      # corpus every PR restores from. PR runs restore read-only, and dispatches
+      # from feature branches don't spawn stray per-branch caches.
+      - name: Save fuzz corpus
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+
       - name: Upload crash corpus on failure
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
