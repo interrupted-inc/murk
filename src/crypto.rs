@@ -275,8 +275,10 @@ pub fn parse_identity(input: &str) -> Result<MurkIdentity, CryptoError> {
         break;
     }
 
+    // Kept short so `✕ invalid key: …` fits an 80-column terminal; the two
+    // hints in `load_vault` carry the how-to-fix detail.
     Err(CryptoError::InvalidKey(
-        "not a valid age secret key, SSH private key, or plugin identity file".into(),
+        "not an age key, SSH private key, or plugin identity file".into(),
     ))
 }
 

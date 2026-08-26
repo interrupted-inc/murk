@@ -25,7 +25,7 @@ The environment variables murk reads, and the CLI flags they mirror where one ex
 
 | Variable | Description |
 | --- | --- |
-| `CI` | Truthy prints a one-line nudge toward the scoped-agent path when a pipeline decrypts with a personal key. Advisory only. |
+| `CI` | Truthy prints a nudge toward the scoped-agent path when a pipeline decrypts with a personal key. Advisory only. |
 | `EDITOR, VISUAL` | Editor launched by `murk edit`, checking `EDITOR` then `VISUAL`, falling back to `vi`. |
 | `XDG_RUNTIME_DIR` | Preferred (typically tmpfs) scratch location for `murk edit`'s temporary file, over `/tmp`. |
 | `HOME (USERPROFILE on Windows)` | Base directory for murk state: `~/.config/murk/keys`, `agent-keys`, and `signer-pins`. |

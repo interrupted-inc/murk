@@ -19,8 +19,19 @@ use colored::Colorize;
 mod mcp;
 
 /// Print an error message and exit with the given code.
+///
+/// A message may carry follow-up guidance on additional lines: the first line
+/// is the error itself, and every line after it renders as an indented `hint`
+/// (see `docs/cli-style.md`). Splitting here keeps presentation out of the
+/// library — an error stays plain text with no prefixes or color baked in —
+/// and leaves a narrow terminal one short line to wrap instead of a paragraph.
 fn die(msg: &dyn std::fmt::Display, code: i32) -> ! {
-    eprintln!("{} {msg}", "✕".red());
+    let text = msg.to_string();
+    let mut lines = text.lines();
+    eprintln!("{} {}", "✕".red(), lines.next().unwrap_or_default());
+    for hint in lines {
+        eprintln!("  {} {hint}", "hint".cyan().bold());
+    }
     process::exit(code);
 }
 
@@ -266,9 +277,14 @@ fn maybe_nudge_agent_path(vault: &str) {
     if let Ok((_, murk_cli::KeySource::Auto(_))) = murk_cli::resolve_key_with_source(vault) {
         NUDGE.call_once(|| {
             eprintln!(
-                "{} CI is using your personal stored key — prefer a scoped `murk agent grant` + `MURK_AGENT=1`, or `murk agent exec` (see docs/ai-agents.md)",
-                "hint".dimmed()
+                "{} CI is decrypting with your personal key",
+                "hint".cyan().bold()
             );
+            eprintln!(
+                "  {}",
+                "prefer a scoped `murk agent grant` + MURK_AGENT=1, or `murk agent exec`".dimmed()
+            );
+            eprintln!("  {}", "see docs/ai-agents.md".dimmed());
         });
     }
 }

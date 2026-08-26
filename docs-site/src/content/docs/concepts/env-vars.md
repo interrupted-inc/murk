@@ -36,7 +36,7 @@ A few standard variables shape specific commands, without being murk-specific co
 
 | Variable | Description |
 | --- | --- |
-| `CI` | If truthy (the conventional CI-runner convention), murk prints a one-line nudge in its output toward the scoped-agent path when it sees a pipeline decrypting with a personal key. Advisory only: unlike `MURK_AGENT`, it doesn't change behavior on its own. |
+| `CI` | If truthy (the conventional CI-runner convention), murk prints a nudge in its output toward the scoped-agent path when it sees a pipeline decrypting with a personal key. Advisory only: unlike `MURK_AGENT`, it doesn't change behavior on its own. |
 | `EDITOR`, `VISUAL` | `murk edit` opens this editor for interactive edits, checking `EDITOR` then `VISUAL`, falling back to `vi` if neither is set. |
 | `XDG_RUNTIME_DIR` | Preferred over `/tmp` as the scratch location for `murk edit`'s temporary file, when it exists and is a directory. It's typically tmpfs, so the plaintext buffer never touches persistent storage. |
 | `HOME` (`USERPROFILE` on Windows) | Base directory for murk's own state: `~/.config/murk/keys`, `~/.config/murk/agent-keys`, and `~/.config/murk/signer-pins`. |

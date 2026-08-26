@@ -146,10 +146,18 @@ pub fn resolve_key_with_source(vault_path: &str) -> Result<(SecretString, KeySou
         let contents = read_secret_file(&path, "key file")?;
         return Ok((SecretString::from(contents), KeySource::Auto(path)));
     }
-    Err(
-        "MURK_KEY not set. Run `murk init` to generate a key, set MURK_KEY_FILE to point at one, or ask a recipient to authorize you. If your .env contains an inline MURK_KEY or MURK_KEY_FILE, run `direnv allow` (or `source .env`) so it is exported to the environment — murk no longer reads .env directly."
-            .into(),
-    )
+    // One short summary line, then one action per line. The CLI renders each
+    // trailing line as an indented `hint` (see `main::die`), so this must stay
+    // plain text — and each line must fit a narrow terminal on its own, which
+    // the previous single 330-character paragraph did not.
+    Err([
+        "MURK_KEY not set",
+        "run `murk init` to generate a key",
+        "or point MURK_KEY_FILE at an existing key file",
+        "or ask a recipient to authorize your public key",
+        "a key in .env needs `direnv allow` — murk does not read .env itself",
+    ]
+    .join("\n"))
 }
 
 /// Resolve the secret key for a specific vault.

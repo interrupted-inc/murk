@@ -523,8 +523,9 @@ pub fn load_vault(
     let secret_key = env::resolve_key_for_vault(vault_path).map_err(MurkError::Key)?;
 
     let identity = crypto::parse_identity(secret_key.expose_secret()).map_err(|e| {
+        // Same shape as the not-set error: summary first, one action per line.
         MurkError::Key(format!(
-            "{e}. For age keys, set MURK_KEY. For SSH keys, set MURK_KEY_FILE=~/.ssh/id_ed25519"
+            "{e}\nfor an age key, set MURK_KEY\nfor an SSH key, set MURK_KEY_FILE=~/.ssh/id_ed25519"
         ))
     })?;
 

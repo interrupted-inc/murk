@@ -1344,6 +1344,73 @@ fn export_without_key_fails() {
         .stderr(predicate::str::contains("MURK_KEY not set"));
 }
 
+/// Assert a fatal error renders as one short summary line plus `hint` lines,
+/// none of which wraps on an 80-column terminal.
+///
+/// Both key-resolution errors used to be single sentences of ~330 and ~85
+/// characters, which wrapped mid-word — including on camera in the demo GIFs.
+fn assert_narrow_error(stderr: &str, summary: &str) {
+    let lines: Vec<&str> = stderr.lines().collect();
+
+    assert!(
+        lines[0].contains(summary),
+        "the summary must be the first line, got: {stderr}"
+    );
+    assert!(
+        lines.len() > 1,
+        "the guidance must survive as hints, got: {stderr}"
+    );
+    assert!(
+        lines
+            .iter()
+            .skip(1)
+            .all(|l| l.trim_start().starts_with("hint")),
+        "every line after the summary must be a hint, got: {stderr}"
+    );
+    // Counted in characters, not bytes: the hints contain an em dash.
+    for line in &lines {
+        assert!(
+            line.chars().count() <= 80,
+            "line exceeds an 80-column terminal ({} cols): {line}",
+            line.chars().count()
+        );
+    }
+}
+
+#[test]
+fn key_not_set_error_fits_a_narrow_terminal() {
+    let dir = TempDir::new().unwrap();
+    init_vault(&dir);
+    fs::remove_file(dir.path().join(".env")).ok();
+    let fake_home = TempDir::new().unwrap();
+
+    let assertion = murk_bin(fake_home.path())
+        .args(["get", "X", "--vault", "test.murk"])
+        .current_dir(dir.path())
+        .assert()
+        .failure();
+    let stderr = String::from_utf8(assertion.get_output().stderr.clone()).unwrap();
+
+    assert_narrow_error(&stderr, "MURK_KEY not set");
+}
+
+#[test]
+fn invalid_key_error_fits_a_narrow_terminal() {
+    let dir = TempDir::new().unwrap();
+    init_vault(&dir);
+    let fake_home = TempDir::new().unwrap();
+
+    let assertion = murk_bin(fake_home.path())
+        .args(["get", "X", "--vault", "test.murk"])
+        .current_dir(dir.path())
+        .env("MURK_KEY", "definitely-not-a-key")
+        .assert()
+        .failure();
+    let stderr = String::from_utf8(assertion.get_output().stderr.clone()).unwrap();
+
+    assert_narrow_error(&stderr, "invalid key");
+}
+
 // ── no vault file scenarios ──
 
 #[test]
