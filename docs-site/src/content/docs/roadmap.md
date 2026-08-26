@@ -10,6 +10,9 @@ with real usage. The 0.x line is a public beta: safe to use with good judgment,
 not yet independently audited. See the [threat model](/security/threat-model/)
 for what murk protects and what it doesn't.
 
+For who murk is for, who should use SOPS or Vault instead, and what the 0.x
+beta promises, see [Is murk right for you?](/suitability/).
+
 ## Toward 1.0
 
 1.0 is a **trust milestone, not a feature milestone.** The feature set
