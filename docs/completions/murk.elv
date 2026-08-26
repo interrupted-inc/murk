@@ -74,6 +74,7 @@ set edit:completion:arg-completer[murk] = {|@words|
         }
         &'murk;add'= {
             cand --desc 'Description for this key'
+            cand --example 'Example value'
             cand --group 'Who can read it: a group name, `everyone` (default), or `me`'
             cand --tag 'Tag for grouping (repeatable)'
             cand --vault 'Vault filename'
@@ -84,6 +85,7 @@ set edit:completion:arg-completer[murk] = {|@words|
         &'murk;generate'= {
             cand --length 'Length in bytes (default 32)'
             cand --desc 'Description for this key'
+            cand --example 'Example value'
             cand --group 'Who can read it: a group name, `everyone` (default), or `me`'
             cand --tag 'Tag for grouping (repeatable)'
             cand --vault 'Vault filename'
@@ -135,6 +137,7 @@ set edit:completion:arg-completer[murk] = {|@words|
         }
         &'murk;import'= {
             cand --group 'Assign imported secrets to this group (default: everyone)'
+            cand --example 'Example value applied to every imported key'
             cand --vault 'Vault filename'
             cand --force 'Overwrite existing secrets without prompting'
             cand -h 'Print help'

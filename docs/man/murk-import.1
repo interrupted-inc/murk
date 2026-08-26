@@ -4,7 +4,7 @@
 .SH NAME
 import \- Import secrets from a .env file
 .SH SYNOPSIS
-\fBmurk import\fR [\fB\-\-force\fR] [\fB\-\-group\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIFILE\fR] 
+\fBmurk import\fR [\fB\-\-force\fR] [\fB\-\-group\fR] [\fB\-\-example\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIFILE\fR] 
 .SH DESCRIPTION
 Import secrets from a .env file
 .SH OPTIONS
@@ -14,6 +14,9 @@ Overwrite existing secrets without prompting
 .TP
 \fB\-\-group\fR \fI<GROUP>\fR
 Assign imported secrets to this group (default: everyone)
+.TP
+\fB\-\-example\fR \fI<EXAMPLE>\fR
+Example value applied to every imported key
 .TP
 \fB\-\-vault\fR \fI<VAULT>\fR [default: .murk]
 Vault filename

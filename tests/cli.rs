@@ -2895,6 +2895,39 @@ fn skeleton_strips_secrets_and_recipients() {
 }
 
 #[test]
+fn agent_plan_shows_example_set_by_add() {
+    // `add --example` must set the schema example in a single command, with no
+    // follow-up `describe` — and surface it in `agent plan` exactly like describe.
+    let dir = TempDir::new().unwrap();
+    let (key, _pubkey) = init_vault(&dir);
+
+    murk(&dir, &key)
+        .args([
+            "add",
+            "DB_URL",
+            "--desc",
+            "Primary database",
+            "--example",
+            "postgres://localhost/db",
+            "--vault",
+            "test.murk",
+        ])
+        .write_stdin("postgres://prod\n")
+        .assert()
+        .success();
+
+    let json_out = murk(&dir, &key)
+        .args(["agent", "plan", "--json", "--vault", "test.murk"])
+        .output()
+        .unwrap();
+    assert!(json_out.status.success());
+
+    let plan: serde_json::Value = serde_json::from_slice(&json_out.stdout).unwrap();
+    assert_eq!(plan["entries"][0]["key"], "DB_URL");
+    assert_eq!(plan["entries"][0]["example"], "postgres://localhost/db");
+}
+
+#[test]
 fn agent_plan_emits_schema_only() {
     let dir = TempDir::new().unwrap();
     let (key, pubkey) = init_vault(&dir);

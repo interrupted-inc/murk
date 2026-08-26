@@ -48,6 +48,9 @@ pub enum Command {
         /// Description for this key
         #[arg(long)]
         desc: Option<String>,
+        /// Example value
+        #[arg(long)]
+        example: Option<String>,
         /// Who can read it: a group name, `everyone` (default), or `me`
         #[arg(long)]
         group: Option<String>,
@@ -75,6 +78,9 @@ pub enum Command {
         /// Description for this key
         #[arg(long)]
         desc: Option<String>,
+        /// Example value
+        #[arg(long)]
+        example: Option<String>,
         /// Who can read it: a group name, `everyone` (default), or `me`
         #[arg(long)]
         group: Option<String>,
@@ -183,6 +189,9 @@ pub enum Command {
         /// Assign imported secrets to this group (default: everyone)
         #[arg(long)]
         group: Option<String>,
+        /// Example value applied to every imported key
+        #[arg(long)]
+        example: Option<String>,
         /// Vault filename
         #[arg(long, env = "MURK_VAULT", default_value = ".murk")]
         vault: String,

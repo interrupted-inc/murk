@@ -4,7 +4,7 @@
 .SH NAME
 generate \- Generate a random secret and store it
 .SH SYNOPSIS
-\fBmurk generate\fR [\fB\-\-length\fR] [\fB\-\-hex\fR] [\fB\-\-desc\fR] [\fB\-\-group\fR] [\fB\-\-tag\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIKEY\fR> 
+\fBmurk generate\fR [\fB\-\-length\fR] [\fB\-\-hex\fR] [\fB\-\-desc\fR] [\fB\-\-example\fR] [\fB\-\-group\fR] [\fB\-\-tag\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIKEY\fR> 
 .SH DESCRIPTION
 Generate a random secret and store it
 .SH OPTIONS
@@ -17,6 +17,9 @@ Output as hex instead of base64
 .TP
 \fB\-\-desc\fR \fI<DESC>\fR
 Description for this key
+.TP
+\fB\-\-example\fR \fI<EXAMPLE>\fR
+Example value
 .TP
 \fB\-\-group\fR \fI<GROUP>\fR
 Who can read it: a group name, `everyone` (default), or `me`

@@ -56,6 +56,7 @@ _arguments "${_arguments_options[@]}" : \
 (add)
 _arguments "${_arguments_options[@]}" : \
 '--desc=[Description for this key]:DESC:_default' \
+'--example=[Example value]:EXAMPLE:_default' \
 '--group=[Who can read it\: a group name, \`everyone\` (default), or \`me\`]:GROUP:_default' \
 '*--tag=[Tag for grouping (repeatable)]:TAG:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
@@ -69,6 +70,7 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '--length=[Length in bytes (default 32)]:LENGTH:_default' \
 '--desc=[Description for this key]:DESC:_default' \
+'--example=[Example value]:EXAMPLE:_default' \
 '--group=[Who can read it\: a group name, \`everyone\` (default), or \`me\`]:GROUP:_default' \
 '*--tag=[Tag for grouping (repeatable)]:TAG:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
@@ -139,6 +141,7 @@ _arguments "${_arguments_options[@]}" : \
 (import)
 _arguments "${_arguments_options[@]}" : \
 '--group=[Assign imported secrets to this group (default\: everyone)]:GROUP:_default' \
+'--example=[Example value applied to every imported key]:EXAMPLE:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '--force[Overwrite existing secrets without prompting]' \
 '-h[Print help]' \
