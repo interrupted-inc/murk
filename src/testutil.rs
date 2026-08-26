@@ -11,6 +11,25 @@ pub static ENV_LOCK: Mutex<()> = Mutex::new(());
 /// Process-global lock for tests that change the working directory.
 pub static CWD_LOCK: Mutex<()> = Mutex::new(());
 
+/// `fs::canonicalize` with Windows' `\\?\` verbatim prefix removed.
+///
+/// Fixtures that build a git worktree hand these paths straight to `git`, and
+/// git for Windows does not accept verbatim paths. Canonicalizing is still
+/// necessary because `git worktree` records the real path of a checkout, and on
+/// macOS a temp dir reached via `/var` really lives in `/private/var` — without
+/// it a fixture's own paths would not match what git wrote down.
+pub fn real_path(path: &std::path::Path) -> std::path::PathBuf {
+    let canonical = std::fs::canonicalize(path).expect("canonicalize fixture path");
+    let text = canonical.to_string_lossy();
+    // Only a drive-letter path is safe to unwrap: stripping the prefix from a
+    // verbatim UNC path (`\\?\UNC\server\share`) would corrupt it.
+    let stripped = text.strip_prefix(r"\\?\").filter(|rest| {
+        let bytes = rest.as_bytes();
+        bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && &bytes[1..3] == b":\\"
+    });
+    std::path::PathBuf::from(stripped.unwrap_or(&text).to_string())
+}
+
 use age::secrecy::ExposeSecret;
 
 use crate::{crypto, types};

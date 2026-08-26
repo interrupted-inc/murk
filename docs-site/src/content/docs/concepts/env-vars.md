@@ -19,6 +19,8 @@ murk resolves your identity in order: an explicit `MURK_KEY`, then `MURK_KEY_FIL
 
 `.env` itself is a write-only convenience: `murk init` populates it with a `MURK_KEY_FILE` reference so direnv (or `source .env`) can export it, but murk never reads `.env` directly at runtime. Reading it at runtime would let a vault copied into another repo silently borrow whatever key that directory's `.env` happened to reference. murk avoids that by trusting only the process environment and the vault-keyed automatic lookup.
 
+The automatic lookup is keyed on the vault's absolute path, and a git worktree puts the same committed vault at a different one. So murk also accepts the key stored for that vault in a sibling worktree of the same repository — the main checkout first, then linked worktrees. A fresh worktree needs no key provisioning: check it out and `murk get` works, with no `.env` to copy and nothing to re-run. Only checkouts git itself records as part of the repository count, verified in both directions against git's own metadata, so a copied vault in a directory that merely *claims* to be a worktree still gets nothing. Strict mode and agent context skip the automatic lookup entirely, worktree or not.
+
 ## Safety and agent context
 
 | Variable | Description |
@@ -34,7 +36,7 @@ A few standard variables shape specific commands, without being murk-specific co
 
 | Variable | Description |
 | --- | --- |
-| `CI` | If truthy (the conventional CI-runner convention), murk prints a one-line nudge in its output toward the scoped-agent path when it sees a pipeline decrypting with a personal key. Advisory only: unlike `MURK_AGENT`, it doesn't change behavior on its own. |
+| `CI` | If truthy (the conventional CI-runner convention), murk prints a nudge in its output toward the scoped-agent path when it sees a pipeline decrypting with a personal key. Advisory only: unlike `MURK_AGENT`, it doesn't change behavior on its own. |
 | `EDITOR`, `VISUAL` | `murk edit` opens this editor for interactive edits, checking `EDITOR` then `VISUAL`, falling back to `vi` if neither is set. |
 | `XDG_RUNTIME_DIR` | Preferred over `/tmp` as the scratch location for `murk edit`'s temporary file, when it exists and is a directory. It's typically tmpfs, so the plaintext buffer never touches persistent storage. |
 | `HOME` (`USERPROFILE` on Windows) | Base directory for murk's own state: `~/.config/murk/keys`, `~/.config/murk/agent-keys`, and `~/.config/murk/signer-pins`. |

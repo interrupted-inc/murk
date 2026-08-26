@@ -4,7 +4,7 @@ use assert_fs::TempDir;
 use predicates::prelude::*;
 
 mod common;
-use common::{init_vault, murk, murk_bin};
+use common::{init_vault, murk, murk_bin, real_path};
 
 // ── init ──
 
@@ -1344,6 +1344,73 @@ fn export_without_key_fails() {
         .stderr(predicate::str::contains("MURK_KEY not set"));
 }
 
+/// Assert a fatal error renders as one short summary line plus `hint` lines,
+/// none of which wraps on an 80-column terminal.
+///
+/// Both key-resolution errors used to be single sentences of ~330 and ~85
+/// characters, which wrapped mid-word — including on camera in the demo GIFs.
+fn assert_narrow_error(stderr: &str, summary: &str) {
+    let lines: Vec<&str> = stderr.lines().collect();
+
+    assert!(
+        lines[0].contains(summary),
+        "the summary must be the first line, got: {stderr}"
+    );
+    assert!(
+        lines.len() > 1,
+        "the guidance must survive as hints, got: {stderr}"
+    );
+    assert!(
+        lines
+            .iter()
+            .skip(1)
+            .all(|l| l.trim_start().starts_with("hint")),
+        "every line after the summary must be a hint, got: {stderr}"
+    );
+    // Counted in characters, not bytes: the hints contain an em dash.
+    for line in &lines {
+        assert!(
+            line.chars().count() <= 80,
+            "line exceeds an 80-column terminal ({} cols): {line}",
+            line.chars().count()
+        );
+    }
+}
+
+#[test]
+fn key_not_set_error_fits_a_narrow_terminal() {
+    let dir = TempDir::new().unwrap();
+    init_vault(&dir);
+    fs::remove_file(dir.path().join(".env")).ok();
+    let fake_home = TempDir::new().unwrap();
+
+    let assertion = murk_bin(fake_home.path())
+        .args(["get", "X", "--vault", "test.murk"])
+        .current_dir(dir.path())
+        .assert()
+        .failure();
+    let stderr = String::from_utf8(assertion.get_output().stderr.clone()).unwrap();
+
+    assert_narrow_error(&stderr, "MURK_KEY not set");
+}
+
+#[test]
+fn invalid_key_error_fits_a_narrow_terminal() {
+    let dir = TempDir::new().unwrap();
+    init_vault(&dir);
+    let fake_home = TempDir::new().unwrap();
+
+    let assertion = murk_bin(fake_home.path())
+        .args(["get", "X", "--vault", "test.murk"])
+        .current_dir(dir.path())
+        .env("MURK_KEY", "definitely-not-a-key")
+        .assert()
+        .failure();
+    let stderr = String::from_utf8(assertion.get_output().stderr.clone()).unwrap();
+
+    assert_narrow_error(&stderr, "invalid key");
+}
+
 // ── no vault file scenarios ──
 
 #[test]
@@ -1925,6 +1992,152 @@ fn diff_no_git_vault_shows_all_added() {
         .assert()
         .success()
         .stdout(predicate::str::contains("FRESH"));
+}
+
+// ── worktree key discovery ──
+
+/// Run git in `dir` with a fixed identity, asserting it succeeded.
+fn git_ok(dir: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@test.com")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@test.com")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// An original checkout holding a vault with a discovered key, plus a fresh
+/// linked worktree of it that carries only the committed vault — no `.env`,
+/// no key env, exactly what an agent harness hands you.
+///
+/// Returns `(home, repo, worktree)`.
+fn worktree_fixture(
+    base: &std::path::Path,
+) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let base = real_path(base);
+    let home = base.join("home");
+    let repo = base.join("repo");
+    let worktree = base.join("worktree");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&repo).unwrap();
+
+    murk_bin(&home)
+        .args(["init", "--vault", "test.murk"])
+        .current_dir(&repo)
+        .write_stdin("testuser\n")
+        .assert()
+        .success();
+
+    // No MURK_KEY here either: the original checkout also relies on the stored
+    // key, so this asserts single-checkout discovery still works.
+    murk_bin(&home)
+        .args(["add", "API_KEY", "--vault", "test.murk"])
+        .current_dir(&repo)
+        .write_stdin("s3cret\n")
+        .assert()
+        .success();
+
+    git_ok(&repo, &["init"]);
+    git_ok(&repo, &["add", "test.murk"]);
+    git_ok(&repo, &["commit", "-m", "vault"]);
+    git_ok(
+        &repo,
+        &["worktree", "add", "--detach", worktree.to_str().unwrap()],
+    );
+
+    assert!(worktree.join("test.murk").exists());
+    assert!(
+        !worktree.join(".env").exists(),
+        "a fresh worktree must not carry the original checkout's .env"
+    );
+
+    (home, repo, worktree)
+}
+
+#[test]
+fn worktree_reads_the_original_checkouts_key() {
+    let base = TempDir::new().unwrap();
+    let (home, _repo, worktree) = worktree_fixture(base.path());
+
+    murk_bin(&home)
+        .args(["get", "API_KEY", "--vault", "test.murk"])
+        .current_dir(&worktree)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("s3cret"));
+
+    murk_bin(&home)
+        .args(["export", "--vault", "test.murk"])
+        .current_dir(&worktree)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("API_KEY"));
+}
+
+#[test]
+fn worktree_key_discovery_still_fails_closed_for_agents() {
+    let base = TempDir::new().unwrap();
+    let (home, _repo, worktree) = worktree_fixture(base.path());
+
+    for var in ["MURK_AGENT", "MURK_STRICT"] {
+        murk_bin(&home)
+            .args(["get", "API_KEY", "--vault", "test.murk"])
+            .current_dir(&worktree)
+            .env(var, "1")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("MURK_KEY not set"));
+    }
+}
+
+#[test]
+fn unrelated_repo_does_not_borrow_a_vaults_key() {
+    // Discovery widens to sibling worktrees of the *same* repository. A second
+    // repo that merely holds a copy of the vault at the same relative path is
+    // not one, and must still fail closed.
+    let base = TempDir::new().unwrap();
+    let (home, repo, _worktree) = worktree_fixture(base.path());
+
+    let other = real_path(base.path()).join("other");
+    fs::create_dir_all(&other).unwrap();
+    fs::copy(repo.join("test.murk"), other.join("test.murk")).unwrap();
+    git_ok(&other, &["init"]);
+
+    murk_bin(&home)
+        .args(["get", "API_KEY", "--vault", "test.murk"])
+        .current_dir(&other)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("MURK_KEY not set"));
+}
+
+#[test]
+fn planted_worktree_pointer_does_not_borrow_a_vaults_key() {
+    // The sharper version of the same attack: a copied vault in a directory
+    // that claims, via a hand-written `.git` file, to be a worktree of the
+    // victim's repo. Only checkouts git itself records may borrow a key.
+    let base = TempDir::new().unwrap();
+    let (home, repo, worktree) = worktree_fixture(base.path());
+
+    let evil = real_path(base.path()).join("evil");
+    fs::create_dir_all(&evil).unwrap();
+    fs::copy(repo.join("test.murk"), evil.join("test.murk")).unwrap();
+    fs::copy(worktree.join(".git"), evil.join(".git")).unwrap();
+
+    murk_bin(&home)
+        .args(["get", "API_KEY", "--vault", "test.murk"])
+        .current_dir(&evil)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("MURK_KEY not set"));
 }
 
 // ── merge-driver ──
@@ -3148,7 +3361,7 @@ fn symlink_key_file_rejected() {
 
     // Create a symlink to the real key file.
     let env_contents = fs::read_to_string(dir.path().join(".env")).unwrap();
-    let real_path = env_contents
+    let key_file = env_contents
         .lines()
         .find_map(|l| {
             l.strip_prefix("export MURK_KEY_FILE=")
@@ -3159,9 +3372,9 @@ fn symlink_key_file_rejected() {
 
     let symlink_path = dir.path().join("key-symlink");
     #[cfg(unix)]
-    std::os::unix::fs::symlink(real_path, &symlink_path).unwrap();
+    std::os::unix::fs::symlink(key_file, &symlink_path).unwrap();
     #[cfg(windows)]
-    std::os::windows::fs::symlink_file(real_path, &symlink_path).unwrap();
+    std::os::windows::fs::symlink_file(key_file, &symlink_path).unwrap();
 
     murk_bin(dir.path())
         .env("MURK_KEY_FILE", symlink_path.to_str().unwrap())

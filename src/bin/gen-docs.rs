@@ -107,7 +107,7 @@ const ENV_GROUPS: &[(&str, &[EnvVar])] = &[
         &[
             EnvVar {
                 name: "CI",
-                summary: "Truthy prints a one-line nudge toward the scoped-agent path when a pipeline decrypts with a personal key. Advisory only.",
+                summary: "Truthy prints a nudge toward the scoped-agent path when a pipeline decrypts with a personal key. Advisory only.",
             },
             EnvVar {
                 name: "EDITOR, VISUAL",

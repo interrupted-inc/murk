@@ -80,7 +80,7 @@ murk env
 direnv allow
 ```
 
-Your key is stored in `~/.config/murk/keys/` with restricted permissions and is auto-discovered by the CLI based on the vault's absolute path. The `.env` file in your project contains a `MURK_KEY_FILE` reference for shells that don't use direnv — no secrets in the repo directory.
+Your key is stored in `~/.config/murk/keys/` with restricted permissions and is auto-discovered by the CLI based on the vault's absolute path — including from a git worktree of the same repo, so a fresh checkout needs no setup. The `.env` file in your project contains a `MURK_KEY_FILE` reference for shells that don't use direnv — no secrets in the repo directory.
 
 Without direnv, use `murk exec`:
 
@@ -163,6 +163,18 @@ murk import .env.rotated  # bulk-update from a file
 <p align="center">
   <img src="https://raw.githubusercontent.com/interrupted-inc/murk/demo/offboard.gif" alt="murk offboarding demo" width="900">
 </p>
+
+## Git worktrees
+
+A fresh worktree checks out tracked files and nothing else, so every gitignored `.env` you depend on is missing — the reason worktree setups usually involve copying or symlinking one in. murk needs neither: the vault is committed, so it arrives with the checkout, and the key was never in the repo. murk resolves it from a sibling checkout of the same repository.
+
+```bash
+git worktree add ../murk-feature-x
+cd ../murk-feature-x
+murk exec ./deploy.sh   # works immediately — nothing to provision
+```
+
+Only real worktrees of the repo count, verified against git's own metadata; a copy of the vault elsewhere on disk still gets nothing. Key discovery stays disabled under `MURK_STRICT` and in agent context, so an agent in a worktree still needs its own scoped grant.
 
 ## CI/CD
 

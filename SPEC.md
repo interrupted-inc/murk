@@ -67,6 +67,8 @@ MURK_VAULT=prod.murk  # optional
 
 The key never appears in the project directory. `.murk` should always be committed.
 
+**Discovery.** With neither `MURK_KEY` nor `MURK_KEY_FILE` set, murk looks up `keys/<vault-hash>` itself, where the hash covers the vault's absolute path. A git worktree puts the same committed vault at a different absolute path, so murk also accepts the key stored for that vault in a sibling worktree of the same repository — the main checkout first, then linked worktrees in a stable order. A fresh worktree therefore needs no key provisioning. Membership is read straight out of git's own worktree metadata (never a `git` subprocess) and verified in both directions: the current directory must be a checkout the repository records, and each sibling must resolve back to the same common directory. A `.git` entry is a file anyone can write, so an unverified claim of kinship — like a copied vault under a planted `.git` pointer — resolves to no key at all. Discovery of any kind is off under `MURK_STRICT` and in agent context.
+
 ---
 
 ## File Format

@@ -2,7 +2,7 @@
 title: AI agents & MCP
 description: Grant AI agents scoped access to secrets over MCP.
 sidebar:
-  order: 9
+  order: 10
 ---
 
 AI coding agents need secrets to do real work: an API key to call a service, a

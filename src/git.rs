@@ -1,8 +1,8 @@
-//! Git integration helpers (merge driver setup).
+//! Git integration helpers (merge driver setup, worktree layout).
 
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 /// The `.gitattributes` line that enables the merge driver.
@@ -117,6 +117,120 @@ pub fn last_commit_signature(path: &str) -> Option<CommitSignature> {
         // Empty: no commit for this path (untracked / no history) — no anchor.
         _ => None,
     }
+}
+
+/// The working tree containing `path`: the nearest ancestor holding a `.git`
+/// entry. `None` when `path` is not inside a checkout.
+///
+/// Lexical only — no `git` subprocess and no symlink resolution, so the answer
+/// is a prefix of the path handed in. Key lookup hashes the literal vault path
+/// (see `env::key_file_path`), and this must agree with it.
+pub fn worktree_root(path: &Path) -> Option<PathBuf> {
+    path.ancestors()
+        .find(|dir| dir.join(".git").exists())
+        .map(Path::to_path_buf)
+}
+
+/// Every *other* working tree of the repository `root` belongs to: the main
+/// checkout first, then linked worktrees in a stable order. Empty when `root`
+/// is not a checkout, the repository has no other working tree, or the git
+/// metadata is unreadable.
+///
+/// Read straight off the git directory rather than through `git worktree list`:
+/// key resolution runs on every decrypt, and a secrets tool should not spawn a
+/// binary off `PATH` to answer it.
+///
+/// Membership is checked in **both** directions, because a `.git` entry is just
+/// a file anyone can write and the caller uses the answer to decide whose key a
+/// vault may borrow. `root` must be a checkout the repository itself records —
+/// so a planted `.git` pointer into someone else's repository lists nothing —
+/// and every candidate must resolve back to the same common directory — so a
+/// planted `.git` *directory* naming a foreign checkout as its worktree is
+/// ignored too. Anything unverified is dropped: this fails closed.
+pub fn sibling_worktrees(root: &Path) -> Vec<PathBuf> {
+    let Some(common) = common_dir(root) else {
+        return Vec::new();
+    };
+
+    // The main working tree is the parent of `<checkout>/.git`. A bare
+    // repository — the `.bare` + worktrees layout — has no working tree of its
+    // own, and its parent directory is not a checkout, so require the name.
+    let main = if common.file_name() == Some(std::ffi::OsStr::new(".git")) {
+        common.parent().map(Path::to_path_buf)
+    } else {
+        None
+    };
+
+    // Linked worktrees: `<common>/worktrees/<id>/gitdir` holds the path of that
+    // checkout's own `.git` file.
+    let mut linked: Vec<PathBuf> = match fs::read_dir(common.join("worktrees")) {
+        Ok(entries) => entries
+            .flatten()
+            .filter_map(|entry| {
+                let gitdir = fs::read_to_string(entry.path().join("gitdir")).ok()?;
+                Path::new(gitdir.trim()).parent().map(Path::to_path_buf)
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    linked.sort();
+
+    if main.as_deref() != Some(root) && !linked.iter().any(|checkout| checkout == root) {
+        return Vec::new();
+    }
+
+    main.into_iter()
+        .chain(linked)
+        .filter(|checkout| {
+            checkout != root && common_dir(checkout).as_deref() == Some(common.as_path())
+        })
+        .collect()
+}
+
+/// The repository's common directory (the shared `.git` holding `objects/` and
+/// `worktrees/`) for the checkout at `root`.
+///
+/// Resolved lexically, never through `fs::canonicalize`. Two callers compare
+/// these values against each other — [`sibling_worktrees`] checks membership in
+/// both directions — so both sides must live in one coordinate system. A
+/// canonicalized path is a *different spelling* of the same directory: on
+/// Windows it gains a `\\?\` verbatim prefix that no lexical path ever has, so
+/// every genuine sibling compared unequal and worktree discovery rejected
+/// everything. Lexical also matches how key lookup hashes a vault path
+/// (`env::key_file_path`), which likewise does not resolve symlinks.
+fn common_dir(root: &Path) -> Option<PathBuf> {
+    let dotgit = root.join(".git");
+    if dotgit.is_dir() {
+        return Some(dotgit);
+    }
+    // A linked worktree's `.git` is a file pointing at `<common>/worktrees/<id>`,
+    // which in turn records the common dir relative to itself.
+    let pointer = fs::read_to_string(&dotgit).ok()?;
+    let gitdir = root.join(pointer.trim().strip_prefix("gitdir:")?.trim());
+    let common = match fs::read_to_string(gitdir.join("commondir")) {
+        Ok(rel) => gitdir.join(rel.trim()),
+        Err(_) => gitdir,
+    };
+    // Resolve the `../..` hop `commondir` spells it with, so the `.git` name
+    // check in `sibling_worktrees` sees the directory itself.
+    Some(lexical_normalize(&common))
+}
+
+/// Resolve `.` and `..` components textually, without touching the filesystem.
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -330,5 +444,207 @@ mod tests {
             err.contains("git config") && err.contains("failed"),
             "expected git-config failure guidance, got: {err}"
         );
+    }
+
+    // ── worktree layout ──
+
+    /// Create a repo with one commit at `dir` and return its canonical path.
+    /// `git worktree add` records canonical paths, so the fixture must use them
+    /// too or the comparisons below drift on macOS (`/var` → `/private/var`).
+    fn init_repo_with_commit(dir: &Path) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let dir = crate::testutil::real_path(dir);
+        git_in(&dir, &["init"]);
+        std::fs::write(dir.join("README"), "x\n").unwrap();
+        git_in(&dir, &["add", "README"]);
+        git_in(&dir, &["commit", "-m", "init"]);
+        dir
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn worktree_root_finds_nearest_checkout() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let main = init_repo_with_commit(&tmp.path().join("main"));
+        let nested = main.join("a").join("b");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        assert_eq!(worktree_root(&nested), Some(main.clone()));
+        assert_eq!(worktree_root(&main), Some(main));
+    }
+
+    #[test]
+    fn worktree_root_outside_a_repo_is_none() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = crate::testutil::real_path(tmp.path());
+        assert_eq!(worktree_root(&dir), None);
+    }
+
+    #[test]
+    fn sibling_worktrees_sees_main_and_linked_checkouts() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let main = init_repo_with_commit(&tmp.path().join("main"));
+        let root = crate::testutil::real_path(tmp.path());
+        let first = root.join("wt-a");
+        let second = root.join("wt-b");
+        git_in(
+            &main,
+            &["worktree", "add", "--detach", first.to_str().unwrap()],
+        );
+        git_in(
+            &main,
+            &["worktree", "add", "--detach", second.to_str().unwrap()],
+        );
+
+        // From the main checkout: only the linked worktrees, sorted.
+        assert_eq!(
+            sibling_worktrees(&main),
+            vec![first.clone(), second.clone()]
+        );
+        // From a linked worktree: the main checkout first, then the other link.
+        // Main first is what makes the original checkout's key win when several
+        // worktrees have one stored.
+        assert_eq!(
+            sibling_worktrees(&first),
+            vec![main.clone(), second.clone()]
+        );
+        // A checkout never lists itself.
+        assert!(!sibling_worktrees(&second).contains(&second));
+    }
+
+    #[test]
+    fn sibling_worktrees_of_a_lone_repo_is_empty() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let main = init_repo_with_commit(&tmp.path().join("solo"));
+        assert!(sibling_worktrees(&main).is_empty());
+
+        let bare = crate::testutil::real_path(tmp.path()).join("not-a-repo");
+        std::fs::create_dir_all(&bare).unwrap();
+        assert!(sibling_worktrees(&bare).is_empty());
+    }
+
+    #[test]
+    fn sibling_worktrees_of_a_bare_repo_layout_skips_the_container() {
+        // The `.bare` + worktrees layout has no main working tree, so the
+        // parent of the common dir is a plain directory, not a checkout — it
+        // must not be offered as a sibling.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = crate::testutil::real_path(tmp.path());
+        let seed = init_repo_with_commit(&root.join("seed"));
+        let bare = root.join("proj").join(".bare");
+        std::fs::create_dir_all(root.join("proj")).unwrap();
+        git_in(
+            &root,
+            &[
+                "clone",
+                "--bare",
+                seed.to_str().unwrap(),
+                bare.to_str().unwrap(),
+            ],
+        );
+
+        let checkout = root.join("proj").join("main");
+        git_in(
+            &bare,
+            &["worktree", "add", "--detach", checkout.to_str().unwrap()],
+        );
+
+        assert_eq!(sibling_worktrees(&checkout), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn bare_repo_worktrees_still_see_each_other() {
+        // The layout agent harnesses use: a bare repo plus N checkouts, none of
+        // which is a main working tree. They are still siblings.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = crate::testutil::real_path(tmp.path());
+        let seed = init_repo_with_commit(&root.join("seed"));
+        let bare = root.join("proj").join(".bare");
+        std::fs::create_dir_all(root.join("proj")).unwrap();
+        git_in(
+            &root,
+            &[
+                "clone",
+                "--bare",
+                seed.to_str().unwrap(),
+                bare.to_str().unwrap(),
+            ],
+        );
+
+        let first = root.join("proj").join("a");
+        let second = root.join("proj").join("b");
+        git_in(
+            &bare,
+            &["worktree", "add", "--detach", first.to_str().unwrap()],
+        );
+        git_in(
+            &bare,
+            &["worktree", "add", "--detach", second.to_str().unwrap()],
+        );
+
+        assert_eq!(sibling_worktrees(&first), vec![second]);
+    }
+
+    #[test]
+    fn planted_git_pointer_into_another_repo_lists_nothing() {
+        // A directory is not a worktree just because it says so. Anyone who can
+        // drop a `.git` file — an unpacked tarball, an agent writing files —
+        // could otherwise nominate a victim repository and borrow its key.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = crate::testutil::real_path(tmp.path());
+        let main = init_repo_with_commit(&root.join("main"));
+        let real = root.join("real-wt");
+        git_in(
+            &main,
+            &["worktree", "add", "--detach", real.to_str().unwrap()],
+        );
+
+        // Point at the registered worktree's own git dir: maximally plausible,
+        // and still not a checkout git knows about.
+        let stolen = std::fs::read_to_string(real.join(".git")).unwrap();
+        let evil = root.join("evil");
+        std::fs::create_dir_all(&evil).unwrap();
+        std::fs::write(evil.join(".git"), stolen).unwrap();
+
+        assert_eq!(sibling_worktrees(&evil), Vec::<PathBuf>::new());
+        // The genuine worktree is unaffected.
+        assert_eq!(sibling_worktrees(&real), vec![main]);
+    }
+
+    #[test]
+    fn planted_git_dir_naming_a_foreign_checkout_lists_nothing() {
+        // The mirror image: a real (attacker-owned) repository whose
+        // `worktrees/` entry names someone else's checkout. That checkout
+        // points at its own common dir, so it is not a sibling.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = crate::testutil::real_path(tmp.path());
+        let victim = init_repo_with_commit(&root.join("victim"));
+        let evil = init_repo_with_commit(&root.join("evil"));
+
+        let forged = evil.join(".git").join("worktrees").join("x");
+        std::fs::create_dir_all(&forged).unwrap();
+        std::fs::write(
+            forged.join("gitdir"),
+            format!("{}\n", victim.join(".git").display()),
+        )
+        .unwrap();
+
+        assert_eq!(sibling_worktrees(&evil), Vec::<PathBuf>::new());
     }
 }

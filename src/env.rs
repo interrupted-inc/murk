@@ -111,7 +111,8 @@ impl KeySource {
 /// Checks, in order:
 /// 1. `MURK_KEY` env var (explicit key)
 /// 2. `MURK_KEY_FILE` env var (path to a key file)
-/// 3. `~/.config/murk/keys/<hash-of-vault-path>` (automatic lookup)
+/// 3. `~/.config/murk/keys/<hash-of-vault-path>`, for this checkout or a
+///    sibling git worktree of it (automatic lookup — see [`discover_key_file`])
 ///
 /// `.env` is **not** consulted at runtime. It is a write-only convenience that
 /// `murk init` populates with a `MURK_KEY_FILE` reference for direnv to export.
@@ -140,15 +141,23 @@ pub fn resolve_key_with_source(vault_path: &str) -> Result<(SecretString, KeySou
     // closed. `murk agent exec` sets MURK_AGENT=1 and MURK_STRICT=1 for the child, so this holds
     // without the agent having to opt in.
     if !crate::hardening::strict_mode()
-        && let Some(path) = key_file_path(vault_path).ok().filter(|p| p.exists())
+        && let Some(path) = discover_key_file(vault_path)
     {
         let contents = read_secret_file(&path, "key file")?;
         return Ok((SecretString::from(contents), KeySource::Auto(path)));
     }
-    Err(
-        "MURK_KEY not set. Run `murk init` to generate a key, set MURK_KEY_FILE to point at one, or ask a recipient to authorize you. If your .env contains an inline MURK_KEY or MURK_KEY_FILE, run `direnv allow` (or `source .env`) so it is exported to the environment — murk no longer reads .env directly."
-            .into(),
-    )
+    // One short summary line, then one action per line. The CLI renders each
+    // trailing line as an indented `hint` (see `main::die`), so this must stay
+    // plain text — and each line must fit a narrow terminal on its own, which
+    // the previous single 330-character paragraph did not.
+    Err([
+        "MURK_KEY not set",
+        "run `murk init` to generate a key",
+        "or point MURK_KEY_FILE at an existing key file",
+        "or ask a recipient to authorize your public key",
+        "a key in .env needs `direnv allow` — murk does not read .env itself",
+    ]
+    .join("\n"))
 }
 
 /// Resolve the secret key for a specific vault.
@@ -316,33 +325,73 @@ pub fn write_key_to_dotenv(secret_key: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Compute the key file path for a vault: `~/.config/murk/keys/<hash>`.
-///
-/// The hash is a truncated SHA-256 of the *lexical* absolute vault path
-/// (cwd-joined if relative, but symlinks are NOT resolved). Using the
-/// literal path is important for security: a symlink `.murk` pointing at
-/// another project's vault must not resolve to that project's key file.
-pub fn key_file_path(vault_path: &str) -> Result<std::path::PathBuf, String> {
+/// The absolute — but *lexical* — path of `vault_path`: cwd-joined when
+/// relative, with symlinks left unresolved. Using the literal path is important
+/// for security: a symlink `.murk` pointing at another project's vault must not
+/// resolve to that project's key file.
+fn absolute_vault_path(vault_path: &str) -> Result<std::path::PathBuf, String> {
+    let p = std::path::Path::new(vault_path);
+    if p.is_absolute() {
+        return Ok(p.to_path_buf());
+    }
+    Ok(std::env::current_dir()
+        .map_err(|e| format!("cannot resolve vault path: {e}"))?
+        .join(p))
+}
+
+/// Truncated SHA-256 of an absolute vault path — the filename a vault's key is
+/// stored under, in both `keys/` and `agent-keys/`.
+fn vault_hash(abs_path: &Path) -> String {
     use sha2::{Digest, Sha256};
 
-    let p = std::path::Path::new(vault_path);
-    let abs_path = if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map_err(|e| format!("cannot resolve vault path: {e}"))?
-            .join(p)
-    };
-
     let hash = Sha256::digest(abs_path.to_string_lossy().as_bytes());
-    let short_hash: String = hash.iter().take(8).fold(String::new(), |mut s, b| {
+    hash.iter().take(8).fold(String::new(), |mut s, b| {
         use std::fmt::Write;
         let _ = write!(s, "{b:02x}");
         s
-    });
+    })
+}
 
-    let config_dir = dirs_path()?;
-    Ok(config_dir.join(&short_hash))
+/// Compute the key file path for a vault: `~/.config/murk/keys/<hash>`.
+///
+/// This is where `murk init` *writes* a key, keyed on the vault's own path.
+/// Reads go through [`discover_key_file`], which also accepts the key stored
+/// for the same vault in a sibling git worktree.
+pub fn key_file_path(vault_path: &str) -> Result<std::path::PathBuf, String> {
+    let abs_path = absolute_vault_path(vault_path)?;
+    Ok(dirs_path()?.join(vault_hash(&abs_path)))
+}
+
+/// Find a stored key for `vault_path`, or `None` when the operator has none.
+///
+/// Checks this checkout's own `keys/<hash>` first, then the same vault path in
+/// every sibling git worktree of the same repository — main checkout first,
+/// then linked worktrees in a stable order.
+///
+/// The fallback exists because the hash covers an absolute path, and a worktree
+/// puts the very same vault at a different one. The committed vault travels
+/// into a worktree for free; without this, the key pointer is the one thing
+/// that does not, and every throwaway checkout has to be re-provisioned by
+/// hand. A sibling worktree is the same repository, same vault file, same
+/// operator, and the key is read from the operator's own `0700` config dir —
+/// so this widens *where murk looks*, not *whose key it will use*. Strict and
+/// agent contexts skip auto-discovery entirely (see
+/// [`resolve_key_with_source`]) and are unaffected.
+pub fn discover_key_file(vault_path: &str) -> Option<std::path::PathBuf> {
+    let own = key_file_path(vault_path).ok()?;
+    if own.exists() {
+        return Some(own);
+    }
+
+    let abs_path = absolute_vault_path(vault_path).ok()?;
+    let root = crate::git::worktree_root(abs_path.parent()?)?;
+    let relative = abs_path.strip_prefix(&root).ok()?;
+    let keys_dir = dirs_path().ok()?;
+
+    crate::git::sibling_worktrees(&root)
+        .into_iter()
+        .map(|worktree| keys_dir.join(vault_hash(&worktree.join(relative))))
+        .find(|key| key.exists())
 }
 
 /// Compute the file path for an agent grant key:
@@ -353,23 +402,7 @@ pub fn key_file_path(vault_path: &str) -> Result<std::path::PathBuf, String> {
 /// (which only looks up `keys/<vault-hash>`). The vault hash prefix keeps a
 /// grant named the same across two vaults from colliding.
 pub fn agent_key_file_path(vault_path: &str, name: &str) -> Result<std::path::PathBuf, String> {
-    use sha2::{Digest, Sha256};
-
-    let p = std::path::Path::new(vault_path);
-    let abs_path = if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map_err(|e| format!("cannot resolve vault path: {e}"))?
-            .join(p)
-    };
-    let hash = Sha256::digest(abs_path.to_string_lossy().as_bytes());
-    let short_hash: String = hash.iter().take(8).fold(String::new(), |mut s, b| {
-        use std::fmt::Write;
-        let _ = write!(s, "{b:02x}");
-        s
-    });
-
+    let short_hash = vault_hash(&absolute_vault_path(vault_path)?);
     Ok(agent_keys_dir()?.join(format!("{short_hash}-{name}")))
 }
 
