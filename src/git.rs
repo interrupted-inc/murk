@@ -189,6 +189,15 @@ pub fn sibling_worktrees(root: &Path) -> Vec<PathBuf> {
 
 /// The repository's common directory (the shared `.git` holding `objects/` and
 /// `worktrees/`) for the checkout at `root`.
+///
+/// Resolved lexically, never through `fs::canonicalize`. Two callers compare
+/// these values against each other — [`sibling_worktrees`] checks membership in
+/// both directions — so both sides must live in one coordinate system. A
+/// canonicalized path is a *different spelling* of the same directory: on
+/// Windows it gains a `\\?\` verbatim prefix that no lexical path ever has, so
+/// every genuine sibling compared unequal and worktree discovery rejected
+/// everything. Lexical also matches how key lookup hashes a vault path
+/// (`env::key_file_path`), which likewise does not resolve symlinks.
 fn common_dir(root: &Path) -> Option<PathBuf> {
     let dotgit = root.join(".git");
     if dotgit.is_dir() {
@@ -202,13 +211,12 @@ fn common_dir(root: &Path) -> Option<PathBuf> {
         Ok(rel) => gitdir.join(rel.trim()),
         Err(_) => gitdir,
     };
-    // Canonicalize so the `.git` name check below sees the real directory, not
-    // the `../..` hop that `commondir` spells it with.
-    Some(fs::canonicalize(&common).unwrap_or_else(|_| lexical_normalize(&common)))
+    // Resolve the `../..` hop `commondir` spells it with, so the `.git` name
+    // check in `sibling_worktrees` sees the directory itself.
+    Some(lexical_normalize(&common))
 }
 
 /// Resolve `.` and `..` components textually, without touching the filesystem.
-/// Only a fallback for when a git directory cannot be canonicalized.
 fn lexical_normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
@@ -445,7 +453,7 @@ mod tests {
     /// too or the comparisons below drift on macOS (`/var` → `/private/var`).
     fn init_repo_with_commit(dir: &Path) -> PathBuf {
         std::fs::create_dir_all(dir).unwrap();
-        let dir = std::fs::canonicalize(dir).unwrap();
+        let dir = crate::testutil::real_path(dir);
         git_in(&dir, &["init"]);
         std::fs::write(dir.join("README"), "x\n").unwrap();
         git_in(&dir, &["add", "README"]);
@@ -484,7 +492,7 @@ mod tests {
     #[test]
     fn worktree_root_outside_a_repo_is_none() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let dir = std::fs::canonicalize(tmp.path()).unwrap();
+        let dir = crate::testutil::real_path(tmp.path());
         assert_eq!(worktree_root(&dir), None);
     }
 
@@ -492,7 +500,7 @@ mod tests {
     fn sibling_worktrees_sees_main_and_linked_checkouts() {
         let tmp = tempfile::TempDir::new().unwrap();
         let main = init_repo_with_commit(&tmp.path().join("main"));
-        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let root = crate::testutil::real_path(tmp.path());
         let first = root.join("wt-a");
         let second = root.join("wt-b");
         git_in(
@@ -526,9 +534,7 @@ mod tests {
         let main = init_repo_with_commit(&tmp.path().join("solo"));
         assert!(sibling_worktrees(&main).is_empty());
 
-        let bare = std::fs::canonicalize(tmp.path())
-            .unwrap()
-            .join("not-a-repo");
+        let bare = crate::testutil::real_path(tmp.path()).join("not-a-repo");
         std::fs::create_dir_all(&bare).unwrap();
         assert!(sibling_worktrees(&bare).is_empty());
     }
@@ -539,7 +545,7 @@ mod tests {
         // parent of the common dir is a plain directory, not a checkout — it
         // must not be offered as a sibling.
         let tmp = tempfile::TempDir::new().unwrap();
-        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let root = crate::testutil::real_path(tmp.path());
         let seed = init_repo_with_commit(&root.join("seed"));
         let bare = root.join("proj").join(".bare");
         std::fs::create_dir_all(root.join("proj")).unwrap();
@@ -567,7 +573,7 @@ mod tests {
         // The layout agent harnesses use: a bare repo plus N checkouts, none of
         // which is a main working tree. They are still siblings.
         let tmp = tempfile::TempDir::new().unwrap();
-        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let root = crate::testutil::real_path(tmp.path());
         let seed = init_repo_with_commit(&root.join("seed"));
         let bare = root.join("proj").join(".bare");
         std::fs::create_dir_all(root.join("proj")).unwrap();
@@ -601,7 +607,7 @@ mod tests {
         // drop a `.git` file — an unpacked tarball, an agent writing files —
         // could otherwise nominate a victim repository and borrow its key.
         let tmp = tempfile::TempDir::new().unwrap();
-        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let root = crate::testutil::real_path(tmp.path());
         let main = init_repo_with_commit(&root.join("main"));
         let real = root.join("real-wt");
         git_in(
@@ -627,7 +633,7 @@ mod tests {
         // `worktrees/` entry names someone else's checkout. That checkout
         // points at its own common dir, so it is not a sibling.
         let tmp = tempfile::TempDir::new().unwrap();
-        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let root = crate::testutil::real_path(tmp.path());
         let victim = init_repo_with_commit(&root.join("victim"));
         let evil = init_repo_with_commit(&root.join("evil"));
 

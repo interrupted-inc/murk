@@ -9,6 +9,27 @@
 use std::fs;
 use std::path::Path;
 
+/// `fs::canonicalize` with Windows' `\\?\` verbatim prefix removed.
+///
+/// The worktree fixtures hand these paths straight to `git`, which on Windows
+/// does not accept verbatim paths. Canonicalizing is still necessary: `git
+/// worktree` records the real path of a checkout, and on macOS a temp dir
+/// reached via `/var` really lives in `/private/var`.
+// This module is compiled into every integration binary, and only the worktree
+// fixtures in `cli.rs` need this one — unused elsewhere is expected, not a bug.
+#[allow(dead_code)]
+pub fn real_path(path: &Path) -> std::path::PathBuf {
+    let canonical = fs::canonicalize(path).expect("canonicalize fixture path");
+    let text = canonical.to_string_lossy();
+    // Only a drive-letter path is safe to unwrap: stripping the prefix from a
+    // verbatim UNC path (`\\?\UNC\server\share`) would corrupt it.
+    let stripped = text.strip_prefix(r"\\?\").filter(|rest| {
+        let bytes = rest.as_bytes();
+        bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && &bytes[1..3] == b":\\"
+    });
+    std::path::PathBuf::from(stripped.unwrap_or(&text).to_string())
+}
+
 use assert_cmd::Command;
 
 /// Build a `murk` command with `HOME` and `XDG_RUNTIME_DIR` forced into `home`

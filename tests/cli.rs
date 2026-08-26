@@ -4,7 +4,7 @@ use assert_fs::TempDir;
 use predicates::prelude::*;
 
 mod common;
-use common::{init_vault, murk, murk_bin};
+use common::{init_vault, murk, murk_bin, real_path};
 
 // ── init ──
 
@@ -2022,7 +2022,7 @@ fn git_ok(dir: &std::path::Path, args: &[&str]) {
 fn worktree_fixture(
     base: &std::path::Path,
 ) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
-    let base = fs::canonicalize(base).unwrap();
+    let base = real_path(base);
     let home = base.join("home");
     let repo = base.join("repo");
     let worktree = base.join("worktree");
@@ -2106,7 +2106,7 @@ fn unrelated_repo_does_not_borrow_a_vaults_key() {
     let base = TempDir::new().unwrap();
     let (home, repo, _worktree) = worktree_fixture(base.path());
 
-    let other = fs::canonicalize(base.path()).unwrap().join("other");
+    let other = real_path(base.path()).join("other");
     fs::create_dir_all(&other).unwrap();
     fs::copy(repo.join("test.murk"), other.join("test.murk")).unwrap();
     git_ok(&other, &["init"]);
@@ -2127,7 +2127,7 @@ fn planted_worktree_pointer_does_not_borrow_a_vaults_key() {
     let base = TempDir::new().unwrap();
     let (home, repo, worktree) = worktree_fixture(base.path());
 
-    let evil = fs::canonicalize(base.path()).unwrap().join("evil");
+    let evil = real_path(base.path()).join("evil");
     fs::create_dir_all(&evil).unwrap();
     fs::copy(repo.join("test.murk"), evil.join("test.murk")).unwrap();
     fs::copy(worktree.join(".git"), evil.join(".git")).unwrap();
@@ -3361,7 +3361,7 @@ fn symlink_key_file_rejected() {
 
     // Create a symlink to the real key file.
     let env_contents = fs::read_to_string(dir.path().join(".env")).unwrap();
-    let real_path = env_contents
+    let key_file = env_contents
         .lines()
         .find_map(|l| {
             l.strip_prefix("export MURK_KEY_FILE=")
@@ -3372,9 +3372,9 @@ fn symlink_key_file_rejected() {
 
     let symlink_path = dir.path().join("key-symlink");
     #[cfg(unix)]
-    std::os::unix::fs::symlink(real_path, &symlink_path).unwrap();
+    std::os::unix::fs::symlink(key_file, &symlink_path).unwrap();
     #[cfg(windows)]
-    std::os::windows::fs::symlink_file(real_path, &symlink_path).unwrap();
+    std::os::windows::fs::symlink_file(key_file, &symlink_path).unwrap();
 
     murk_bin(dir.path())
         .env("MURK_KEY_FILE", symlink_path.to_str().unwrap())
