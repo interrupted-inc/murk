@@ -36,6 +36,61 @@ export declare class Vault {
   get length(): number
   /** Check if a key exists. */
   has(key: string): boolean
+  /**
+   * Store a secret. Mirrors `murk add`: the value is encrypted to the tier's
+   * recipients and the vault is re-signed and written back to disk under an
+   * exclusive lock, so it is safe against concurrent writers.
+   *
+   * `tier` selects the destination — `"everyone"` (default, shared to all
+   * recipients), `"me"` (a personal value encrypted to the caller only), or a
+   * group name (encrypted to that group's members; the caller must be a
+   * member). An existing key is overwritten in place.
+   *
+   * PLAINTEXT CAVEAT: unlike the read path — where plaintext only ever appears
+   * *after* decryption — a write means the caller already holds the secret as a
+   * JavaScript `String` before this call. That string lives in V8's heap, is
+   * copied across the napi boundary into a Rust `String`, and is not zeroized on
+   * either side. See `get` and THREAT_MODEL.md.
+   *
+   * Agent policy is enforced exactly as on the read path: if the loaded
+   * identity is a granted agent (or the operator has opted into self-scope),
+   * the resulting key must satisfy the vault's agent allow-tag policy and the
+   * grant must be unexpired — otherwise the write throws and nothing is saved.
+   * For a plain operator identity this is a no-op.
+   */
+  add(key: string, value: string, options?: AddOptions | undefined | null): void
+  /**
+   * Update a secret's description (and optionally its tags/example) in the
+   * vault schema. Mirrors `murk describe`. Does not touch the secret value;
+   * a key with no value becomes a documented-but-unset entry.
+   *
+   * Agent policy is enforced over the key exactly as in `add`.
+   */
+  describe(key: string, description: string, options?: DescribeOptions | undefined | null): void
+}
+
+/** One-liner: load the vault and store a secret. See `Vault.add`. */
+export declare function add(key: string, value: string, options?: AddOptions | undefined | null, vaultPath?: string | undefined | null): void
+
+/**
+ * Options for [`Vault::add`]. All fields are optional; an omitted `tier`
+ * defaults to `everyone` (the shared value).
+ */
+export interface AddOptions {
+  /** `"everyone"` (default), `"me"` (personal scoped), or a group name. */
+  tier?: string
+  /** Human-readable description recorded in the vault schema. */
+  desc?: string
+  /** Tags recorded on the key — the unit the agent allow-tag policy gates on. */
+  tags?: Array<string>
+}
+
+/** Options for [`Vault::describe`]. All fields are optional. */
+export interface DescribeOptions {
+  /** Tags to set on the key (replaces existing tags when non-empty). */
+  tags?: Array<string>
+  /** Example value recorded in the schema (for `.env.example`-style docs). */
+  example?: string
 }
 
 /** One-liner: load the vault and export all secrets as an object. */

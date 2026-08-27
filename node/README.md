@@ -6,7 +6,7 @@ Node.js/TypeScript bindings for [murk](https://github.com/interrupted-inc/murk) 
 
 ## Prerequisites
 
-You need the [murk CLI](https://github.com/interrupted-inc/murk) to create and manage vaults. This package only reads them.
+You need the [murk CLI](https://github.com/interrupted-inc/murk) to create and manage vaults. This package can read them and store secrets into them; trust-changing operations (rotation, recipient/group changes, agent grants) stay CLI-only.
 
 ```bash
 # Install the CLI first
@@ -46,6 +46,12 @@ const secrets = vault.export()
 // One-liners
 get('DATABASE_URL')
 exportAll()
+
+// Store a secret (encrypted to everyone by default)
+vault.add('NEW_TOKEN', 'value')
+vault.add('MY_TOKEN', 'value', { tier: 'me' })        // personal, scoped to you
+vault.add('TEAM_TOKEN', 'value', { tier: 'backend' }) // to a named group
+add('NEW_TOKEN', 'value')                             // one-liner
 ```
 
 ## API
@@ -62,6 +68,10 @@ One-liner: load the vault and get a single value.
 
 One-liner: load the vault and export all secrets as an object.
 
+### `add(key, value, options?, vaultPath?): void`
+
+One-liner: load the vault and store a secret. See `vault.add` below.
+
 ### `hasIdentity(): boolean`
 
 Whether a decryption identity (`MURK_KEY` / `MURK_KEY_FILE`) is available — i.e. whether `load()` can decrypt. This is not a check for whether a secret exists; use `vault.has(key)` / `vault.keys()` for that.
@@ -75,8 +85,22 @@ Whether a decryption identity (`MURK_KEY` / `MURK_KEY_FILE`) is available — i.
 | `vault.keys()` | `string[]` | List of key names |
 | `vault.has(key)` | `boolean` | Check if a key exists |
 | `vault.length` | `number` | Number of secrets |
+| `vault.add(key, value, options?)` | `void` | Store a secret (see below) |
+| `vault.describe(key, description, options?)` | `void` | Set a key's description/tags/example |
 
 Scoped (per-user) overrides are applied automatically — if you have a scoped value for a key, it takes priority over the shared value.
+
+### Writing secrets
+
+`vault.add(key, value, options?)` mirrors `murk add`: it encrypts the value, re-signs the vault, and writes it back to disk under an exclusive lock (safe against concurrent writers). An existing key is overwritten in place. Options:
+
+- `tier` — where the value lives: `'everyone'` (default, shared to all recipients), `'me'` (a personal value encrypted to you only), or a **group name** (encrypted to that group's members; you must be a member).
+- `desc` — a human-readable description recorded in the schema.
+- `tags` — tags recorded on the key; tags are the unit the agent allow-tag policy gates on.
+
+`vault.describe(key, description, options?)` updates a key's schema metadata (`tags`, `example`) without touching its value. A key with no value becomes a documented-but-unset entry, the same as `murk describe`.
+
+Trust-changing operations — rotation, adding/removing recipients or group members, and minting agent grants — are deliberately **not** exposed here; use the CLI for those.
 
 ## Memory hygiene
 
@@ -87,6 +111,13 @@ garbage collector — not murk — controls its lifetime. This is inherent to
 reading secrets into a process (see the
 [threat model](https://github.com/interrupted-inc/murk/blob/main/THREAT_MODEL.md)); avoid
 holding decrypted values longer than you need them.
+
+The write path makes this sharper. To call `vault.add(key, value)` you already hold
+the plaintext as a JavaScript `String` *before* the call — it lives in V8's heap, is
+copied across the FFI boundary into a Rust `String`, and is zeroized on neither side.
+Reads only ever expose plaintext murk itself produced during decryption; a write means
+the plaintext originated in your process and lingers there under the GC's control. Build
+the value as late as possible, pass it straight into `add`, and don't keep it around.
 
 ## Agent policy
 

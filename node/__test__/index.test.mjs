@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { exportAll, get, hasIdentity, load } from '../index.js'
+import { add, exportAll, get, hasIdentity, load } from '../index.js'
 
 // Find the murk binary.
 const murkBin = join(process.cwd(), '..', 'target', 'release', 'murk')
@@ -52,6 +52,9 @@ function setupVault() {
   runMurk(dir, ['add', 'DATABASE_URL', '--vault', '.murk'], 'postgres://localhost/mydb\n', keyEnv)
   runMurk(dir, ['add', 'API_KEY', '--vault', '.murk'], 'sk-test-123\n', keyEnv)
   runMurk(dir, ['add', 'STRIPE_SECRET', '--vault', '.murk'], 'sk_live_abc\n', keyEnv)
+  // A group the operator belongs to, so the write API's group tier has a
+  // destination to encrypt to.
+  runMurk(dir, ['group', 'create', 'backend', '--vault', '.murk'], '', keyEnv)
 
   return { dir, murkKey }
 }
@@ -197,6 +200,63 @@ test('load with missing vault throws', () => {
   assert.throws(() => load('/nonexistent/.murk'))
 })
 
+// Write API. Each add is a full read-modify-write against the on-disk vault, so
+// every assertion re-loads from disk to prove the value actually persisted.
+test('vault.add stores a shared (everyone) secret', () => {
+  const vault = load()
+  vault.add('SHARED_TOKEN', 'shared-value')
+  // Persisted to disk, readable by a fresh operator load.
+  assert.strictEqual(get('SHARED_TOKEN'), 'shared-value')
+  // The handle refreshes its own snapshot too.
+  assert.strictEqual(vault.get('SHARED_TOKEN'), 'shared-value')
+})
+
+test('vault.add with desc and tags records schema metadata', () => {
+  const vault = load()
+  vault.add('TAGGED_TOKEN', 'tagged-value', {
+    desc: 'a tagged token',
+    tags: ['agents'],
+  })
+  assert.strictEqual(get('TAGGED_TOKEN'), 'tagged-value')
+  assert.strictEqual(load().has('TAGGED_TOKEN'), true)
+})
+
+test('vault.add stores a personal (me) scoped secret', () => {
+  const vault = load()
+  vault.add('PERSONAL', 'my-value', { tier: 'me' })
+  // The scoped value takes priority for the caller.
+  assert.strictEqual(get('PERSONAL'), 'my-value')
+})
+
+test('vault.add stores a group secret the operator can read back', () => {
+  const vault = load()
+  vault.add('GROUP_SECRET', 'group-value', { tier: 'backend' })
+  assert.strictEqual(get('GROUP_SECRET'), 'group-value')
+})
+
+test('vault.add to a nonexistent group throws', () => {
+  const vault = load()
+  assert.throws(() => vault.add('NOPE', 'x', { tier: 'no-such-group' }), /group not found/)
+})
+
+test('vault.add rejects an invalid key name', () => {
+  const vault = load()
+  assert.throws(() => vault.add('1BAD', 'x'), /invalid key name/)
+})
+
+test('add one-liner stores a secret', () => {
+  add('ONELINER', 'oneliner-value')
+  assert.strictEqual(get('ONELINER'), 'oneliner-value')
+})
+
+test('vault.describe documents a key without a value', () => {
+  const vault = load()
+  vault.describe('DOCUMENTED', 'documented but unset', { tags: ['agents'] })
+  const reloaded = load()
+  assert.strictEqual(reloaded.has('DOCUMENTED'), true)
+  assert.strictEqual(reloaded.get('DOCUMENTED'), null)
+})
+
 // Agent policy enforcement: a granted agent identity is gated by the vault's
 // policy from the binding, just like the CLI gates it at `agent exec`.
 console.log('\nSetting up agent policy vault...')
@@ -218,6 +278,25 @@ test('agent export returns only its scoped, allowed keys', () => {
   const secrets = load(agentVault).export()
   assert.deepStrictEqual(Object.keys(secrets), ['AGENT_DB'])
   assert.strictEqual(secrets.AGENT_DB, 'postgres://agent')
+})
+
+// Write path enforces the same policy as the read path: an agent writing a key
+// the policy forbids fails closed, and the vault on disk is left untouched.
+test('agent add of a policy-forbidden key throws and does not persist', () => {
+  process.env.MURK_KEY = agent.agentKey
+  assert.throws(() => add('EXFIL', 'stolen', { tags: ['prod'] }, agentVault), /policy forbids/)
+  // Nothing was written: the operator load never sees the forbidden key.
+  process.env.MURK_KEY = agent.opKey
+  assert.strictEqual(load(agentVault).has('EXFIL'), false)
+})
+
+test('agent add of a policy-allowed scoped key succeeds and round-trips', () => {
+  // A shared ("everyone") write would encrypt to the operator only — grants are
+  // excluded from the shared layer — so the agent couldn't read it back. A `me`
+  // write encrypts to the agent itself, so it round-trips through the policy gate.
+  process.env.MURK_KEY = agent.agentKey
+  add('AGENT_WRITE', 'agent-authored', { tier: 'me', tags: ['agents'] }, agentVault)
+  assert.strictEqual(get('AGENT_WRITE', agentVault), 'agent-authored')
 })
 
 test('tightening the policy retroactively blocks the agent get', () => {
