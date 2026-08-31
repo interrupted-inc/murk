@@ -156,6 +156,11 @@ All options are optional:
 | `desc` | `string` | Human-readable description recorded in the vault schema |
 | `tags` | `string[]` | Tags recorded on the key. Tags are the unit the agent allow-tag policy gates on |
 
+`tier` accepts aliases: `"all"` and `"shared"` mean `"everyone"`, and
+`"self"` and `"mine"` mean `"me"`. Those five names are reserved. Any other
+string names a group, so a misspelled tier becomes a group lookup and fails
+unless a group by that name exists.
+
 `vault.describe(key, description, options?)` mirrors `murk describe`: it
 updates a key's schema metadata without touching its value. `options` takes
 `tags` (`string[]`, replaces existing tags when non-empty) and `example`
@@ -181,7 +186,10 @@ write — the same gate as `murk agent exec`:
 - `add()` and `describe()` (Node) check the resulting key before persisting.
   A forbidden write fails closed and leaves the vault on disk untouched.
 
-Python raises `RuntimeError`. Node throws. Operator keys skip the check. A
+Python raises `RuntimeError`. Node throws. A plain operator key skips the
+check, unless you opt in with
+[`MURK_SELF_SCOPE`](/concepts/env-vars/) — then your own key is held to the
+policy the same way. A
 grant can't decrypt out-of-scope secrets in the first place — its ephemeral
 key isn't a recipient of them — so this is a backstop, not the only guard. See
 [AI agents & MCP](/guides/ai-agents-mcp/) for the full model.
