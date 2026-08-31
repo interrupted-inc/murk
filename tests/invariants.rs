@@ -101,17 +101,21 @@ fn murk_key_is_read_only_in_the_env_module() {
     );
 }
 
-/// The library crate (`murk_cli`) returns data; the binary (`main.rs`) owns all
+/// The library crate (`murk_cli`) returns data; the binary owns all
 /// user-facing output. Library code must not write to stdout — that is exactly
 /// where a decrypted secret would leak into a pipe or `$(...)`. Warnings on
-/// stderr (`eprintln!`) are fine; `main.rs` is the UI layer and is exempt.
+/// stderr (`eprintln!`) are fine; the binary's UI layer — `main.rs` and its
+/// `commands/` handler modules — is exempt.
 #[test]
 fn library_modules_do_not_print_to_stdout() {
-    const UI_LAYER: &str = "src/main.rs";
+    // The binary crate's UI code: the entrypoint plus its command handlers.
+    // These modules are compiled into the `murk` binary (via `mod commands;`),
+    // not the `murk_cli` library, so printing to stdout is their job.
+    let is_ui_layer = |path: &str| path == "src/main.rs" || path.starts_with("src/commands/");
 
     let offenders: Vec<String> = source_files()
         .iter()
-        .filter(|(path, _)| path != UI_LAYER)
+        .filter(|(path, _)| !is_ui_layer(path))
         .flat_map(|(path, body)| {
             code_lines(body)
                 .filter(|(_, line)| {

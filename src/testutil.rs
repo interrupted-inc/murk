@@ -78,3 +78,33 @@ pub fn empty_murk() -> types::Murk {
 pub fn secret(s: &str) -> Zeroizing<String> {
     Zeroizing::new(s.to_string())
 }
+
+/// Build a single-secret vault (value "REAL") with `recipients=[pubkey]`.
+pub fn signed_test_vault(pubkey: &str, recipient: &crypto::MurkRecipient) -> types::Vault {
+    let mut vault = types::Vault {
+        version: types::VAULT_VERSION.into(),
+        created: "2026-02-28T00:00:00Z".into(),
+        vault_name: ".murk".into(),
+        repo: String::new(),
+        recipients: vec![pubkey.to_string()],
+        schema: BTreeMap::new(),
+        policy: None,
+        secrets: BTreeMap::new(),
+        meta: String::new(),
+    };
+    vault.secrets.insert(
+        "API_KEY".into(),
+        types::SecretEntry {
+            shared: crate::encrypt_value(b"REAL", std::slice::from_ref(recipient)).unwrap(),
+            private: BTreeMap::new(),
+            grouped: BTreeMap::new(),
+        },
+    );
+    vault
+}
+
+/// A real unencrypted ssh-ed25519 keypair, shared across the vault
+/// load/save/signature tests (crypto.rs and signing.rs keep local copies).
+pub const SSH_ED25519_SK: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\nQyNTUxOQAAACB7Ci6nqZYaVvrjm8+XbzII89TsXzP111AflR7WeorBjQAAAJCfEwtqnxML\nagAAAAtzc2gtZWQyNTUxOQAAACB7Ci6nqZYaVvrjm8+XbzII89TsXzP111AflR7WeorBjQ\nAAAEADBJvjZT8X6JRJI8xVq/1aU8nMVgOtVnmdwqWwrSlXG3sKLqeplhpW+uObz5dvMgjz\n1OxfM/XXUB+VHtZ6isGNAAAADHN0cjRkQGNhcmJvbgE=\n-----END OPENSSH PRIVATE KEY-----";
+pub const SSH_ED25519_PK: &str =
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHsKLqeplhpW+uObz5dvMgjz1OxfM/XXUB+VHtZ6isGN";
