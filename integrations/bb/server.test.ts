@@ -1,6 +1,7 @@
 // Integration-style tests: real murk CLI (on PATH), real murk Node binding,
 // real temp vault, fake bb plugin host. HOME is redirected to a temp dir so
 // murk's stored operator key never touches the developer's real key directory.
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,6 +25,10 @@ let tmpRoot: string;
 let worktree: string;
 let host: FakePluginHost;
 const savedEnv: Record<string, string | undefined> = {};
+
+function sha256(content: string | Buffer): string {
+  return createHash("sha256").update(content).digest("hex");
+}
 
 function murk(args: string[], input?: string): void {
   const result = spawnSync("murk", args, {
@@ -105,12 +110,23 @@ beforeAll(async () => {
       },
       files: {
         write: async (args: { path: string; content: string; mode?: number; expectedSha256?: string | null }) => {
-          // Mirror the host's optimistic-concurrency guard: null = create-only.
-          if (args.expectedSha256 === null && existsSync(args.path)) {
-            return { outcome: "conflict", currentSha256: "existing" };
+          // Mirror the host's optimistic-concurrency guard: null = create-only,
+          // a hash = write only when the current content still hashes to it.
+          const exists = existsSync(args.path);
+          const currentSha = exists ? sha256(readFileSync(args.path)) : null;
+          if (args.expectedSha256 === null && exists) {
+            return { outcome: "conflict", currentSha256: currentSha };
+          }
+          if (typeof args.expectedSha256 === "string" && args.expectedSha256 !== currentSha) {
+            return { outcome: "conflict", currentSha256: currentSha };
           }
           writeFileSync(args.path, args.content, { mode: args.mode ?? 0o644 });
-          return { outcome: "written", sha256: "test", sizeBytes: args.content.length };
+          return { outcome: "written", sha256: sha256(args.content), sizeBytes: args.content.length };
+        },
+        read: async (args: { path: string }) => {
+          if (!existsSync(args.path)) throw new Error(`${args.path}: not found`);
+          const content = readFileSync(args.path, "utf8");
+          return { content, contentEncoding: "utf8", sha256: sha256(content), sizeBytes: content.length };
         },
         remove: async (args: { path: string }) => {
           rmSync(args.path, { force: true });
@@ -359,6 +375,48 @@ describe("grant lifecycle", () => {
     expect(existsSync(envFile)).toBe(false);
   });
 
+  it("relinquishes a delivered file the user replaced instead of overwriting it", async () => {
+    const envFile = path.join(worktree, `.murk-${THREAD_ID}.env`);
+    const first = toolText(
+      await host.harness.behavior.callAgentTool("murk_get", {}, { threadId: THREAD_ID, projectId: PROJECT_ID }),
+    );
+    expect(first.isError).toBe(false);
+    writeFileSync(envFile, "FOREIGN CONTENT\n");
+
+    const second = toolText(
+      await host.harness.behavior.callAgentTool("murk_get", {}, { threadId: THREAD_ID, projectId: PROJECT_ID }),
+    );
+    expect(second.isError).toBe(true);
+    expect(second.text).toContain("modified externally");
+    expect(readFileSync(envFile, "utf8")).toBe("FOREIGN CONTENT\n");
+
+    // Ownership was relinquished — idle cleanup must leave the file alone.
+    const { errors } = await host.harness.behavior.emitThreadEvent("thread.idle", {
+      thread: makeThreadResponse({ id: THREAD_ID }),
+      lastAssistantText: null,
+    });
+    expect(errors).toEqual([]);
+    expect(readFileSync(envFile, "utf8")).toBe("FOREIGN CONTENT\n");
+    rmSync(envFile);
+  });
+
+  it("idle cleanup leaves a replaced file in place even with a live delivery record", async () => {
+    const envFile = path.join(worktree, `.murk-${THREAD_ID}.env`);
+    const delivered = toolText(
+      await host.harness.behavior.callAgentTool("murk_get", {}, { threadId: THREAD_ID, projectId: PROJECT_ID }),
+    );
+    expect(delivered.isError).toBe(false);
+    writeFileSync(envFile, "FOREIGN AGAIN\n");
+
+    const { errors } = await host.harness.behavior.emitThreadEvent("thread.idle", {
+      thread: makeThreadResponse({ id: THREAD_ID }),
+      lastAssistantText: null,
+    });
+    expect(errors).toEqual([]);
+    expect(readFileSync(envFile, "utf8")).toBe("FOREIGN AGAIN\n");
+    rmSync(envFile);
+  });
+
   it("revoking a grant deletes its key file and closes access", async () => {
     const revoke = await host.harness.behavior.runCli(["grant", "revoke", fileGrantId], {});
     expect(revoke.exitCode).toBe(0);
@@ -406,6 +464,24 @@ describe("grant store", () => {
 
     const active = store.activeFor("p1", "t1").map((grant) => grant.id).sort();
     expect(active).toEqual(["gaaaaaaa1", "gaaaaaaa2"]);
+  });
+
+  it("upgrades a legacy deliveries table in place, defaulting sha256 to a never-matching value", () => {
+    const db = new Database(":memory:");
+    // A database that ran only the originally shipped statements…
+    for (const statement of GRANT_MIGRATIONS.slice(0, 2)) db.exec(statement);
+    db.prepare(
+      `INSERT INTO deliveries (thread_id, host_id, root_path, file_path, keys_json, updated_at)
+       VALUES ('t1', 'h1', '/w', '/w/.murk-t1.env', '["K"]', 'then')`,
+    ).run();
+    // …then applies the appended migration.
+    for (const statement of GRANT_MIGRATIONS.slice(2)) db.exec(statement);
+
+    const store = new GrantStore(db);
+    const rows = store.deliveriesFor("t1");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].keys).toEqual(["K"]);
+    expect(rows[0].sha256).toBe("");
   });
 });
 

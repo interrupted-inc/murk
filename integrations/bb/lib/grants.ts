@@ -38,6 +38,12 @@ export const GRANT_MIGRATIONS = [
     updated_at TEXT NOT NULL,
     PRIMARY KEY (thread_id, file_path)
   )`,
+  // Content hash of the plugin's own last write, the CAS token proving the
+  // file still holds bytes the plugin wrote. Appended (never edit shipped
+  // statements): fresh databases create-then-alter, existing ones just alter.
+  // Legacy rows default to '' — a hash that can never match, so the plugin
+  // relinquishes those files instead of overwriting or deleting them.
+  `ALTER TABLE deliveries ADD COLUMN sha256 TEXT NOT NULL DEFAULT ''`,
 ];
 
 export interface GrantRecord {
@@ -61,6 +67,7 @@ export interface DeliveryRecord {
   rootPath: string;
   filePath: string;
   keys: string[];
+  sha256: string;
   updatedAt: string;
 }
 
@@ -84,6 +91,7 @@ interface DeliveryRow {
   root_path: string;
   file_path: string;
   keys_json: string;
+  sha256: string;
   updated_at: string;
 }
 
@@ -172,9 +180,10 @@ export class GrantStore {
   recordDelivery(delivery: Omit<DeliveryRecord, "updatedAt">): void {
     this.db
       .prepare(
-        `INSERT INTO deliveries (thread_id, host_id, root_path, file_path, keys_json, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(thread_id, file_path) DO UPDATE SET keys_json = excluded.keys_json, updated_at = excluded.updated_at`,
+        `INSERT INTO deliveries (thread_id, host_id, root_path, file_path, keys_json, sha256, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(thread_id, file_path) DO UPDATE SET
+           keys_json = excluded.keys_json, sha256 = excluded.sha256, updated_at = excluded.updated_at`,
       )
       .run(
         delivery.threadId,
@@ -182,6 +191,7 @@ export class GrantStore {
         delivery.rootPath,
         delivery.filePath,
         JSON.stringify(delivery.keys),
+        delivery.sha256,
         new Date().toISOString(),
       );
   }
@@ -194,8 +204,14 @@ export class GrantStore {
       rootPath: row.root_path,
       filePath: row.file_path,
       keys: keysSchema.parse(JSON.parse(row.keys_json)),
+      sha256: row.sha256,
       updatedAt: row.updated_at,
     }));
+  }
+
+  /** Drop one delivery record — the plugin relinquishes ownership of that path. */
+  forgetDelivery(threadId: string, filePath: string): void {
+    this.db.prepare(`DELETE FROM deliveries WHERE thread_id = ? AND file_path = ?`).run(threadId, filePath);
   }
 
   clearDeliveries(threadId: string): void {

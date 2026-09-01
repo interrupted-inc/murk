@@ -284,20 +284,29 @@ export default async function plugin(bb: BbPluginApi) {
             if (value === undefined) throw new Error(`${key}: lost during delivery merge`);
             return [key, value] as const;
           });
-          // Invariant: never overwrite a file this plugin did not create. A
-          // delivery record is written only after a successful write, so no
-          // record for this path means the first write must be create-only —
-          // an existing file there belongs to the user and fails the call.
-          const owned = store.deliveriesFor(threadId).some((delivery) => delivery.filePath === filePath);
+          // Invariant: never write over or delete bytes the plugin did not
+          // write, across the file's whole life. No delivery record → the
+          // first write is create-only (an existing file belongs to the
+          // user). Owned path → CAS against the sha256 of the plugin's own
+          // last write, so a file the user replaced after delivery is left
+          // alone and ownership is relinquished.
+          const owning = store.deliveriesFor(threadId).find((delivery) => delivery.filePath === filePath);
           const saved = await bb.sdk.files.write({
             hostId: target.hostId,
             path: filePath,
             rootPath: target.worktree,
             content: renderDotenv(entries),
             mode: 0o600,
-            ...(owned ? {} : { expectedSha256: null }),
+            expectedSha256: owning ? owning.sha256 : null,
           });
           if (saved.outcome === "conflict") {
+            if (owning) {
+              store.forgetDelivery(threadId, filePath);
+              return toolError(
+                `the file at ${filePath} was modified externally since the plugin wrote it — ` +
+                  "it will not be touched again; move it aside and call murk_get again",
+              );
+            }
             return toolError(
               `a file already exists at ${filePath} that this plugin did not create — ` +
                 "move it aside (or delete it) and call murk_get again",
@@ -309,6 +318,7 @@ export default async function plugin(bb: BbPluginApi) {
             rootPath: target.worktree,
             filePath,
             keys: deliveredToFile,
+            sha256: saved.sha256,
           });
         }
 
@@ -332,13 +342,23 @@ export default async function plugin(bb: BbPluginApi) {
   bb.events.on("thread.idle", async ({ thread }) => {
     const deliveries = store.deliveriesFor(thread.id);
     if (deliveries.length === 0) return;
+    let removed = 0;
     for (const delivery of deliveries) {
+      // files.remove has no CAS guard, so read-compare-then-remove: delete
+      // only when the file still hashes to the plugin's own last write.
+      // Mismatch, missing file, or read error → leave the file alone.
       try {
-        await bb.sdk.files.remove({
-          hostId: delivery.hostId,
-          path: delivery.filePath,
-          rootPath: delivery.rootPath,
-        });
+        const current = await bb.sdk.files.read({ hostId: delivery.hostId, path: delivery.filePath });
+        if (current.sha256 === delivery.sha256) {
+          await bb.sdk.files.remove({
+            hostId: delivery.hostId,
+            path: delivery.filePath,
+            rootPath: delivery.rootPath,
+          });
+          removed++;
+        } else {
+          bb.log.info(`leaving ${delivery.filePath} in place: modified externally since delivery`);
+        }
       } catch (error) {
         // Already gone (or the worktree was destroyed) — nothing to clean.
         bb.log.debug(
@@ -347,7 +367,7 @@ export default async function plugin(bb: BbPluginApi) {
       }
     }
     store.clearDeliveries(thread.id);
-    bb.log.info(`removed ${deliveries.length} delivered env file(s) for idle thread ${thread.id}`);
+    bb.log.info(`removed ${removed} delivered env file(s) for idle thread ${thread.id}`);
   });
 
   // ---- bb murk CLI ---------------------------------------------------------

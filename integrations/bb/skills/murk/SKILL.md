@@ -38,9 +38,9 @@ when murk_get either delivers it or fails closed.
   file path. Source that path — `set -a; source <path>; set +a` — or hand it
   to dotenv-aware tools without printing its contents. The file disappears
   when the thread idles; call murk_get again in a later turn instead of
-  caching values. murk_get never touches a file it did not create: if
-  something else already sits at the delivery path, it fails closed and asks
-  you to move that file aside.
+  caching values. murk_get never touches bytes it did not write: if something
+  else already sits at the delivery path, or the file changed after delivery,
+  it fails closed and asks you to move that file aside.
 - **Reveal grants:** only when the user minted the grant with `--reveal` do
   values come back inline, and only for that grant's keys. Treat them as
   radioactive: use them, never repeat them.
