@@ -348,7 +348,11 @@ export default async function plugin(bb: BbPluginApi) {
       // only when the file still hashes to the plugin's own last write.
       // Mismatch, missing file, or read error → leave the file alone.
       try {
-        const current = await bb.sdk.files.read({ hostId: delivery.hostId, path: delivery.filePath });
+        const current = await bb.sdk.files.read({
+          hostId: delivery.hostId,
+          path: delivery.filePath,
+          rootPath: delivery.rootPath,
+        });
         if (current.sha256 === delivery.sha256) {
           await bb.sdk.files.remove({
             hostId: delivery.hostId,
