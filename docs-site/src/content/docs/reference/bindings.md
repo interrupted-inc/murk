@@ -1,6 +1,6 @@
 ---
 title: Library bindings
-description: Read murk secrets at runtime from Python and Node.js with the murk-secrets bindings.
+description: Read and write murk secrets at runtime with the Python and Node.js murk-secrets bindings.
 sidebar:
   order: 4
 ---
@@ -11,14 +11,16 @@ instead of shelling out to the CLI. They're published as
 [`@interrupted/murk-secrets`](https://www.npmjs.com/package/@interrupted/murk-secrets) on
 npm.
 
-The bindings only read: they load and decrypt an existing vault. You still
-create and manage vaults with the [CLI](/reference/cli/) — `murk init`,
-`murk add`, `murk circle`, and so on. Reach for a binding when a program wants
-its secrets in memory instead of through `source .env`.
+Both bindings load and decrypt an existing vault. The Node binding can also
+store secrets and key descriptions, mirroring `murk add` and `murk describe`.
+The Python binding is read-only. Trust-changing operations — rotation,
+recipient and group changes, minting agent grants — stay in the
+[CLI](/reference/cli/). Reach for a binding when a program wants its secrets
+in memory instead of through `source .env`.
 
 ## Prerequisites
 
-The bindings read a vault the CLI made, so first you need:
+The bindings work on a vault the CLI made, so first you need:
 
 - the [murk CLI](/install/) installed, and a `.murk` vault created with
   `murk init` and populated with `murk add`.
@@ -32,7 +34,7 @@ Both packages ship prebuilt native binaries with release provenance. See
 
 ## Python
 
-Requires Python ≥ 3.9.
+Requires Python ≥ 3.9. The Python binding is read-only.
 
 ```bash
 pip install murk-secrets
@@ -80,14 +82,15 @@ The module is imported as `murk` even though the package is `murk-secrets`.
 
 ## Node.js
 
-Requires Node.js ≥ 16. TypeScript types are bundled.
+Requires Node.js ≥ 16. TypeScript types are bundled. The Node binding reads
+and writes: it can store secrets and descriptions as well as decrypt them.
 
 ```bash
 npm install @interrupted/murk-secrets
 ```
 
 ```typescript
-import { load, get, exportAll } from "@interrupted/murk-secrets";
+import { load, get, exportAll, add } from "@interrupted/murk-secrets";
 
 // Load the vault (reads MURK_KEY / MURK_KEY_FILE from the environment)
 const vault = load();
@@ -99,9 +102,15 @@ if (vault.has("STRIPE_SECRET")) {
   charge(vault.get("STRIPE_SECRET")!);
 }
 
+// Store a secret (encrypted to everyone by default)
+vault.add("NEW_TOKEN", "value");
+vault.add("MY_TOKEN", "value", { tier: "me" });        // personal, scoped to you
+vault.add("TEAM_TOKEN", "value", { tier: "backend" }); // to a named group
+
 // One-liners load the vault on each call
 get("DATABASE_URL");
 exportAll();
+add("NEW_TOKEN", "value");
 ```
 
 ### API
@@ -115,6 +124,7 @@ exportAll();
 | `load(vaultPath?)` | `Vault` | Load and decrypt a vault |
 | `get(key, vaultPath?)` | `string \| null` | One-liner: load, then read one key |
 | `exportAll(vaultPath?)` | `Record<string, string>` | One-liner: load, then export everything |
+| `add(key, value, options?, vaultPath?)` | `void` | One-liner: load, then store a secret |
 | `hasIdentity()` | `boolean` | Whether a decryption identity is available (can `load` decrypt?) |
 
 #### The `Vault` object
@@ -125,7 +135,37 @@ exportAll();
 | `vault.export()` | `Record<string, string>` | All readable secrets |
 | `vault.keys()` | `string[]` | Key names |
 | `vault.has(key)` | `boolean` | Membership test |
+| `vault.add(key, value, options?)` | `void` | Store a secret (see [Writing secrets](#writing-secrets-node)) |
+| `vault.describe(key, description, options?)` | `void` | Set a key's description, tags, or example |
 | `vault.length` | `number` | Number of secrets |
+
+### Writing secrets (Node)
+
+`vault.add(key, value, options?)` mirrors `murk add`: it encrypts the value,
+re-signs the vault, and writes it back to disk under an exclusive lock, so it
+is safe against concurrent writers. An existing key is overwritten in place,
+and the loaded `Vault` refreshes so later reads on the same handle see the
+write. Key names must start with a letter or underscore and contain only
+`[A-Za-z0-9_]`.
+
+All options are optional:
+
+| Option | Type | Description |
+|---|---|---|
+| `tier` | `string` | Where the value lives: `"everyone"` (default, shared to all recipients), `"me"` (a personal value encrypted to you only), or a group name (encrypted to that group's members — you must be a member) |
+| `desc` | `string` | Human-readable description recorded in the vault schema |
+| `tags` | `string[]` | Tags recorded on the key. Tags are the unit the agent allow-tag policy gates on |
+
+`tier` accepts aliases: `"all"` and `"shared"` mean `"everyone"`, and
+`"self"` and `"mine"` mean `"me"`. Those five names are reserved. Any other
+string names a group, so a misspelled tier becomes a group lookup and fails
+unless a group by that name exists.
+
+`vault.describe(key, description, options?)` mirrors `murk describe`: it
+updates a key's schema metadata without touching its value. `options` takes
+`tags` (`string[]`, replaces existing tags when non-empty) and `example`
+(`string`, for `.env.example`-style docs). A key with no value becomes a
+documented-but-unset entry.
 
 ## How reads resolve
 
@@ -134,17 +174,22 @@ Both bindings resolve a key the way the CLI does: a personal
 read, then the shared value. `export()` merges the same way. You only ever see
 keys your identity is a recipient of.
 
-## Agent policy is enforced on read
+## Agent policy is enforced on read and write
 
 When the loaded key is an [agent grant](/concepts/grants/) (from
-`murk agent grant`), the vault's agent policy is enforced on every read — the
-same gate as `murk agent exec`:
+`murk agent grant`), the vault's agent policy is enforced on every read and
+write — the same gate as `murk agent exec`:
 
 - `get()` rejects a forbidden key.
 - `export()` checks the whole readable set first and rejects the call outright
   if any key is out of policy — no partial results.
+- `add()` and `describe()` (Node) check the resulting key before persisting.
+  A forbidden write fails closed and leaves the vault on disk untouched.
 
-Python raises `RuntimeError`. Node throws. Operator keys skip the check. A
+Python raises `RuntimeError`. Node throws. A plain operator key skips the
+check, unless you opt in with
+[`MURK_SELF_SCOPE`](/concepts/env-vars/) — then your own key is held to the
+policy the same way. A
 grant can't decrypt out-of-scope secrets in the first place — its ephemeral
 key isn't a recipient of them — so this is a backstop, not the only guard. See
 [AI agents & MCP](/guides/ai-agents-mcp/) for the full model.
@@ -158,3 +203,9 @@ your program the runtime owns it. murk can't wipe it. That's unavoidable when
 you read secrets into a process, and it's noted in the
 [threat model](/security/threat-model/). It doesn't touch the vault on disk,
 only how long values linger in memory — so don't hold them longer than needed.
+
+The Node write path makes this sharper. To call `vault.add(key, value)` you
+already hold the plaintext as a JavaScript string before the call. It lives in
+V8's heap, is copied across the FFI boundary, and is zeroized on neither side.
+Build the value as late as possible, pass it straight into `add()`, and don't
+keep it around.
