@@ -18,6 +18,8 @@ pub static CWD_LOCK: Mutex<()> = Mutex::new(());
 /// necessary because `git worktree` records the real path of a checkout, and on
 /// macOS a temp dir reached via `/var` really lives in `/private/var` — without
 /// it a fixture's own paths would not match what git wrote down.
+// Twin of `real_path` in `tests/common/mod.rs` (unit vs. integration test
+// binaries can't share `cfg(test)` code) — mirror any edit there.
 pub fn real_path(path: &std::path::Path) -> std::path::PathBuf {
     let canonical = std::fs::canonicalize(path).expect("canonicalize fixture path");
     let text = canonical.to_string_lossy();

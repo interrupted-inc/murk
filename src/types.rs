@@ -154,7 +154,7 @@ pub struct VaultSignature {
     pub sig: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Meta {
     /// Maps pubkey → display name. The only place names are stored.
     pub recipients: HashMap<String, String>,
@@ -192,6 +192,25 @@ pub struct Meta {
     pub grants: BTreeMap<String, GrantEntry>,
 }
 
+/// Manual `Debug`: identical to the derived output except `mac_key`, which
+/// would otherwise print the raw hex MAC key in any accidental `{:?}` log
+/// (e.g. an error message, a panic, or a debug print left in during
+/// development).
+impl std::fmt::Debug for Meta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Meta")
+            .field("recipients", &self.recipients)
+            .field("mac", &self.mac)
+            .field("signers", &self.signers)
+            .field("sig", &self.sig)
+            .field("mac_key", &self.mac_key.as_ref().map(|_| "<redacted>"))
+            .field("github_pins", &self.github_pins)
+            .field("groups", &self.groups)
+            .field("grants", &self.grants)
+            .finish()
+    }
+}
+
 /// Outcome of verifying the vault's Ed25519 signature at load time.
 ///
 /// An *invalid* signature never reaches here — it fails the load as tampering.
@@ -218,7 +237,7 @@ pub enum SignatureState {
 // The working representation after decryption. Commands read/modify this,
 // then save_vault compares against the original to minimize re-encryption.
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct Murk {
     /// Decrypted shared values. Wrapped in `Zeroizing` so plaintext is cleared
     /// from memory when the `Murk` is dropped.
@@ -251,4 +270,80 @@ pub struct Murk {
     /// from the signer-pin continuity check; the CLI warns distinctly, `verify`
     /// fails, and `MURK_STRICT` refuses the load.
     pub signature_downgraded: bool,
+}
+
+/// Manual `Debug`: prints key NAMES (schema-level metadata, not secret) but
+/// never the decrypted plaintext in `values`/`private`/`grouped` — those are
+/// `Zeroizing<String>`, which forwards `Debug` transparently and would
+/// otherwise leak secret material into any accidental `{:?}` log.
+impl std::fmt::Debug for Murk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Murk")
+            .field("values", &redacted_keys(&self.values))
+            .field("recipients", &self.recipients)
+            .field("private", &redacted_nested_keys(&self.private))
+            .field("grouped", &redacted_nested_keys(&self.grouped))
+            .field("groups", &self.groups)
+            .field("grants", &self.grants)
+            .field("legacy_mac", &self.legacy_mac)
+            .field("github_pins", &self.github_pins)
+            .field("signers", &self.signers)
+            .field("signature", &self.signature)
+            .field("signature_downgraded", &self.signature_downgraded)
+            .finish()
+    }
+}
+
+/// Key names of a plaintext-value map, each paired with a `<redacted>`
+/// placeholder instead of the actual (secret) value.
+fn redacted_keys(map: &HashMap<String, Zeroizing<String>>) -> BTreeMap<&str, &'static str> {
+    map.keys().map(|k| (k.as_str(), "<redacted>")).collect()
+}
+
+/// Same as [`redacted_keys`] but one level deeper, for `private`/`grouped`
+/// (key -> { name -> value }).
+fn redacted_nested_keys(
+    map: &HashMap<String, HashMap<String, Zeroizing<String>>>,
+) -> BTreeMap<&str, BTreeMap<&str, &'static str>> {
+    map.iter()
+        .map(|(k, inner)| (k.as_str(), redacted_keys(inner)))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn murk_debug_redacts_secret_values() {
+        let mut murk = Murk::default();
+        murk.values.insert(
+            "API_KEY".into(),
+            Zeroizing::new("sekrit-plaintext-sentinel".into()),
+        );
+        let mut scoped = HashMap::new();
+        scoped.insert(
+            "age1pk".into(),
+            Zeroizing::new("sekrit-scoped-sentinel".into()),
+        );
+        murk.private.insert("PRIVATE_KEY".into(), scoped);
+
+        let debug = format!("{murk:?}");
+        assert!(debug.contains("API_KEY"));
+        assert!(debug.contains("PRIVATE_KEY"));
+        assert!(!debug.contains("sekrit-plaintext-sentinel"));
+        assert!(!debug.contains("sekrit-scoped-sentinel"));
+    }
+
+    #[test]
+    fn meta_debug_redacts_mac_key() {
+        let meta = Meta {
+            mac_key: Some("deadbeefcafef00d-sentinel-mac-key".into()),
+            ..Default::default()
+        };
+
+        let debug = format!("{meta:?}");
+        assert!(debug.contains("mac_key"));
+        assert!(!debug.contains("deadbeefcafef00d-sentinel-mac-key"));
+    }
 }

@@ -201,6 +201,7 @@ pub(crate) fn cmd_add(
         }
         tier => {
             let scoped = matches!(tier, SecretTier::Me);
+            let pubkey = scoped.then(|| try_or_die(identity.pubkey_string()));
             let needs = murk_cli::add_secret(
                 &mut vault,
                 &mut current,
@@ -210,7 +211,7 @@ pub(crate) fn cmd_add(
                 example,
                 scoped,
                 tags,
-                &identity,
+                pubkey.as_deref(),
             );
             (
                 needs,
@@ -320,6 +321,7 @@ pub(crate) fn cmd_import(
     let imported: Vec<String> = match &tier {
         SecretTier::Everyone => murk_cli::import_secrets(&mut vault, &mut current, &pairs, example),
         SecretTier::Me => {
+            let pubkey = try_or_die(identity.pubkey_string());
             for (key, value) in &pairs {
                 murk_cli::add_secret(
                     &mut vault,
@@ -330,7 +332,7 @@ pub(crate) fn cmd_import(
                     example,
                     true,
                     &[],
-                    &identity,
+                    Some(&pubkey),
                 );
             }
             pairs.iter().map(|(k, _)| k.clone()).collect()
@@ -417,6 +419,7 @@ pub(crate) fn cmd_generate(
         }
         tier => {
             let scoped = matches!(tier, SecretTier::Me);
+            let pubkey = scoped.then(|| try_or_die(identity.pubkey_string()));
             murk_cli::add_secret(
                 &mut vault,
                 &mut current,
@@ -426,7 +429,7 @@ pub(crate) fn cmd_generate(
                 example,
                 scoped,
                 tags,
-                &identity,
+                pubkey.as_deref(),
             );
             if scoped {
                 " (me)".to_string()
@@ -462,7 +465,7 @@ pub(crate) fn cmd_rotate(
         );
     }
 
-    let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
+    let (mut vault, murk, _identity, _lock) = load_vault_locked(vault_path);
     let original = murk.clone();
     let mut current = murk;
 
@@ -498,7 +501,7 @@ pub(crate) fn cmd_rotate(
             None,
             false,
             &[],
-            &identity,
+            None,
         );
         rotated += 1;
         eprintln!("{} rotated {}", "◆".magenta(), k.bold());

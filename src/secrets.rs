@@ -2,10 +2,17 @@
 
 use zeroize::Zeroizing;
 
-use crate::{crypto, now_utc, types};
+use crate::{now_utc, types};
 
 /// Add or update a secret in the working state.
-/// If `scoped` is true, stores in scoped (encrypted to self only).
+/// If `scoped` is true, stores in scoped (encrypted to self only), and
+/// `pubkey` must be `Some` — the operator's pubkey to key the private entry
+/// under. `pubkey` is unused (and may be `None`) when `scoped` is false.
+///
+/// `pubkey` is a caller-resolved value rather than a `MurkIdentity` because
+/// deriving it (`MurkIdentity::pubkey_string`) is fallible for SSH identities
+/// — the caller resolves it up front (dying gracefully on failure) instead of
+/// this function panicking on a bad key.
 /// Returns true if the key was new (no existing schema entry).
 pub fn add_secret(
     vault: &mut types::Vault,
@@ -16,17 +23,17 @@ pub fn add_secret(
     example: Option<&str>,
     scoped: bool,
     tags: &[String],
-    identity: &crypto::MurkIdentity,
+    pubkey: Option<&str>,
 ) -> bool {
     if scoped {
         // `me` is a per-identity override layered on top of the base tier — it
         // does not change which group owns the key, so shared/grouped are left
         // untouched.
-        let pubkey = identity.pubkey_string().expect("valid identity has pubkey");
+        let pubkey = pubkey.expect("scoped add_secret requires a resolved pubkey");
         murk.private
             .entry(key.into())
             .or_default()
-            .insert(pubkey, Zeroizing::new(value.to_owned()));
+            .insert(pubkey.to_string(), Zeroizing::new(value.to_owned()));
     } else {
         // Setting the shared (everyone) value makes `everyone` the base tier, so
         // any named-group assignment is dropped — otherwise the stale grouped
@@ -402,8 +409,6 @@ mod tests {
 
     #[test]
     fn add_secret_shared() {
-        let (secret, _) = generate_keypair();
-        let identity = make_identity(&secret);
         let mut vault = empty_vault();
         let mut murk = empty_murk();
 
@@ -416,7 +421,7 @@ mod tests {
             None,
             false,
             &[],
-            &identity,
+            None,
         );
 
         assert!(needs_hint);
@@ -427,8 +432,6 @@ mod tests {
 
     #[test]
     fn add_secret_with_description() {
-        let (secret, _) = generate_keypair();
-        let identity = make_identity(&secret);
         let mut vault = empty_vault();
         let mut murk = empty_murk();
 
@@ -441,7 +444,7 @@ mod tests {
             None,
             false,
             &[],
-            &identity,
+            None,
         );
 
         assert!(!needs_hint);
@@ -450,8 +453,7 @@ mod tests {
 
     #[test]
     fn add_secret_scoped() {
-        let (secret, pubkey) = generate_keypair();
-        let identity = make_identity(&secret);
+        let (_secret, pubkey) = generate_keypair();
         let mut vault = empty_vault();
         let mut murk = empty_murk();
 
@@ -464,7 +466,7 @@ mod tests {
             None,
             true,
             &[],
-            &identity,
+            Some(&pubkey),
         );
 
         assert!(!murk.values.contains_key("KEY"));
@@ -472,36 +474,60 @@ mod tests {
     }
 
     #[test]
+    fn add_secret_scoped_accepts_a_bare_pubkey_no_identity_required() {
+        // The scoped branch used to derive the pubkey via
+        // `MurkIdentity::pubkey_string()`, which is fallible for SSH identities
+        // (`age::ssh::Recipient::try_from` can fail) and was force-unwrapped
+        // with `.expect(...)`. It now takes a caller-resolved pubkey string
+        // directly, so it needs no `MurkIdentity` in scope at all — proving the
+        // scoped branch is no longer coupled to that fallible derivation.
+        let mut vault = empty_vault();
+        let mut murk = empty_murk();
+        let pubkey = "ssh-rsa AAAAB3NotAnActualKeyJustAPlainString";
+
+        add_secret(
+            &mut vault,
+            &mut murk,
+            "KEY",
+            "scoped_val",
+            None,
+            None,
+            true,
+            &[],
+            Some(pubkey),
+        );
+
+        assert!(!murk.values.contains_key("KEY"));
+        assert_eq!(murk.private["KEY"][pubkey].as_str(), "scoped_val");
+    }
+
+    #[test]
     fn add_secret_merges_tags() {
-        let (secret, _) = generate_keypair();
-        let identity = make_identity(&secret);
         let mut vault = empty_vault();
         let mut murk = empty_murk();
 
         let tags1 = vec!["db".into()];
         add_secret(
-            &mut vault, &mut murk, "KEY", "v1", None, None, false, &tags1, &identity,
+            &mut vault, &mut murk, "KEY", "v1", None, None, false, &tags1, None,
         );
         assert_eq!(vault.schema["KEY"].tags, vec!["db"]);
 
         let tags2 = vec!["backend".into()];
         add_secret(
-            &mut vault, &mut murk, "KEY", "v2", None, None, false, &tags2, &identity,
+            &mut vault, &mut murk, "KEY", "v2", None, None, false, &tags2, None,
         );
         assert_eq!(vault.schema["KEY"].tags, vec!["db", "backend"]);
 
         // Adding duplicate tag should not create duplicates.
         let tags3 = vec!["db".into()];
         add_secret(
-            &mut vault, &mut murk, "KEY", "v3", None, None, false, &tags3, &identity,
+            &mut vault, &mut murk, "KEY", "v3", None, None, false, &tags3, None,
         );
         assert_eq!(vault.schema["KEY"].tags, vec!["db", "backend"]);
     }
 
     #[test]
     fn add_secret_updates_existing_desc() {
-        let (secret, _) = generate_keypair();
-        let identity = make_identity(&secret);
         let mut vault = empty_vault();
         let mut murk = empty_murk();
 
@@ -514,7 +540,7 @@ mod tests {
             None,
             false,
             &[],
-            &identity,
+            None,
         );
         add_secret(
             &mut vault,
@@ -525,15 +551,13 @@ mod tests {
             None,
             false,
             &[],
-            &identity,
+            None,
         );
         assert_eq!(vault.schema["KEY"].description, "new");
     }
 
     #[test]
     fn add_secret_sets_example() {
-        let (secret, _) = generate_keypair();
-        let identity = make_identity(&secret);
         let mut vault = empty_vault();
         let mut murk = empty_murk();
 
@@ -546,15 +570,13 @@ mod tests {
             Some("ex-value"),
             false,
             &[],
-            &identity,
+            None,
         );
         assert_eq!(vault.schema["KEY"].example.as_deref(), Some("ex-value"));
     }
 
     #[test]
     fn add_secret_none_example_preserves_existing() {
-        let (secret, _) = generate_keypair();
-        let identity = make_identity(&secret);
         let mut vault = empty_vault();
         let mut murk = empty_murk();
 
@@ -567,7 +589,7 @@ mod tests {
             Some("keep-me"),
             false,
             &[],
-            &identity,
+            None,
         );
         // A later value write that omits --example must not clear the example.
         add_secret(
@@ -579,7 +601,7 @@ mod tests {
             None,
             false,
             &[],
-            &identity,
+            None,
         );
         assert_eq!(vault.schema["KEY"].example.as_deref(), Some("keep-me"));
     }
@@ -793,8 +815,7 @@ mod tests {
 
     #[test]
     fn add_secret_overwrite_shared_with_scoped() {
-        let (secret, pubkey) = generate_keypair();
-        let identity = make_identity(&secret);
+        let (_secret, pubkey) = generate_keypair();
         let mut vault = empty_vault();
         let mut murk = empty_murk();
 
@@ -807,7 +828,7 @@ mod tests {
             None,
             false,
             &[],
-            &identity,
+            None,
         );
         assert_eq!(murk.values["KEY"].as_str(), "shared_val");
 
@@ -820,7 +841,7 @@ mod tests {
             None,
             true,
             &[],
-            &identity,
+            Some(&pubkey),
         );
         // Shared value still exists, scoped override added.
         assert_eq!(murk.values["KEY"].as_str(), "shared_val");
@@ -829,8 +850,6 @@ mod tests {
 
     #[test]
     fn add_secret_empty_value() {
-        let (secret, _) = generate_keypair();
-        let identity = make_identity(&secret);
         let mut vault = empty_vault();
         let mut murk = empty_murk();
 
@@ -843,7 +862,7 @@ mod tests {
             None,
             false,
             &[],
-            &identity,
+            None,
         );
         assert_eq!(murk.values["KEY"].as_str(), "");
     }

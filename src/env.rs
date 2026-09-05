@@ -185,11 +185,7 @@ pub fn key_from_env_only() -> Result<Option<SecretString>, String> {
     }
     if let Ok(path) = env::var(ENV_MURK_KEY_FILE) {
         let p = std::path::Path::new(&path);
-        reject_symlink(p, "MURK_KEY_FILE")?;
-        let key = std::fs::read_to_string(p)
-            .map_err(|e| format!("cannot read MURK_KEY_FILE: {e}"))?
-            .trim()
-            .to_string();
+        let key = read_secret_file(p, "MURK_KEY_FILE")?.trim().to_string();
         return Ok(Some(SecretString::from(key)));
     }
     Ok(None)
@@ -856,6 +852,64 @@ mod tests {
 
         let secret = result.unwrap();
         assert_eq!(secret.expose_secret(), direct_key);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn key_from_env_only_rejects_world_readable_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        unsafe { env::remove_var("MURK_KEY") };
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("loose.key");
+        std::fs::write(&path, "AGE-SECRET-KEY-1LOOSE\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        unsafe { env::set_var("MURK_KEY_FILE", path.to_str().unwrap()) };
+        let result = key_from_env_only();
+        unsafe { env::remove_var("MURK_KEY_FILE") };
+
+        assert!(
+            result.is_err(),
+            "a group/world-readable MURK_KEY_FILE must be refused, matching \
+             resolve_key_with_source's read_secret_file check"
+        );
+        assert!(result.unwrap_err().contains("readable by others"));
+    }
+
+    #[test]
+    fn key_from_env_only_trims_and_accepts_tight_permissions() {
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        unsafe { env::remove_var("MURK_KEY") };
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("tight.key");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&path)
+                .unwrap();
+            std::io::Write::write_all(&mut f, b"  AGE-SECRET-KEY-1TIGHT  \n").unwrap();
+        }
+        #[cfg(not(unix))]
+        std::fs::write(&path, "  AGE-SECRET-KEY-1TIGHT  \n").unwrap();
+
+        unsafe { env::set_var("MURK_KEY_FILE", path.to_str().unwrap()) };
+        let result = key_from_env_only();
+        unsafe { env::remove_var("MURK_KEY_FILE") };
+
+        let key = result.unwrap().unwrap();
+        assert_eq!(key.expose_secret(), "AGE-SECRET-KEY-1TIGHT");
     }
 
     #[cfg(unix)]

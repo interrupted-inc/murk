@@ -245,8 +245,15 @@ fn merge_btree<V: PartialEq + Clone>(
                         reason: "removed on one side, unchanged on the other".into(),
                     });
                     result.insert(key.to_string(), o.clone());
+                } else {
+                    // Ours modified AND theirs removed — keep the modified value
+                    // (it must not be silently dropped) but flag it for review.
+                    conflicts.push(MergeConflict {
+                        field: format!("{field_name}.{key}"),
+                        reason: "removed on one side, modified on the other".into(),
+                    });
+                    result.insert(key.to_string(), o.clone());
                 }
-                // else: ours modified AND theirs removed — ours wins (modified takes priority)
             }
             (Some(b), None, Some(t)) => {
                 if t == b {
@@ -256,8 +263,15 @@ fn merge_btree<V: PartialEq + Clone>(
                         reason: "removed on one side, unchanged on the other".into(),
                     });
                     result.insert(key.to_string(), t.clone());
+                } else {
+                    // Theirs modified AND ours removed — keep the modified value
+                    // (it must not be silently dropped) but flag it for review.
+                    conflicts.push(MergeConflict {
+                        field: format!("{field_name}.{key}"),
+                        reason: "removed on one side, modified on the other".into(),
+                    });
+                    result.insert(key.to_string(), t.clone());
                 }
-                // else: theirs modified AND ours removed — theirs wins
             }
 
             (Some(b), Some(o), Some(t)) => {
@@ -554,7 +568,10 @@ fn merge_secrets_with_reencrypted_side(
                 result.remove(key);
             }
             (Some(b), Some(entry)) => {
-                if entry.shared != b.shared {
+                if entry.shared != b.shared
+                    || entry.private != b.private
+                    || entry.grouped != b.grouped
+                {
                     conflicts.push(MergeConflict {
                         field: format!("secrets.{key}"),
                         reason: format!(
@@ -1486,6 +1503,66 @@ mod tests {
         assert!(r2.vault.schema.contains_key("TAGGED"));
     }
 
+    #[test]
+    fn merge_schema_removed_one_side_modified_other_keeps_modified() {
+        // A schema-only key isolates the merge_btree modify-vs-delete path
+        // (no secret entry involved).
+        let mut base = base_vault();
+        base.schema.insert(
+            "TAGGED".into(),
+            SchemaEntry {
+                description: "d".into(),
+                example: None,
+                tags: vec![],
+                ..Default::default()
+            },
+        );
+
+        // Ours modifies the key; theirs deletes it — the modification must
+        // survive, not be silently dropped, and must be flagged.
+        let mut ours = base.clone();
+        ours.schema.get_mut("TAGGED").unwrap().description = "ours-modified".into();
+        let mut theirs = base.clone();
+        theirs.schema.remove("TAGGED");
+
+        let r = merge_vaults(&base, &ours, &theirs);
+        assert!(
+            r.conflicts.iter().any(|c| c.field == "schema.TAGGED"
+                && c.reason
+                    .contains("removed on one side, modified on the other")),
+            "modify-vs-delete must conflict, not silently drop: {:?}",
+            r.conflicts
+        );
+        assert_eq!(
+            r.vault.schema.get("TAGGED").map(|s| s.description.as_str()),
+            Some("ours-modified"),
+            "the modified value must survive"
+        );
+
+        // Symmetric: theirs modifies, ours deletes.
+        let mut ours2 = base.clone();
+        ours2.schema.remove("TAGGED");
+        let mut theirs2 = base.clone();
+        theirs2.schema.get_mut("TAGGED").unwrap().description = "theirs-modified".into();
+
+        let r2 = merge_vaults(&base, &ours2, &theirs2);
+        assert!(
+            r2.conflicts.iter().any(|c| c.field == "schema.TAGGED"
+                && c.reason
+                    .contains("removed on one side, modified on the other")),
+            "conflicts: {:?}",
+            r2.conflicts
+        );
+        assert_eq!(
+            r2.vault
+                .schema
+                .get("TAGGED")
+                .map(|s| s.description.as_str()),
+            Some("theirs-modified"),
+            "the modified value must survive"
+        );
+    }
+
     // -- merge_scoped (private) entry resolution --
 
     #[test]
@@ -1653,6 +1730,73 @@ mod tests {
             r.conflicts
         );
         assert!(r.vault.secrets.contains_key("DB_URL"));
+    }
+
+    // -- merge_secrets_with_reencrypted_side: stable-side private/grouped edits --
+
+    #[test]
+    fn merge_reencrypted_side_private_edit_not_silently_dropped() {
+        let mut base = base_vault();
+        base.secrets
+            .get_mut("DB_URL")
+            .unwrap()
+            .private
+            .insert("age1alice".into(), "base-scope".into());
+
+        // Ours (the stable side) edits the private ciphertext.
+        let mut ours = base.clone();
+        ours.secrets
+            .get_mut("DB_URL")
+            .unwrap()
+            .private
+            .insert("age1alice".into(), "ours-edited-scope".into());
+
+        // Theirs re-encrypts: recipient set changes, so its ciphertext is the
+        // new baseline and can't be compared against base for edits.
+        let mut theirs = base.clone();
+        theirs.recipients.push("age1charlie".into());
+        theirs.secrets.get_mut("DB_URL").unwrap().shared = "theirs-reencrypted-db".into();
+
+        let r = merge_vaults(&base, &ours, &theirs);
+        assert!(
+            r.conflicts.iter().any(|c| c.field == "secrets.DB_URL"
+                && c.reason
+                    .contains("modified on ours side while recipients changed on the other")),
+            "a private-tier edit on the stable side must not be silently dropped: {:?}",
+            r.conflicts
+        );
+    }
+
+    #[test]
+    fn merge_reencrypted_side_grouped_edit_not_silently_dropped() {
+        let mut base = base_vault();
+        base.secrets
+            .get_mut("DB_URL")
+            .unwrap()
+            .grouped
+            .insert("team".into(), "base-group-scope".into());
+
+        // Ours (the stable side) edits the grouped ciphertext.
+        let mut ours = base.clone();
+        ours.secrets
+            .get_mut("DB_URL")
+            .unwrap()
+            .grouped
+            .insert("team".into(), "ours-edited-group-scope".into());
+
+        // Theirs re-encrypts: recipient set changes.
+        let mut theirs = base.clone();
+        theirs.recipients.push("age1charlie".into());
+        theirs.secrets.get_mut("DB_URL").unwrap().shared = "theirs-reencrypted-db".into();
+
+        let r = merge_vaults(&base, &ours, &theirs);
+        assert!(
+            r.conflicts.iter().any(|c| c.field == "secrets.DB_URL"
+                && c.reason
+                    .contains("modified on ours side while recipients changed on the other")),
+            "a grouped-tier edit on the stable side must not be silently dropped: {:?}",
+            r.conflicts
+        );
     }
 
     // -- merge_secrets_both_reencrypted: key-level union when both re-encrypt --

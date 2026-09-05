@@ -593,7 +593,7 @@ pub(crate) fn cmd_agent_ls(json: bool, vault_path: &str) {
 }
 
 pub(crate) fn cmd_agent_revoke(name: &str, rotate: bool, vault_path: &str) {
-    let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
+    let (mut vault, murk, _identity, _lock) = load_vault_locked(vault_path);
     let original = murk.clone();
     let mut current = murk;
 
@@ -629,7 +629,7 @@ pub(crate) fn cmd_agent_revoke(name: &str, rotate: bool, vault_path: &str) {
         let do_rotate = rotate
             || (io::stdin().is_terminal() && confirm(&format!("rotate {n} secret{plural} now?")));
         if do_rotate {
-            rotate_exposed(vault_path, &mut vault, &current, &grant.scope, &identity);
+            rotate_exposed(vault_path, &mut vault, &current, &grant.scope);
         } else {
             eprintln!(
                 "  {}",

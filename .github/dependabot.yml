@@ -40,3 +40,34 @@ updates:
     directory: /.github/requirements
     schedule:
       interval: weekly
+  # Node bindings package. Grouped so a routine minor/patch bump doesn't
+  # open one PR per dependency.
+  - package-ecosystem: npm
+    directory: /node
+    schedule:
+      interval: weekly
+    groups:
+      node-minor-patch:
+        update-types:
+          - minor
+          - patch
+  # Docs site is its own npm tree with its own lockfile.
+  - package-ecosystem: npm
+    directory: /docs-site
+    schedule:
+      interval: weekly
+    groups:
+      docs-site-minor-patch:
+        update-types:
+          - minor
+          - patch
+  # bb plugin integration is its own npm tree with its own lockfile.
+  - package-ecosystem: npm
+    directory: /integrations/bb
+    schedule:
+      interval: weekly
+    groups:
+      bb-plugin-minor-patch:
+        update-types:
+          - minor
+          - patch

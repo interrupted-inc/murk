@@ -47,6 +47,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "fuzz_identity_parse"
+path = "fuzz_targets/fuzz_identity_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "fuzz_recovery"
 path = "fuzz_targets/fuzz_recovery.rs"
 test = false

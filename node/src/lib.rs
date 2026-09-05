@@ -195,7 +195,7 @@ impl Vault {
                     None,
                     false,
                     &tags,
-                    &identity,
+                    Some(&pubkey),
                 );
             }
             Tier::Me => {
@@ -208,7 +208,7 @@ impl Vault {
                     None,
                     true,
                     &tags,
-                    &identity,
+                    Some(&pubkey),
                 );
             }
             Tier::Group(name) => {

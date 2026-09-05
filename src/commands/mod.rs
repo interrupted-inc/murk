@@ -233,7 +233,6 @@ pub(crate) fn rotate_exposed(
     vault: &mut types::Vault,
     baseline: &types::Murk,
     keys: &[String],
-    identity: &MurkIdentity,
 ) {
     let original = baseline.clone();
     let mut current = baseline.clone();
@@ -249,7 +248,7 @@ pub(crate) fn rotate_exposed(
             None,
             false,
             &[],
-            identity,
+            None,
         );
         eprintln!("{} rotated {}", "◆".magenta(), k.bold());
     }

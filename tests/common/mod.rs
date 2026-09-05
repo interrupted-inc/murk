@@ -17,6 +17,8 @@ use std::path::Path;
 /// reached via `/var` really lives in `/private/var`.
 // This module is compiled into every integration binary, and only the worktree
 // fixtures in `cli.rs` need this one — unused elsewhere is expected, not a bug.
+// Twin of `real_path` in `src/testutil.rs` (unit vs. integration test binaries
+// can't share `cfg(test)` code) — mirror any edit there.
 #[allow(dead_code)]
 pub fn real_path(path: &Path) -> std::path::PathBuf {
     let canonical = fs::canonicalize(path).expect("canonicalize fixture path");
