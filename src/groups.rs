@@ -24,22 +24,7 @@ pub fn is_reserved(name: &str) -> bool {
 
 /// Validate a group name: 1–64 chars of `[A-Za-z0-9_-]`, not reserved.
 pub fn validate_group_name(name: &str) -> Result<(), MurkError> {
-    if name.is_empty() {
-        return Err(MurkError::Group("group name cannot be empty".into()));
-    }
-    if name.len() > 64 {
-        return Err(MurkError::Group(
-            "group name too long (max 64 characters)".into(),
-        ));
-    }
-    if !name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err(MurkError::Group(format!(
-            "invalid group name \"{name}\" — use letters, digits, dashes, underscores"
-        )));
-    }
+    crate::grants::validate_short_name(name, "group").map_err(MurkError::Group)?;
     if is_reserved(name) {
         return Err(MurkError::Group(format!(
             "\"{name}\" is a reserved name (it routes to the {name} tier, not a group)"

@@ -66,5 +66,9 @@ values into your shell session:
 set -a; source .murk-<threadId>.env; set +a; ./migrate.sh   # path from the murk_get result
 ```
 
-For anything murk-native, the repo also documents `murk agent exec --only KEY
--- CMD`, which injects secrets directly into a subprocess without a file.
+`murk agent exec --only KEY -- CMD` also injects secrets into a subprocess
+without a file — but only in environments that hold their own `MURK_KEY` or
+`MURK_KEY_FILE` (an operator's shell, a CI job with its own identity). A bb
+thread never holds key material — grants live only as 0600 identity files
+under the plugin's data dir — so that command always fails here. Use the
+delivered dotenv file instead.

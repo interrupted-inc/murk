@@ -436,6 +436,42 @@ describe("grant lifecycle", () => {
   });
 });
 
+describe("vault-truth fail-closed", () => {
+  // The plugin's SQLite bookkeeping can lag the real vault (key deleted after
+  // minting, policy tightened, TTL clock skew). decryptAssigned must fail
+  // closed on the vault's answer, not the plugin's cached grant record.
+  it("murk_get fails closed when the vault no longer holds a key the grant still claims", async () => {
+    murk(["add", "DOOMED_KEY", "--desc", "Short-lived key", "--tag", "agents"], "doomed-value-31337");
+    const mint = await host.harness.behavior.runCli(
+      ["grant", "mint", "--keys", "DOOMED_KEY", "--ttl", "1h"],
+      { cwd: worktree, projectId: PROJECT_ID },
+    );
+    expect(mint.exitCode, mint.stderr).toBe(0);
+    const grantId = mint.stdout.match(/minted grant (g[0-9a-f]{8})/)![1];
+
+    // Delete the key from the vault directly — the plugin's grant record
+    // still lists DOOMED_KEY as covered, so assignGrants lets it through and
+    // only the vault read itself can refuse.
+    murk(["rm", "DOOMED_KEY"]);
+
+    const result = toolText(
+      await host.harness.behavior.callAgentTool(
+        "murk_get",
+        { keys: ["DOOMED_KEY"] },
+        { threadId: THREAD_ID, projectId: PROJECT_ID },
+      ),
+    );
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("not found or outside grant");
+    expect(result.text).not.toContain("doomed-value-31337");
+    // Nothing was delivered to a file either.
+    expect(existsSync(path.join(worktree, `.murk-${THREAD_ID}.env`))).toBe(false);
+
+    const revoke = await host.harness.behavior.runCli(["grant", "revoke", grantId], {});
+    expect(revoke.exitCode).toBe(0);
+  });
+});
+
 describe("grant store", () => {
   it("treats expired and unparseable expiries as inactive", () => {
     expect(isExpired("2000-01-01T00:00:00Z")).toBe(true);

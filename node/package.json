@@ -45,6 +45,8 @@
   },
   "files": [
     "index.js",
-    "index.d.ts"
+    "index.d.ts",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
   ]
 }

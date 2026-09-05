@@ -8,8 +8,6 @@ import { createRequire } from "node:module";
 export interface MurkVault {
   /** Decrypted value, or null when the key is absent or outside the identity's scope. */
   get(key: string): string | null;
-  keys(): string[];
-  has(key: string): boolean;
 }
 
 interface MurkBinding {

@@ -25,6 +25,8 @@ pub enum MurkError {
     Grant(String),
     /// Agent access policy violation or management error.
     Policy(String),
+    /// External editor/client MCP config file is malformed (`agent connect`/`disconnect`).
+    Config(String),
     /// GitHub key fetch.
     GitHub(GitHubError),
     /// General I/O.
@@ -44,6 +46,7 @@ impl std::fmt::Display for MurkError {
             MurkError::Group(msg) => write!(f, "{msg}"),
             MurkError::Grant(msg) => write!(f, "{msg}"),
             MurkError::Policy(msg) => write!(f, "{msg}"),
+            MurkError::Config(msg) => write!(f, "{msg}"),
             MurkError::GitHub(e) => write!(f, "{e}"),
             MurkError::Io(e) => write!(f, "I/O error: {e}"),
         }
@@ -109,6 +112,12 @@ mod tests {
     fn display_secret() {
         let e = MurkError::Secret("invalid".into());
         assert_eq!(e.to_string(), "invalid");
+    }
+
+    #[test]
+    fn display_config() {
+        let e = MurkError::Config("config is not a JSON object".into());
+        assert_eq!(e.to_string(), "config is not a JSON object");
     }
 
     #[test]

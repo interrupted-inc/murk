@@ -48,22 +48,38 @@ function canonicalVault(vaultPath: string): string {
   }
 }
 
+/** Human-readable grant scope: project-wide, or narrowed to one thread. */
+function scopeLabel(grant: GrantRecord): string {
+  return grant.threadId ? `thread ${grant.threadId}` : `project ${grant.projectId}`;
+}
+
 export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
     defaultScope: {
       type: "select",
       label: "Default grant scope",
+      description:
+        "Where a new grant applies when you do not pass --thread. " +
+        "\"project\" lets every thread in the project read the granted keys. " +
+        "\"thread\" limits a grant minted from inside a thread to that thread. " +
+        "A mint from a plain terminal still creates a project grant unless you pass --thread <id>.",
       options: ["project", "thread"],
       default: "project",
     },
     vaultPath: {
       type: "string",
-      label: "Vault path override (absolute; blank = <worktree>/.murk)",
+      label: "Vault path",
+      description:
+        "Absolute path to the murk vault. Leave blank to use the .murk file in each thread's worktree.",
       default: "",
     },
     allowRevealGrants: {
       type: "boolean",
-      label: "Allow reveal grants (murk_get may return granted values inline)",
+      label: "Allow reveal grants",
+      description:
+        "When on, a grant minted with --reveal lets murk_get return its values in the tool result, " +
+        "where the agent and the saved transcript can see them. " +
+        "When off, minting with --reveal fails and every grant delivers values to a file only.",
       default: true,
     },
   });
@@ -520,7 +536,7 @@ export default async function plugin(bb: BbPluginApi) {
       expiresAt,
     });
 
-    const scope = grant.threadId ? `thread ${grant.threadId}` : `project ${grant.projectId}`;
+    const scope = scopeLabel(grant);
     const delivery = grant.reveal ? "reveal (murk_get may return these values inline)" : "file-only (dotenv delivery)";
     return {
       exitCode: 0,
@@ -541,7 +557,7 @@ export default async function plugin(bb: BbPluginApi) {
     const grants = store.list({ includeRevoked });
     if (grants.length === 0) return { exitCode: 0, stdout: "no grants" };
     const lines = grants.map((grant) => {
-      const scope = grant.threadId ? `thread ${grant.threadId}` : `project ${grant.projectId}`;
+      const scope = scopeLabel(grant);
       const status = grant.revokedAt ? "revoked" : isExpired(grant.expiresAt) ? "EXPIRED" : "active";
       const reveal = grant.reveal ? "reveal" : "file-only";
       return `${grant.id}  ${status}  ${reveal}  ${scope}  expires ${grant.expiresAt}  keys: ${grant.keys.join(", ")}`;

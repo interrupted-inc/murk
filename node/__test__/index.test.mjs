@@ -234,6 +234,25 @@ test('vault.add stores a group secret the operator can read back', () => {
   assert.strictEqual(get('GROUP_SECRET'), 'group-value')
 })
 
+// Tier aliases mirror the CLI's resolve_secret_tier table. A mapping
+// regression would route an alias into the named-group arm, where these
+// reserved words name no group and the add throws 'group not found'.
+test("tier aliases 'all' and 'shared' route to the everyone tier", () => {
+  const vault = load()
+  vault.add('ALIAS_ALL', 'alias-all-value', { tier: 'all' })
+  vault.add('ALIAS_SHARED', 'alias-shared-value', { tier: 'shared' })
+  assert.strictEqual(get('ALIAS_ALL'), 'alias-all-value')
+  assert.strictEqual(get('ALIAS_SHARED'), 'alias-shared-value')
+})
+
+test("tier aliases 'self' and 'mine' route to the me tier", () => {
+  const vault = load()
+  vault.add('ALIAS_SELF', 'alias-self-value', { tier: 'self' })
+  vault.add('ALIAS_MINE', 'alias-mine-value', { tier: 'mine' })
+  assert.strictEqual(get('ALIAS_SELF'), 'alias-self-value')
+  assert.strictEqual(get('ALIAS_MINE'), 'alias-mine-value')
+})
+
 test('vault.add to a nonexistent group throws', () => {
   const vault = load()
   assert.throws(() => vault.add('NOPE', 'x', { tier: 'no-such-group' }), /group not found/)

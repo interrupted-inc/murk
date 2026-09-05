@@ -291,10 +291,10 @@ pub(crate) fn upsert_json_server(
     }
     let unit = detect_indent(text);
     let b = text.as_bytes();
-    let top = top_object_open(b)
-        .ok_or_else(|| MurkError::Io(std::io::Error::other("config is not a JSON object")))?;
+    let top =
+        top_object_open(b).ok_or_else(|| MurkError::Config("config is not a JSON object".into()))?;
     let (_top_close, top_members) = object_members(b, top)
-        .ok_or_else(|| MurkError::Io(std::io::Error::other("could not parse config JSON")))?;
+        .ok_or_else(|| MurkError::Config("could not parse config JSON".into()))?;
 
     // Locate the root-key container (mcpServers / servers).
     let Some(root_member) = top_members.iter().find(|m| m.key == root_key) else {
@@ -320,15 +320,15 @@ pub(crate) fn upsert_json_server(
     // The container's value must be an object.
     // Re-find the container value's opening brace precisely.
     let colon = find_colon_after_key(b, root_member.key_start)
-        .ok_or_else(|| MurkError::Io(std::io::Error::other("malformed config member")))?;
+        .ok_or_else(|| MurkError::Config("malformed config member".into()))?;
     let cval_start = skip_trivia(b, colon + 1);
     if cval_start >= b.len() || b[cval_start] != b'{' {
-        return Err(MurkError::Io(std::io::Error::other(format!(
+        return Err(MurkError::Config(format!(
             "\"{root_key}\" is not an object in this config"
-        ))));
+        )));
     }
     let (cclose, cmembers) = object_members(b, cval_start)
-        .ok_or_else(|| MurkError::Io(std::io::Error::other("could not parse server list")))?;
+        .ok_or_else(|| MurkError::Config("could not parse server list".into()))?;
 
     if let Some(existing_server) = cmembers.iter().find(|m| m.key == server) {
         // Replace just murk's value span.
@@ -336,7 +336,7 @@ pub(crate) fn upsert_json_server(
         let value = render_value(spec, &member_indent, &unit);
         let vstart = find_colon_after_key(b, existing_server.key_start)
             .map(|c| skip_trivia(b, c + 1))
-            .ok_or_else(|| MurkError::Io(std::io::Error::other("malformed murk entry")))?;
+            .ok_or_else(|| MurkError::Config("malformed murk entry".into()))?;
         let mut out = String::with_capacity(text.len());
         out.push_str(&text[..vstart]);
         out.push_str(&value);

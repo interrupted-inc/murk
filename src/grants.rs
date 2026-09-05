@@ -21,25 +21,30 @@ use chrono::{DateTime, Duration, Utc};
 use crate::error::MurkError;
 use crate::types;
 
-/// Validate a grant name: 1–64 chars of `[A-Za-z0-9_-]`.
-pub fn validate_grant_name(name: &str) -> Result<(), MurkError> {
+/// Validate a short identifier: 1–64 chars of `[A-Za-z0-9_-]`. Shared by grant
+/// and group name validation (`noun` customizes the error text, e.g. "grant"
+/// or "group").
+pub(crate) fn validate_short_name(name: &str, noun: &str) -> Result<(), String> {
     if name.is_empty() {
-        return Err(MurkError::Grant("grant name cannot be empty".into()));
+        return Err(format!("{noun} name cannot be empty"));
     }
     if name.len() > 64 {
-        return Err(MurkError::Grant(
-            "grant name too long (max 64 characters)".into(),
-        ));
+        return Err(format!("{noun} name too long (max 64 characters)"));
     }
     if !name
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
     {
-        return Err(MurkError::Grant(format!(
-            "invalid grant name \"{name}\" — use letters, digits, dashes, underscores"
-        )));
+        return Err(format!(
+            "invalid {noun} name \"{name}\" — use letters, digits, dashes, underscores"
+        ));
     }
     Ok(())
+}
+
+/// Validate a grant name: 1–64 chars of `[A-Za-z0-9_-]`.
+pub fn validate_grant_name(name: &str) -> Result<(), MurkError> {
+    validate_short_name(name, "grant").map_err(MurkError::Grant)
 }
 
 /// Parse a TTL like `90s`, `30m`, `2h`, or `7d` into a [`Duration`]. A bare

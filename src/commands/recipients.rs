@@ -254,7 +254,7 @@ pub(crate) fn cmd_authorize(
 }
 
 pub(crate) fn cmd_revoke(recipient: &str, rotate: bool, vault_path: &str) {
-    let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
+    let (mut vault, murk, _identity, _lock) = load_vault_locked(vault_path);
     let original = murk.clone();
     let mut current = murk;
 
@@ -299,13 +299,7 @@ pub(crate) fn cmd_revoke(recipient: &str, rotate: bool, vault_path: &str) {
                 && confirm(&format!("rotate {n} exposed secret{plural} now?")));
 
         if do_rotate {
-            rotate_exposed(
-                vault_path,
-                &mut vault,
-                &current,
-                &result.exposed_keys,
-                &identity,
-            );
+            rotate_exposed(vault_path, &mut vault, &current, &result.exposed_keys);
         } else {
             eprintln!(
                 "  {}",
@@ -526,7 +520,6 @@ pub(crate) fn cmd_policy(sub: PolicyCommand) {
     }
 }
 
-/// Truncate a pubkey for display: first 8 chars + "…" + last 4 chars.
 pub(crate) fn cmd_recipients(json: bool, vault_path: &str) {
     let path = Path::new(vault_path);
     let vault = try_or_die(vault::read(path));

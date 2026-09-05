@@ -5,6 +5,11 @@ use crate::{codename, types};
 /// Number of pubkey characters to show when a display name is unavailable.
 const PUBKEY_DISPLAY_LEN: usize = 12;
 
+/// Fall back to a truncated pubkey when no display name is known for it.
+fn truncated_pubkey_fallback(pk: &str) -> String {
+    pk.chars().take(PUBKEY_DISPLAY_LEN).collect::<String>() + "\u{2026}"
+}
+
 /// A single key entry in the vault info output.
 #[derive(Debug, Default)]
 pub struct InfoEntry {
@@ -101,10 +106,10 @@ pub fn vault_info(
                         s.private
                             .keys()
                             .map(|pk| {
-                                meta.recipients.get(pk).cloned().unwrap_or_else(|| {
-                                    pk.chars().take(PUBKEY_DISPLAY_LEN).collect::<String>()
-                                        + "\u{2026}"
-                                })
+                                meta.recipients
+                                    .get(pk)
+                                    .cloned()
+                                    .unwrap_or_else(|| truncated_pubkey_fallback(pk))
                             })
                             .collect()
                     })
@@ -131,9 +136,10 @@ pub fn vault_info(
             .recipients
             .iter()
             .map(|pk| {
-                meta.recipients.get(pk).cloned().unwrap_or_else(|| {
-                    pk.chars().take(PUBKEY_DISPLAY_LEN).collect::<String>() + "\u{2026}"
-                })
+                meta.recipients
+                    .get(pk)
+                    .cloned()
+                    .unwrap_or_else(|| truncated_pubkey_fallback(pk))
             })
             .collect()
     } else {
