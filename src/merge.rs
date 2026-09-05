@@ -568,7 +568,10 @@ fn merge_secrets_with_reencrypted_side(
                 result.remove(key);
             }
             (Some(b), Some(entry)) => {
-                if entry.shared != b.shared || entry.private != b.private || entry.grouped != b.grouped {
+                if entry.shared != b.shared
+                    || entry.private != b.private
+                    || entry.grouped != b.grouped
+                {
                     conflicts.push(MergeConflict {
                         field: format!("secrets.{key}"),
                         reason: format!(
@@ -1525,7 +1528,8 @@ mod tests {
         let r = merge_vaults(&base, &ours, &theirs);
         assert!(
             r.conflicts.iter().any(|c| c.field == "schema.TAGGED"
-                && c.reason.contains("removed on one side, modified on the other")),
+                && c.reason
+                    .contains("removed on one side, modified on the other")),
             "modify-vs-delete must conflict, not silently drop: {:?}",
             r.conflicts
         );
@@ -1544,12 +1548,16 @@ mod tests {
         let r2 = merge_vaults(&base, &ours2, &theirs2);
         assert!(
             r2.conflicts.iter().any(|c| c.field == "schema.TAGGED"
-                && c.reason.contains("removed on one side, modified on the other")),
+                && c.reason
+                    .contains("removed on one side, modified on the other")),
             "conflicts: {:?}",
             r2.conflicts
         );
         assert_eq!(
-            r2.vault.schema.get("TAGGED").map(|s| s.description.as_str()),
+            r2.vault
+                .schema
+                .get("TAGGED")
+                .map(|s| s.description.as_str()),
             Some("theirs-modified"),
             "the modified value must survive"
         );

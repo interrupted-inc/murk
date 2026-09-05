@@ -291,8 +291,8 @@ pub(crate) fn upsert_json_server(
     }
     let unit = detect_indent(text);
     let b = text.as_bytes();
-    let top =
-        top_object_open(b).ok_or_else(|| MurkError::Config("config is not a JSON object".into()))?;
+    let top = top_object_open(b)
+        .ok_or_else(|| MurkError::Config("config is not a JSON object".into()))?;
     let (_top_close, top_members) = object_members(b, top)
         .ok_or_else(|| MurkError::Config("could not parse config JSON".into()))?;
 
