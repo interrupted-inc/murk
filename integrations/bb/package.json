@@ -23,11 +23,11 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@interrupted/murk-secrets": "^0.10.3 || ^0.11.0",
+    "@interrupted/murk-secrets": "^0.11.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@get-bb/plugin-sdk": "0.4.21",
+    "@get-bb/plugin-sdk": "0.4.35",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.0.0",
     "better-sqlite3": "^12.0.0",
