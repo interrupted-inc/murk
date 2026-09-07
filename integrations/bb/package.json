@@ -34,6 +34,6 @@
     "cron-parser": "^5.10.0",
     "hono": "^4.11.9",
     "typescript": "^7.0.2",
-    "vitest": "^3.0.0"
+    "vitest": "^5.0.0"
   }
 }
