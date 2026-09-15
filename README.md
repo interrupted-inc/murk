@@ -289,6 +289,42 @@ murk restore
 
 Every vault command accepts `--vault NAME` (or `MURK_VAULT`). `ls`, `export`, `info`, `exec`, and `agent plan` filter by `--tag`; `ls`, `export`, `info`, `diff`, and `agent plan` support `--json`. See `murk <command> --help` for the full flag list, or [docs/cli-reference.md](docs/cli-reference.md) for the complete reference (auto-generated, kept in sync with the binary).
 
+## Pre-commit hooks
+
+murk provides a [pre-commit](https://pre-commit.com/) hook to scan staged files for leaked secret values. Add it to your project's `.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: https://github.com/interrupted-inc/murk
+    rev: main  # hook ships in releases after v0.11.0; then run 'pre-commit autoupdate' to pin a tag
+    hooks:
+      - id: murk-scan
+```
+
+Then install the hook:
+
+```bash
+# Install pre-commit if needed
+pip install pre-commit
+
+# Install the hook into your repository
+pre-commit install
+```
+
+The hook runs `murk scan` on staged files before each commit, failing the commit if any leaked secret values are detected. **Requires:** murk installed on PATH, and a `.murk` vault file in your repository.
+
+To manually run on specific files:
+
+```bash
+pre-commit run murk-scan --files <file1> <file2>
+```
+
+To run on all files:
+
+```bash
+pre-commit run murk-scan --all-files
+```
+
 ## Design
 
 - **age for encryption, Ed25519 signatures for integrity** — no custom cryptographic primitives; a BLAKE3 MAC binds ciphertexts and an Ed25519 signature (derived from your age key, or your ssh-ed25519 key directly) authenticates the writer, so tampering with a *signed* vault is detectable. An attacker with repo write access can still strip the signature — that loads as an unsigned warning, not a hard failure — so git commit signing is the anchor. See [THREAT_MODEL.md](THREAT_MODEL.md)
