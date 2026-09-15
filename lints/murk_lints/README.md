@@ -83,12 +83,12 @@ and `cargo-dylint`/`dylint-link` to already be installed (see the script's
 header comment for the one-time setup commands) — both are external tool
 installs, not part of the murk workspace's own build.
 
-UI tests:
+UI tests (same wrapper env — a bare `rustup run nightly-2026-05-28 cargo test`
+fails when the first `cargo`/`rustc` on PATH are not rustup proxies, because
+the rustc-private deps then build against the wrong toolchain):
 
 ```sh
-cd lints/murk_lints
-export PATH="$HOME/.cargo/bin:$PATH"
-rustup run nightly-2026-05-28 cargo test
+./lints/murk_lints/run-dylint.sh --ui-tests
 ```
 
 ## Follow-up (not done in this pass)

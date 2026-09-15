@@ -35,6 +35,18 @@ done
 
 export PATH="$HOME/.cargo/bin:$wrapper_dir:$PATH"
 
+# `--ui-tests`: run the lint crate's UI test suite inside the same wrapper
+# env. A bare `rustup run nightly-2026-05-28 cargo test` fails on machines
+# whose first-on-PATH cargo/rustc are not rustup proxies (the rustc-private
+# deps build against the wrong toolchain), so tests need this wrapper too.
+if [ "${1:-}" = "--ui-tests" ]; then
+  echo "==> running murk_lints UI tests" >&2
+  cd "$lint_crate_dir"
+  status=0
+  cargo test "${@:2}" || status=$?
+  exit "$status"
+fi
+
 echo "==> building murk_lints (release)" >&2
 (cd "$lint_crate_dir" && cargo build --release)
 
