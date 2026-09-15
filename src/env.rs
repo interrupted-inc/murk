@@ -627,6 +627,10 @@ mod tests {
     /// Compare parsed pairs against plain `(key, value)` expectations by
     /// unwrapping the `Zeroizing` value wrappers.
     fn assert_pairs(pairs: Vec<(String, Zeroizing<String>)>, expected: &[(&str, &str)]) {
+        // Controlled boundary: test-only comparison helper unwraps the
+        // Zeroizing values to compare plain strings (murk-lints
+        // secret_uncontrolled_escape).
+        #[cfg_attr(dylint_lib = "murk_lints", allow(secret_uncontrolled_escape))]
         let actual: Vec<(String, String)> =
             pairs.into_iter().map(|(k, v)| (k, (*v).clone())).collect();
         let want: Vec<(String, String)> = expected

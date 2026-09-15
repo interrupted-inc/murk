@@ -106,6 +106,9 @@ impl Vault {
     /// outside the policy, the whole export throws rather than returning a
     /// partial object. For an operator identity this is a no-op.
     #[napi]
+    // Controlled boundary: NAPI export hands plaintext back to JavaScript by
+    // design (see the doc comment above) (murk-lints secret_uncontrolled_escape).
+    #[cfg_attr(dylint_lib = "murk_lints", allow(secret_uncontrolled_escape))]
     pub fn export(&self) -> napi::Result<HashMap<String, String>> {
         let resolved = murk_cli::resolve_secrets(&self.vault, &self.murk, &self.pubkey, &[]);
         let keys: Vec<String> = resolved.keys().cloned().collect();
