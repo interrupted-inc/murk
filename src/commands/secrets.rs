@@ -702,6 +702,9 @@ pub(crate) fn cmd_export(tags: &[String], json: bool, vault_path: &str) {
         let mut raw = murk_cli::resolve_secrets(&vault, &murk, &pubkey, tags);
         apply_self_scope(&mut raw, &vault);
         // serde_json copies into its own owned String, so zeroization ends here.
+        // Controlled boundary: JSON export intentionally writes plaintext to
+        // stdout (murk-lints secret_uncontrolled_escape).
+        #[cfg_attr(dylint_lib = "murk_lints", allow(secret_uncontrolled_escape))]
         let map: serde_json::Map<String, serde_json::Value> = raw
             .iter()
             .map(|(k, v)| (k.clone(), serde_json::Value::String(v.to_string())))

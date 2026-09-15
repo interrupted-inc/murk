@@ -24,6 +24,14 @@ exclude = ["CLAUDE.md", "AGENTS.md", "SPEC.md"]
 # invariants clippy can't express live in tests/invariants.rs.
 dbg_macro = "deny"
 
+[lints.rust.unexpected_cfgs]
+# `#[cfg_attr(dylint_lib = "murk_lints", allow(...))]` marks documented escape
+# hatches for the type-aware lints in lints/murk_lints. `dylint_lib`
+# is only set when running under `cargo dylint`; check-cfg it here so a normal
+# build/clippy run doesn't warn about the unknown cfg.
+level = "warn"
+check-cfg = ["cfg(dylint_lib, values(any()))"]
+
 [lib]
 name = "murk_cli"
 path = "src/lib.rs"
