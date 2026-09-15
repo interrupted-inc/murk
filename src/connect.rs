@@ -1149,4 +1149,296 @@ mod tests {
         // Disconnecting again is a no-op.
         assert!(disconnect_client(a, dir.path()).unwrap().is_none());
     }
+
+    #[test]
+    fn disconnect_client_on_missing_config_is_none() {
+        // No config file has ever been written: the read must fail with
+        // `NotFound`, not any other error, so this is `Ok(None)`.
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = adapter("cursor").unwrap();
+        assert!(disconnect_client(a, dir.path()).unwrap().is_none());
+    }
+
+    // ---- Scanner unit tests (kill boundary/off-by-one mutants directly) ----
+
+    #[test]
+    fn skip_trivia_boundaries() {
+        // Empty input: must not index past the end.
+        assert_eq!(skip_trivia(b"", 0), 0);
+        // Pure whitespace runs to end of input.
+        assert_eq!(skip_trivia(b"   ", 0), 3);
+        // Line comment with no trailing newline runs to EOF.
+        assert_eq!(skip_trivia(b"//abc", 0), 5);
+        // Line comment terminated by a newline, followed by content.
+        assert_eq!(skip_trivia(b"// c\nx", 0), 5);
+        // Unterminated block comment consumes to EOF (exercises the `.min`
+        // clamp so it never runs past the buffer).
+        assert_eq!(skip_trivia(b"/* unterminated", 0), 15);
+        // Block comment containing a bare '/' that is not part of the closer:
+        // distinguishes `&&` from `||` and `==` from `!=` in the closer check.
+        assert_eq!(skip_trivia(b"/* a/b */x", 0), 9);
+        // Whitespace, a line comment, and a block comment back to back.
+        assert_eq!(skip_trivia(b"  // one\n/* two */  x", 0), 20);
+        // A bare '/' that never forms a comment opener stops immediately.
+        assert_eq!(skip_trivia(b"/x", 0), 0);
+        // A single trailing '/' at the very end of the buffer: the length
+        // check must be strict (`<`), not `<=`, or this indexes out of bounds.
+        assert_eq!(skip_trivia(b"/", 0), 0);
+        // A line comment whose body is empty (the newline immediately
+        // follows `//`) followed by unrelated content with no further
+        // newline: doubling the post-`//` index instead of adding 2 would
+        // overshoot the newline entirely and swallow the trailing content.
+        assert_eq!(skip_trivia(b"   //\nTAIL", 0), 6);
+    }
+
+    #[test]
+    fn scan_string_end_boundaries() {
+        assert_eq!(scan_string_end(b"\"\"", 0), Some(2));
+        // Back-to-back escaped quotes: doubling `j` instead of adding 2 would
+        // land on the wrong closing quote.
+        assert_eq!(scan_string_end(b"\"\\\"\\\"x\"", 0), Some(7));
+        // Unterminated string must not index past the end.
+        assert_eq!(scan_string_end(b"\"ab", 0), None);
+    }
+
+    #[test]
+    fn scan_bracketed_end_boundaries() {
+        assert_eq!(scan_bracketed_end(b"{}", 0), Some(2));
+        assert_eq!(scan_bracketed_end(b"{\"a\":{\"b\":1}}", 0), Some(13));
+        // A brace inside a string must not be counted as real nesting.
+        assert_eq!(scan_bracketed_end(b"{\"a\":\"}\"}", 0), Some(9));
+        // A brace inside a `//` comment must not be counted either.
+        assert_eq!(scan_bracketed_end(b"{ // }\n}", 0), Some(8));
+        assert_eq!(scan_bracketed_end(b"[1,2,[3]]", 0), Some(9));
+        // A `/` at the very end of the buffer (unterminated, no closer):
+        // the length check guarding the comment-opener lookahead must be
+        // strict, or this indexes out of bounds.
+        assert_eq!(scan_bracketed_end(b"{/", 0), None);
+        // A bare '/' that is not a comment opener is ordinary content.
+        assert_eq!(scan_bracketed_end(b"{/x}", 0), Some(4));
+        // A block comment with nothing in its body.
+        assert_eq!(scan_bracketed_end(b"{/**/}", 0), Some(6));
+        // A line comment with an empty body, terminated by the newline.
+        assert_eq!(scan_bracketed_end(b"{//\n}", 0), Some(5));
+        assert_eq!(scan_bracketed_end(b"{\"a\":1", 0), None);
+    }
+
+    #[test]
+    fn scan_value_end_boundaries() {
+        assert_eq!(scan_value_end(b"\"abc\",", 0), Some(5));
+        assert_eq!(scan_value_end(b"123,", 0), Some(3));
+        assert_eq!(scan_value_end(b"123", 0), Some(3));
+        assert_eq!(scan_value_end(b"{\"a\":1},", 0), Some(7));
+        assert_eq!(scan_value_end(b"[1,2],", 0), Some(5));
+        // A bare-word value followed directly by a comment (no separating
+        // whitespace) must stop at the comment, not swallow it.
+        assert_eq!(scan_value_end(b"true// c", 0), Some(4));
+        // Leading whitespace/newlines before the value are skipped first.
+        assert_eq!(scan_value_end(b"  \n  42,", 0), Some(7));
+        // A bare-word value directly followed by a block comment opener.
+        assert_eq!(scan_value_end(b"x/y", 0), Some(3));
+        // A value that is nothing but the delimiter itself has zero length
+        // and must be rejected (`j > i`, not `j >= i`).
+        assert_eq!(scan_value_end(b",", 0), None);
+        // A string value containing a comma must not be truncated at it —
+        // the `"` match arm must dispatch to the real string scanner.
+        assert_eq!(scan_value_end(b"\"a,b\",", 0), Some(5));
+    }
+
+    #[test]
+    fn object_members_boundaries() {
+        // Exact key text and value-end offsets, including a nested object.
+        let b = b"{\"ab\":1,\"c\":{\"d\":2}}";
+        let (close, members) = object_members(b, 0).unwrap();
+        assert_eq!(close, 19);
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].key, "ab");
+        assert_eq!(members[0].key_start, 1);
+        assert_eq!(members[0].value_end, 7);
+        assert_eq!(members[1].key, "c");
+        assert_eq!(members[1].key_start, 8);
+        assert_eq!(members[1].value_end, 19);
+
+        // An empty object has no members and closes right after `{`.
+        assert_eq!(object_members(b"{}", 0).unwrap().1.len(), 0);
+        // Unterminated object body.
+        assert!(object_members(b"{\"a\":1", 0).is_none());
+        // A non-string key is malformed.
+        assert!(object_members(b"{a:1}", 0).is_none());
+        // A member missing its `:` is malformed.
+        assert!(object_members(b"{\"a\" 1}", 0).is_none());
+        // A key that runs to exactly the end of the buffer with no `:`
+        // after it: the length check must short-circuit before indexing.
+        assert!(object_members(b"{\"a\"", 0).is_none());
+    }
+
+    #[test]
+    fn top_object_open_boundaries() {
+        assert_eq!(top_object_open(b""), None);
+        assert_eq!(top_object_open(b"   "), None);
+        assert_eq!(top_object_open(b"[]"), None);
+        assert_eq!(top_object_open(b"  {}"), Some(2));
+    }
+
+    #[test]
+    fn detect_indent_skips_blank_lines() {
+        // A whitespace-only line has no content, so its "indent" must not be
+        // reported: `ws.len() < line.len()` must be strict.
+        assert_eq!(detect_indent("   \n    x"), "    ");
+    }
+
+    #[test]
+    fn line_indent_boundaries() {
+        // No preceding newline: indent is measured from buffer start.
+        assert_eq!(line_indent(b"abc", 0), "");
+        // Indent stops at the first non-space/tab byte, even mid-line.
+        assert_eq!(line_indent(b"  x   k", 6), "  ");
+        // Tab indentation on a non-first line.
+        assert_eq!(line_indent(b"\n\tkey", 2), "\t");
+        // Whitespace-only line ending exactly at `idx == b.len()` exercises
+        // the `unwrap_or(idx - line_start)` fallback with a non-zero
+        // `line_start`.
+        assert_eq!(line_indent(b"x\n   ", 5), "   ");
+    }
+
+    #[test]
+    fn find_colon_after_key_boundaries() {
+        assert_eq!(find_colon_after_key(b"\"k\":1", 0), Some(3));
+        // Key with no colon at all, ending exactly at the buffer boundary.
+        assert_eq!(find_colon_after_key(b"\"k\"", 0), None);
+        // Key followed by trivia then a non-colon byte.
+        assert_eq!(find_colon_after_key(b"\"k\" x", 0), None);
+    }
+
+    #[test]
+    fn remove_json_server_exact_splice_with_trailing_sibling() {
+        let existing = "{\n  // keep me\n  \"mcpServers\": {\n    \"murk\": { \"command\": \"murk\" },\n    \"other\": { \"command\": \"foo\" }\n  }\n}\n";
+        let out = remove_json_server(existing, "mcpServers", "murk")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            out,
+            "{\n  // keep me\n  \"mcpServers\": {\n    \"other\": { \"command\": \"foo\" }\n  }\n}\n"
+        );
+    }
+
+    #[test]
+    fn remove_json_server_non_object_container_is_none() {
+        let existing = "{\"mcpServers\": \"nope\"}";
+        assert!(
+            remove_json_server(existing, "mcpServers", "murk")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn remove_json_server_exact_splice_with_leading_sibling() {
+        // Removing the *last* member exercises the preceding-comma trim path
+        // (as opposed to the trailing-comma path above).
+        let existing = "{\n  \"mcpServers\": {\n    \"other\": { \"command\": \"foo\" },\n    \"murk\": { \"command\": \"murk\" }\n  }\n}\n";
+        let out = remove_json_server(existing, "mcpServers", "murk")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            out,
+            "{\n  \"mcpServers\": {\n    \"other\": { \"command\": \"foo\" }  }\n}\n"
+        );
+    }
+
+    #[test]
+    fn upsert_json_server_rejects_non_object_container() {
+        let existing = "{\"mcpServers\": \"nope\"}";
+        let err = upsert_json_server(Some(existing), "mcpServers", "murk", &spec())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("is not an object"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn murk_toml_sections_exact_range_stops_before_unrelated_table() {
+        let lines = [
+            "# c",
+            "[mcp_servers.other]",
+            "command = \"foo\"",
+            "",
+            "[mcp_servers.murk]",
+            "command = \"murk\"",
+            "args = [\"mcp\"]",
+            "",
+            "[mcp_servers.murk.env]",
+            "MURK_AGENT = \"1\"",
+            "[mcp_servers.zzz]",
+            "command = \"zzz\"",
+        ];
+        assert_eq!(
+            murk_toml_sections(&lines, "mcp_servers", "murk"),
+            vec![(4, 10)]
+        );
+    }
+
+    #[test]
+    fn toml_remove_only_content_yields_empty_string() {
+        let existing =
+            "[mcp_servers.murk]\ncommand = \"murk\"\n\n[mcp_servers.murk.env]\nMURK_AGENT = \"1\"\n";
+        let out = remove_toml_server(existing, "mcp_servers", "murk")
+            .unwrap()
+            .unwrap();
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn connect_client_propagates_read_errors_other_than_not_found() {
+        // `config_path` resolving to a directory instead of a file produces
+        // an I/O error whose kind is not `NotFound`; that must still be
+        // reported as an error, not silently treated as "no existing config".
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = adapter("cursor").unwrap();
+        std::fs::create_dir_all(a.config_path(dir.path())).unwrap();
+        assert!(connect_client(a, dir.path(), "/keys/abc-mcp", &[]).is_err());
+    }
+
+    #[test]
+    fn disconnect_client_propagates_read_errors_other_than_not_found() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = adapter("cursor").unwrap();
+        std::fs::create_dir_all(a.config_path(dir.path())).unwrap();
+        assert!(disconnect_client(a, dir.path()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn connect_client_not_found_guard_is_specific_to_not_found() {
+        // An unreadable-but-writable existing file (mode 000) fails to read
+        // with `PermissionDenied`, not `NotFound`. The guard must not treat
+        // it as "no existing config" and silently overwrite it.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = adapter("cursor").unwrap();
+        let path = a.config_path(dir.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let result = connect_client(a, dir.path(), "/keys/abc-mcp", &[]);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(result.is_err(), "unreadable config must not be overwritten");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disconnect_client_not_found_guard_is_specific_to_not_found() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = adapter("cursor").unwrap();
+        let path = a.config_path(dir.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let result = disconnect_client(a, dir.path());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(result.is_err(), "unreadable config must not be treated as absent");
+    }
 }
