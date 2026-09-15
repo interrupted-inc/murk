@@ -1,0 +1,8 @@
+- id: murk-scan
+  name: murk scan
+  description: Scan staged files for leaked secret values from the repository's murk vault
+  entry: murk scan
+  language: system
+  types: [file]
+  pass_filenames: true
+  stages: [pre-commit]
