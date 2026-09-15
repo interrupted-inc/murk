@@ -452,6 +452,24 @@ mod tests {
         assert!(lines.is_empty());
     }
 
+    #[test]
+    fn diff_entry_debug_redacts_plaintext() {
+        // Regression test for the DiffEntry derive(Debug) leak fixed alongside
+        // the murk_lints secret_debug_leak lint: {:?} must never contain the
+        // decrypted plaintext, only a redaction marker.
+        let entry = DiffEntry {
+            key: "DB_PASSWORD".into(),
+            kind: DiffKind::Changed,
+            old_value: Some(secret("sekrit-plaintext-old")),
+            new_value: Some(secret("sekrit-plaintext-new")),
+        };
+        let debug = format!("{entry:?}");
+        assert!(!debug.contains("sekrit-plaintext-old"));
+        assert!(!debug.contains("sekrit-plaintext-new"));
+        assert!(debug.contains("<redacted>"));
+        assert!(debug.contains("DB_PASSWORD"));
+    }
+
     // ── resolve_secrets tests ──
 
     #[test]

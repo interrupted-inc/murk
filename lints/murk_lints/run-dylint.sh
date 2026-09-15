@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Build murk_lints and run it over the murk workspace. This is the verified,
-# reproducible invocation — see README.md "Running".
+# Build murk_lints and run it over every crate in the murk workspace
+# (murk-cli at the repo root, and the murk-napi bindings under node/). This
+# is the verified, reproducible invocation — see README.md "Running".
 #
 # Prerequisites (one-time):
 #   rustup toolchain install nightly-2026-05-28 --profile minimal \
@@ -45,4 +46,6 @@ fi
 
 echo "==> running murk_lints over the murk workspace" >&2
 cd "$repo_root"
-exec cargo dylint --lib-path "$dylib" --no-deps -- --lib --tests --bins "$@"
+status=0
+cargo dylint --lib-path "$dylib" --no-deps --workspace -- --lib --tests --bins "$@" || status=$?
+exit "$status"
