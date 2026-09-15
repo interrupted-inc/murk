@@ -112,7 +112,9 @@ jobs:
           chmod +x "$HOME/.local/bin/zig"
           export PATH="$HOME/.local/bin:$PATH"
           zig version
-          cargo install --locked cargo-zigbuild
+          # Scorecard: pin cargo-zigbuild version. Dependabot cannot auto-update
+          # cargo install --version pins; manual bumps required.
+          cargo install --locked cargo-zigbuild --version 0.23.4
           npx napi build --platform --release --target ${{ matrix.settings.target }} --cross-compile
 
       - name: Build (docker)
@@ -125,7 +127,13 @@ jobs:
             apk add --no-cache curl libstdc++ xz
             curl -fsSL https://unofficial-builds.nodejs.org/download/release/v22.14.0/node-v22.14.0-linux-x64-musl.tar.xz \
               | tar -xJ --strip-components=1 -C /usr/local
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+            # Scorecard: pin the rustup installer to an immutable tagged revision and
+            # verify its SHA256. Do NOT fetch sh.rustup.rs here: it is a rolling
+            # endpoint, so a hash pin against it breaks on every upstream update.
+            # Manual bump: update the tag and hash together (Dependabot cannot).
+            curl --proto '=https' --tlsv1.2 -sSfL https://raw.githubusercontent.com/rust-lang/rustup/1.29.1/rustup-init.sh -o rustup-init.sh
+            echo '7d0ea0f8eba7fa1ebfe998091cd7ec4501e33ec5ca6b884eb4d894d7da5170af  rustup-init.sh' | sha256sum -c -
+            sh rustup-init.sh -y --default-toolchain stable
             export PATH="$HOME/.cargo/bin:$PATH"
             rustc --version
             node --version
