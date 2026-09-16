@@ -1352,10 +1352,7 @@ mod tests {
         let err = upsert_json_server(Some(existing), "mcpServers", "murk", &spec())
             .unwrap_err()
             .to_string();
-        assert!(
-            err.contains("is not an object"),
-            "unexpected error: {err}"
-        );
+        assert!(err.contains("is not an object"), "unexpected error: {err}");
     }
 
     #[test]
@@ -1382,8 +1379,7 @@ mod tests {
 
     #[test]
     fn toml_remove_only_content_yields_empty_string() {
-        let existing =
-            "[mcp_servers.murk]\ncommand = \"murk\"\n\n[mcp_servers.murk.env]\nMURK_AGENT = \"1\"\n";
+        let existing = "[mcp_servers.murk]\ncommand = \"murk\"\n\n[mcp_servers.murk.env]\nMURK_AGENT = \"1\"\n";
         let out = remove_toml_server(existing, "mcp_servers", "murk")
             .unwrap()
             .unwrap();
@@ -1439,6 +1435,9 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
         let result = disconnect_client(a, dir.path());
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(result.is_err(), "unreadable config must not be treated as absent");
+        assert!(
+            result.is_err(),
+            "unreadable config must not be treated as absent"
+        );
     }
 }
