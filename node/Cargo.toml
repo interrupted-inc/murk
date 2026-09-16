@@ -5,6 +5,13 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = false
 
+[lints.rust.unexpected_cfgs]
+# See the matching entry in the root Cargo.toml: `#[cfg_attr(dylint_lib =
+# "murk_lints", allow(...))]` marks a documented escape hatch for the
+# type-aware lints in lints/murk_lints.
+level = "warn"
+check-cfg = ["cfg(dylint_lib, values(any()))"]
+
 [lib]
 crate-type = ["cdylib"]
 

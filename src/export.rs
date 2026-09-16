@@ -125,12 +125,27 @@ pub enum DiffKind {
 /// `old_value` and `new_value` are held in `Zeroizing` so plaintext is cleared
 /// when the entry is dropped. Formatting/printing callers should take care not
 /// to retain their own unzeroed copies.
-#[derive(Debug)]
 pub struct DiffEntry {
     pub key: String,
     pub kind: DiffKind,
     pub old_value: Option<Zeroizing<String>>,
     pub new_value: Option<Zeroizing<String>>,
+}
+
+/// Manual `Debug`: prints the key and kind (schema-level metadata) but never
+/// the decrypted plaintext in `old_value`/`new_value` — those are
+/// `Option<Zeroizing<String>>`, and `Zeroizing` forwards `Debug` transparently
+/// (it is a `#[derive(Debug)]` tuple struct), so a derived `Debug` here would
+/// leak secret material into any accidental `{:?}` log.
+impl std::fmt::Debug for DiffEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiffEntry")
+            .field("key", &self.key)
+            .field("kind", &self.kind)
+            .field("old_value", &self.old_value.as_ref().map(|_| "<redacted>"))
+            .field("new_value", &self.new_value.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 /// Compare two sets of secret values and return the differences.
@@ -435,6 +450,24 @@ mod tests {
     fn format_diff_lines_empty() {
         let lines = format_diff_lines(&[], false);
         assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn diff_entry_debug_redacts_plaintext() {
+        // Regression test for the DiffEntry derive(Debug) leak fixed alongside
+        // the murk_lints secret_debug_leak lint: {:?} must never contain the
+        // decrypted plaintext, only a redaction marker.
+        let entry = DiffEntry {
+            key: "DB_PASSWORD".into(),
+            kind: DiffKind::Changed,
+            old_value: Some(secret("sekrit-plaintext-old")),
+            new_value: Some(secret("sekrit-plaintext-new")),
+        };
+        let debug = format!("{entry:?}");
+        assert!(!debug.contains("sekrit-plaintext-old"));
+        assert!(!debug.contains("sekrit-plaintext-new"));
+        assert!(debug.contains("<redacted>"));
+        assert!(debug.contains("DB_PASSWORD"));
     }
 
     // ── resolve_secrets tests ──
