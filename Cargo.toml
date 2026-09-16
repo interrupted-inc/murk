@@ -115,3 +115,6 @@ proptest = "1"
 # server-side features above for test builds; a normal/release build ignores
 # dev-dependencies, so the shipped binary keeps only the server features.
 rmcp = { version = "3.0.0", default-features = false, features = ["client", "transport-child-process"] }
+
+[workspace.metadata.dylint]
+libraries = [{ path = "lints/murk_lints" }]

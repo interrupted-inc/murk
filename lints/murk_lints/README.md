@@ -72,24 +72,46 @@ development (`init::DiscoveredKey`, which derives `Debug` over a
 
 ## Running
 
-```sh
-lints/murk_lints/run-dylint.sh
-```
-
-This is the single verified, reproducible command: it builds `murk_lints`
-in release mode, then runs it over the murk workspace's lib, tests, and
-bins via `cargo dylint --lib-path`. It requires the pinned nightly toolchain
-and `cargo-dylint`/`dylint-link` to already be installed (see the script's
-header comment for the one-time setup commands) — both are external tool
-installs, not part of the murk workspace's own build.
-
-UI tests (same wrapper env — a bare `rustup run nightly-2026-05-28 cargo test`
-fails when the first `cargo`/`rustc` on PATH are not rustup proxies, because
-the rustc-private deps then build against the wrong toolchain):
+One-time setup (external tools, not part of the murk workspace's own build):
 
 ```sh
-./lints/murk_lints/run-dylint.sh --ui-tests
+rustup toolchain install nightly-2026-05-28 --profile minimal \
+  --component rustc-dev,llvm-tools-preview
+rustup run stable cargo install cargo-dylint dylint-link --locked
 ```
+
+Run the lints over the whole workspace (the root `Cargo.toml`'s
+`[workspace.metadata.dylint]` entry points `cargo dylint` at this crate, and
+`rust-toolchain.toml` here pins the nightly):
+
+```sh
+cargo dylint --all --workspace --no-deps -- --lib --tests --bins
+```
+
+UI tests:
+
+```sh
+cd lints/murk_lints && cargo test
+```
+
+### Non-rustup environments
+
+Both commands assume `cargo`/`rustc` resolve to rustup proxies, which read
+`rust-toolchain.toml` and re-export `RUSTUP_TOOLCHAIN` for child processes
+(`dylint-link` requires it). If another Rust install (e.g. Homebrew) is first
+on PATH, run them through throwaway shims for the pinned toolchain:
+
+```sh
+tc=nightly-2026-05-28-aarch64-apple-darwin   # adjust host triple
+wd=$(mktemp -d)
+for tool in cargo rustc; do
+  printf '#!/bin/sh\nexport RUSTUP_TOOLCHAIN=%s\nexec %s/%s "$@"\n' \
+    "$tc" "$HOME/.rustup/toolchains/$tc/bin" "$tool" > "$wd/$tool"
+  chmod +x "$wd/$tool"
+done
+export PATH="$HOME/.cargo/bin:$wd:$PATH"
+```
+
 
 ## Follow-up (not done in this pass)
 
