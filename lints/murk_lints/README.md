@@ -94,23 +94,13 @@ UI tests:
 cd lints/murk_lints && cargo test
 ```
 
-### Non-rustup environments
-
-Both commands assume `cargo`/`rustc` resolve to rustup proxies, which read
-`rust-toolchain.toml` and re-export `RUSTUP_TOOLCHAIN` for child processes
-(`dylint-link` requires it). If another Rust install (e.g. Homebrew) is first
-on PATH, run them through throwaway shims for the pinned toolchain:
-
-```sh
-tc=nightly-2026-05-28-aarch64-apple-darwin   # adjust host triple
-wd=$(mktemp -d)
-for tool in cargo rustc; do
-  printf '#!/bin/sh\nexport RUSTUP_TOOLCHAIN=%s\nexec %s/%s "$@"\n' \
-    "$tc" "$HOME/.rustup/toolchains/$tc/bin" "$tool" > "$wd/$tool"
-  chmod +x "$wd/$tool"
-done
-export PATH="$HOME/.cargo/bin:$wd:$PATH"
-```
+Both commands require a rustup-managed Rust: `cargo`/`rustc` must resolve to
+rustup's proxies, which read `rust-toolchain.toml` and export
+`RUSTUP_TOOLCHAIN` to child processes (`dylint-link` depends on it, and
+cargo-dylint builds its per-toolchain driver through rustup). This is
+[dylint's own prerequisite](https://github.com/trailofbits/dylint), not a
+murk-specific one. A non-rustup Rust first on PATH (e.g. Homebrew's) is not
+a supported environment for running these lints.
 
 
 ## Follow-up (not done in this pass)
