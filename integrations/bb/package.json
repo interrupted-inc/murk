@@ -27,9 +27,9 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@get-bb/plugin-sdk": "0.4.97",
+    "@get-bb/plugin-sdk": "0.5.16",
     "@types/better-sqlite3": "^9.6.0",
-    "@types/node": "^26.6.1",
+    "@types/node": "^26.6.2",
     "better-sqlite3": "^13.0.3",
     "cron-parser": "^5.10.1",
     "hono": "^4.13.8",
