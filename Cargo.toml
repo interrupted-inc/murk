@@ -52,7 +52,7 @@ age = { version = "0.12.1", features = ["ssh", "plugin", "cli-common"] }
 ureq = "3"
 base64 = "0.23.0"
 bech32 = "0.12.0"
-bip39 = "2.2.2"
+bip39 = "3.0.0"
 clap = { version = "4.6.1", features = ["derive", "env"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 colored = "3"
