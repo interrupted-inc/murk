@@ -449,7 +449,7 @@ mod tests {
     #[test]
     fn format_diff_lines_empty() {
         let lines = format_diff_lines(&[], false);
-        assert!(lines.is_empty());
+        assert!(lines.is_empty(), "{lines:?}");
     }
 
     #[test]

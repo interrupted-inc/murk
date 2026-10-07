@@ -305,7 +305,7 @@ mod tests {
 
         let info = vault_info(&bytes, &[], None).unwrap();
         assert_eq!(info.vault_name, ".murk");
-        assert!(!info.codename.is_empty());
+        assert!(!info.codename.is_empty(), "codename is empty");
         assert_eq!(info.repo, "https://github.com/test/repo");
         assert_eq!(info.recipient_count, 1);
         assert_eq!(info.entries.len(), 1);

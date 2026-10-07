@@ -615,13 +615,15 @@ mod tests {
 
     #[test]
     fn parse_env_empty() {
-        assert!(parse_env("").is_empty());
+        let pairs = parse_env("");
+        assert!(pairs.is_empty(), "{pairs:?}");
     }
 
     #[test]
     fn parse_env_comments_and_blanks() {
         let input = "# comment\n\n  # another\n";
-        assert!(parse_env(input).is_empty());
+        let pairs = parse_env(input);
+        assert!(pairs.is_empty(), "{pairs:?}");
     }
 
     /// Compare parsed pairs against plain `(key, value)` expectations by
@@ -705,7 +707,7 @@ mod tests {
     #[test]
     fn parse_env_empty_key_skipped() {
         let pairs = parse_env("=value\n");
-        assert!(pairs.is_empty());
+        assert!(pairs.is_empty(), "{pairs:?}");
     }
 
     #[test]
@@ -1459,8 +1461,10 @@ mod tests {
     fn parse_env_comment_with_equals_is_skipped() {
         // A comment line that happens to contain `=` must still be dropped;
         // it must not be parsed into a `# FOO` key.
-        assert!(parse_env("# FOO=bar\n").is_empty());
-        assert!(parse_env("   # A=B\n").is_empty());
+        let pairs = parse_env("# FOO=bar\n");
+        assert!(pairs.is_empty(), "{pairs:?}");
+        let pairs = parse_env("   # A=B\n");
+        assert!(pairs.is_empty(), "{pairs:?}");
     }
 
     #[test]

@@ -532,11 +532,13 @@ mod tests {
     fn sibling_worktrees_of_a_lone_repo_is_empty() {
         let tmp = tempfile::TempDir::new().unwrap();
         let main = init_repo_with_commit(&tmp.path().join("solo"));
-        assert!(sibling_worktrees(&main).is_empty());
+        let found = sibling_worktrees(&main);
+        assert!(found.is_empty(), "{found:?}");
 
         let bare = crate::testutil::real_path(tmp.path()).join("not-a-repo");
         std::fs::create_dir_all(&bare).unwrap();
-        assert!(sibling_worktrees(&bare).is_empty());
+        let found = sibling_worktrees(&bare);
+        assert!(found.is_empty(), "{found:?}");
     }
 
     #[test]
