@@ -356,7 +356,7 @@ mod tests {
         assert_eq!(vault.recipients, vec![pubkey]);
         assert!(vault.schema.is_empty());
         assert!(vault.secrets.is_empty());
-        assert!(!vault.meta.is_empty());
+        assert!(!vault.meta.is_empty(), "meta is empty");
     }
 
     // ── sanitize_remote_url tests ──

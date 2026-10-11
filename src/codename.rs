@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn not_empty() {
         let name = from_bytes(b"");
-        assert!(!name.is_empty());
+        assert!(!name.is_empty(), "codename is empty");
         assert!(name.len() > 5);
     }
 }

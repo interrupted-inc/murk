@@ -125,7 +125,7 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries["FOO"], "bar");
         assert_eq!(entries["BAZ"], "qux");
-        assert!(warnings.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]
@@ -176,7 +176,7 @@ mod tests {
         let diff = diff_edits(&orig, &edited);
         assert_eq!(diff.added.len(), 1);
         assert!(diff.updated.is_empty());
-        assert!(diff.removed.is_empty());
+        assert!(diff.removed.is_empty(), "{:?}", diff.removed);
     }
 
     #[test]
@@ -187,7 +187,7 @@ mod tests {
         assert!(diff.added.is_empty());
         assert_eq!(diff.updated.len(), 1);
         assert_eq!(diff.updated["KEY"], "new");
-        assert!(diff.removed.is_empty());
+        assert!(diff.removed.is_empty(), "{:?}", diff.removed);
     }
 
     #[test]

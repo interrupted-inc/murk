@@ -427,7 +427,8 @@ mod tests {
         assert!(needs_hint);
         assert_eq!(murk.values["KEY"].as_str(), "value");
         assert!(vault.schema.contains_key("KEY"));
-        assert!(vault.schema["KEY"].description.is_empty());
+        let description = &vault.schema["KEY"].description;
+        assert!(description.is_empty(), "{description:?}");
     }
 
     #[test]
@@ -744,7 +745,7 @@ mod tests {
         );
 
         let keys = list_keys(&vault, &["nonexistent".into()]);
-        assert!(keys.is_empty());
+        assert!(keys.is_empty(), "{keys:?}");
     }
 
     #[test]
@@ -911,7 +912,7 @@ mod tests {
         let mut vault = empty_vault();
         let mut murk = empty_murk();
         let imported = import_secrets(&mut vault, &mut murk, &[], None);
-        assert!(imported.is_empty());
+        assert!(imported.is_empty(), "{imported:?}");
     }
 
     #[test]
@@ -992,7 +993,8 @@ mod tests {
             rotation_interval_days: Some(90),
             ..Default::default()
         });
-        assert!(rotation_health(&vault, ts("2026-02-01T00:00:00Z")).is_empty());
+        let issues = rotation_health(&vault, ts("2026-02-01T00:00:00Z"));
+        assert!(issues.is_empty(), "{issues:?}");
     }
 
     #[test]
@@ -1031,7 +1033,8 @@ mod tests {
         ));
 
         // Far out: silent.
-        assert!(rotation_health(&soon, ts("2025-06-01T00:00:00Z")).is_empty());
+        let issues = rotation_health(&soon, ts("2025-06-01T00:00:00Z"));
+        assert!(issues.is_empty(), "{issues:?}");
     }
 
     #[test]
@@ -1092,7 +1095,8 @@ mod tests {
         let mut murk = empty_murk();
         import_secrets(&mut vault, &mut murk, &[("K".into(), secret("new"))], None);
         assert_eq!(vault.schema["K"].revoked_at, None);
-        assert!(rotation_health(&vault, ts("2030-01-01T00:00:00Z")).is_empty());
+        let issues = rotation_health(&vault, ts("2030-01-01T00:00:00Z"));
+        assert!(issues.is_empty(), "{issues:?}");
     }
 
     #[test]
@@ -1163,7 +1167,8 @@ mod tests {
             ..Default::default()
         });
         // Exactly at the due instant (updated + 10 days): `>` means not overdue.
-        assert!(rotation_health(&vault, ts("2026-01-11T00:00:00Z")).is_empty());
+        let issues = rotation_health(&vault, ts("2026-01-11T00:00:00Z"));
+        assert!(issues.is_empty(), "{issues:?}");
         // One second past due → overdue.
         assert!(
             rotation_health(&vault, ts("2026-01-11T00:00:01Z"))
