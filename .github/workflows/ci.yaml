@@ -201,7 +201,7 @@ jobs:
       # Hand the release binary the rehearsal just built to vhs-record — the
       # vhs image runs glibc newer than this runner's, so the host build works
       # there and no separate musl build is needed.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         with:
           name: murk-linux
@@ -312,7 +312,7 @@ jobs:
         run: docker run --rm --entrypoint /vhs/target/release/murk -v "$PWD":/vhs vhs-git --version
       - name: Record tape
         run: docker run --rm -v "$PWD":/vhs -e PATH="/vhs/target/release:$PATH" vhs-git demo/${{ matrix.tape }}.tape
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gif-${{ matrix.tape }}
           path: demo/${{ matrix.tape }}.gif
