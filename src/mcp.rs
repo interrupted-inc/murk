@@ -23,7 +23,7 @@ use murk_cli::types::{Murk, Vault};
 use rmcp::{
     ErrorData as McpError, ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo},
+    model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig},
     tool, tool_handler, tool_router,
     transport::stdio,
 };
@@ -215,8 +215,8 @@ impl MurkMcp {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for MurkMcp {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("murk-mcp", env!("CARGO_PKG_VERSION")))
             .with_instructions(
                 "murk secrets for AI agents, bounded to this grant's scope. Use murk_plan \
