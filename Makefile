@@ -2,10 +2,14 @@ SHELL := /bin/bash
 MURK := $(CURDIR)/target/release/murk
 MUSL_TARGET := x86_64-unknown-linux-musl
 
-.PHONY: build test test-demos test-hero test-team test-offboard test-eve test-recovery test-github test-direnv test-mallory test-ssh test-vhs docs check-guides
+.PHONY: build test test-demos test-hero test-team test-offboard test-eve test-recovery test-github test-direnv test-mallory test-ssh test-vhs docs check-guides hooks
 
 build:
 	cargo build --release
+
+# Run CI's fmt and clippy checks before each commit (see .githooks/pre-commit).
+hooks:
+	git config core.hooksPath .githooks
 
 docs:
 	cargo run --features doc-gen --bin gen-docs

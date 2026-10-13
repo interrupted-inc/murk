@@ -1,37 +1,38 @@
 #!/bin/sh
+# Pre-commit hook: run the same lint checks as CI before each commit.
+# Install with `make hooks` (sets core.hooksPath to .githooks).
+#
+# Rust checks always run and mirror the Lint job in .github/workflows/ci.yaml.
+# The node and python checks run only when files under those paths are staged,
+# mirroring the Lint jobs in node.yaml and python.yaml.
 
-# Rust formatting
-cargo fmt --check 2>/dev/null
-if [ $? -ne 0 ]; then
-    echo "pre-commit: cargo fmt check failed. Run 'cargo fmt' and try again."
+set -e
+
+fail() {
+    echo "pre-commit: $1" >&2
     exit 1
-fi
+}
 
-# Rust linting
-cargo clippy --all-features -- -D warnings 2>/dev/null
-if [ $? -ne 0 ]; then
-    echo "pre-commit: clippy check failed. Fix warnings and try again."
-    exit 1
-fi
+staged=$(git diff --cached --name-only)
 
-# Node linting (only if node files staged)
-if git diff --cached --name-only | grep -q '^node/'; then
-    if command -v npx >/dev/null 2>&1 && [ -f node/package.json ]; then
-        (cd node && npx biome check) 2>/dev/null
-        if [ $? -ne 0 ]; then
-            echo "pre-commit: biome check failed. Run 'cd node && npx biome check --write' and try again."
-            exit 1
-        fi
+cargo fmt --check || fail "cargo fmt check failed. Run 'cargo fmt' and try again."
+cargo clippy --all-features --all-targets -- -D warnings ||
+    fail "clippy check failed. Fix the warnings and try again."
+
+if printf '%s\n' "$staged" | grep -q '^node/'; then
+    if command -v npx >/dev/null 2>&1 && [ -d node/node_modules ]; then
+        (cd node && npx biome check) ||
+            fail "biome check failed. Run 'cd node && npx biome check --write' and try again."
+    else
+        echo "pre-commit: skipping biome (run 'npm ci' in node/ to enable it)" >&2
     fi
 fi
 
-# Python linting (only if python files staged)
-if git diff --cached --name-only | grep -q '^python/'; then
+if printf '%s\n' "$staged" | grep -q '^python/'; then
     if command -v ruff >/dev/null 2>&1; then
-        ruff check python/ 2>/dev/null
-        if [ $? -ne 0 ]; then
-            echo "pre-commit: ruff check failed. Fix issues and try again."
-            exit 1
-        fi
+        ruff check python/ ||
+            fail "ruff check failed. Run 'ruff check --fix python/' and try again."
+    else
+        echo "pre-commit: skipping ruff (not installed)" >&2
     fi
 fi

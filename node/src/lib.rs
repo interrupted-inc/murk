@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use murk_cli::SecretTier;
 use napi_derive::napi;
 
 /// A loaded and decrypted murk vault.
@@ -22,28 +23,6 @@ pub struct Vault {
     murk: murk_cli::types::Murk,
     pubkey: String,
     path: String,
-}
-
-/// Destination tier for a written secret, mirroring the CLI's `--group` value.
-///
-/// The reserved names route to the shared/scoped tiers; anything else is a named
-/// group. This is the same mapping the CLI applies in `resolve_secret_tier`.
-enum Tier {
-    /// The shared value, encrypted to all recipients (the default).
-    Everyone,
-    /// A personal scoped value, encrypted to the caller only.
-    Me,
-    /// A named group, encrypted to that group's members.
-    Group(String),
-}
-
-fn resolve_tier(tier: Option<&str>) -> Tier {
-    match tier {
-        None => Tier::Everyone,
-        Some("everyone" | "all" | "shared") => Tier::Everyone,
-        Some("me" | "self" | "mine") => Tier::Me,
-        Some(name) => Tier::Group(name.to_string()),
-    }
 }
 
 /// Options for [`Vault::add`]. All fields are optional; an omitted `tier`
@@ -171,7 +150,10 @@ impl Vault {
             )));
         }
         let opts = options.unwrap_or_default();
-        let tier = resolve_tier(opts.tier.as_deref());
+        let tier = opts
+            .tier
+            .as_deref()
+            .map_or(SecretTier::Everyone, SecretTier::parse);
         let desc = opts.desc.as_deref();
         let tags = opts.tags.unwrap_or_default();
 
@@ -188,7 +170,7 @@ impl Vault {
         let mut current = murk;
 
         match &tier {
-            Tier::Everyone => {
+            SecretTier::Everyone => {
                 murk_cli::add_secret(
                     &mut vault,
                     &mut current,
@@ -201,7 +183,7 @@ impl Vault {
                     Some(&pubkey),
                 );
             }
-            Tier::Me => {
+            SecretTier::Me => {
                 murk_cli::add_secret(
                     &mut vault,
                     &mut current,
@@ -214,7 +196,7 @@ impl Vault {
                     Some(&pubkey),
                 );
             }
-            Tier::Group(name) => {
+            SecretTier::Group(name) => {
                 murk_cli::add_grouped_secret(
                     &mut vault,
                     &mut current,

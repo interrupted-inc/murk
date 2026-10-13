@@ -17,6 +17,8 @@ cargo fmt                # Format
 cargo run -- <command>   # Run murk with arguments
 ```
 
+Run `make hooks` once per clone to install the pre-commit hook, which runs the same fmt and clippy checks as CI.
+
 ## Pull Requests
 
 - Keep PRs focused — one logical change per PR

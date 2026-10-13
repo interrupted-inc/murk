@@ -4,7 +4,7 @@
 //! over the real transport.
 
 mod common;
-use common::{init_vault, murk};
+use common::{MURK_CONTEXT_VARS, init_vault, murk};
 
 use rmcp::{
     ServiceExt,
@@ -58,13 +58,15 @@ async fn mcp_client_lists_and_calls_tools() {
 
     let transport =
         TokioChildProcess::new(Command::new(env!("CARGO_BIN_EXE_murk")).configure(|cmd| {
+            for var in MURK_CONTEXT_VARS {
+                cmd.env_remove(var);
+            }
             cmd.arg("mcp")
                 .arg("--vault")
                 .arg("test.murk")
                 .current_dir(dir.path())
                 .env("HOME", dir.path())
                 .env("XDG_RUNTIME_DIR", dir.path())
-                .env_remove("MURK_KEY")
                 .env("MURK_KEY_FILE", grant.to_str().unwrap())
                 .env("MURK_AGENT", "1");
         }))

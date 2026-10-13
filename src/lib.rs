@@ -22,7 +22,6 @@ pub mod cli;
 pub(crate) mod codename;
 pub mod connect;
 pub mod crypto;
-pub mod edit;
 pub(crate) mod env;
 pub mod error;
 pub(crate) mod export;
@@ -66,14 +65,15 @@ pub use env::{
 };
 pub use error::MurkError;
 pub use export::{
-    DiffEntry, DiffKind, decrypt_vault_values, diff_secrets, export_secrets, format_diff_lines,
+    DiffEntry, DiffKind, decrypt_vault_values, diff_secrets, export_secrets,
     parse_and_decrypt_values, resolve_secrets,
 };
 pub use git::{CommitSignature, MergeDriverSetupStep, last_commit_signature, setup_merge_driver};
 pub use github::{GitHubError, fetch_keys};
 pub use grants::{create_grant, parse_ttl, remove_grant, validate_grant_name};
 pub use groups::{
-    add_member, create_group, delete_group, remove_member, resolve_member, validate_group_name,
+    SecretTier, add_member, create_group, delete_group, remove_member, resolve_member,
+    validate_group_name,
 };
 pub use info::{InfoEntry, VaultInfo, format_info_lines, lifecycle_segment, vault_info};
 pub use init::{DiscoveredKey, InitStatus, check_init_status, create_vault, discover_existing_key};
