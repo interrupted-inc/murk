@@ -13,13 +13,39 @@
 use crate::error::MurkError;
 use crate::types;
 
-/// Reserved group names. These route to the shared/private tiers instead of a
-/// stored group, so a real group can't take these names.
-pub const RESERVED_GROUP_NAMES: &[&str] = &["everyone", "me", "all", "self", "mine", "shared"];
+/// Destination tier for a secret: where a written value lives and who can
+/// decrypt it. Parsed from a `--group` value (CLI) or `tier` option (bindings).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecretTier {
+    /// The shared value, encrypted to all recipients (the default).
+    Everyone,
+    /// A personal scoped value, encrypted to the caller only.
+    Me,
+    /// A named group, encrypted to that group's members.
+    Group(String),
+}
+
+impl SecretTier {
+    /// Parse a tier name. The reserved aliases (see [`is_reserved`]) route to
+    /// the shared/scoped tiers; any other name is a named group.
+    pub fn parse(name: &str) -> Self {
+        reserved_tier(name).unwrap_or_else(|| SecretTier::Group(name.to_string()))
+    }
+}
+
+/// The tier a reserved group name routes to, or `None` for an ordinary group
+/// name. This is the single alias table: a real group can't take these names.
+fn reserved_tier(name: &str) -> Option<SecretTier> {
+    match name {
+        "everyone" | "all" | "shared" => Some(SecretTier::Everyone),
+        "me" | "self" | "mine" => Some(SecretTier::Me),
+        _ => None,
+    }
+}
 
 /// True if `name` is a reserved routing alias.
 pub fn is_reserved(name: &str) -> bool {
-    RESERVED_GROUP_NAMES.contains(&name)
+    reserved_tier(name).is_some()
 }
 
 /// Validate a group name: 1–64 chars of `[A-Za-z0-9_-]`, not reserved.

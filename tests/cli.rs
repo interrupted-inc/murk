@@ -4,7 +4,7 @@ use assert_fs::TempDir;
 use predicates::prelude::*;
 
 mod common;
-use common::{init_vault, murk, murk_bin, real_path};
+use common::{MURK_CONTEXT_VARS, init_vault, murk, murk_bin, real_path};
 
 // ── init ──
 
@@ -722,12 +722,14 @@ fn run_with_stdout_file(
     out_file: &std::path::Path,
 ) -> std::process::ExitStatus {
     let file = fs::File::create(out_file).unwrap();
-    std::process::Command::new(assert_cmd::cargo::cargo_bin("murk"))
-        .args(args)
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("murk"));
+    for var in MURK_CONTEXT_VARS {
+        cmd.env_remove(var);
+    }
+    cmd.args(args)
         .current_dir(dir.path())
         .env("HOME", dir.path())
         .env("XDG_RUNTIME_DIR", dir.path())
-        .env_remove("MURK_KEY_FILE")
         .env("MURK_KEY", key)
         .env("MURK_STRICT", "1")
         .stdout(file)
@@ -2831,6 +2833,33 @@ fn info_surfaces_rotation_and_expiry() {
                 predicate::str::contains("\"expires_at\": \"2026-09-01T23:59:59Z\""),
             ),
         );
+}
+
+#[test]
+fn describe_invalid_lifecycle_value_is_usage_error() {
+    let dir = TempDir::new().unwrap();
+    let (key, _pubkey) = init_vault(&dir);
+    murk(&dir, &key)
+        .args(["add", "TOKEN", "--vault", "test.murk"])
+        .write_stdin("s3cr3t\n")
+        .assert()
+        .success();
+
+    for (flag, value) in [("--rotate-every", "soon"), ("--expires", "tomorrow")] {
+        murk(&dir, &key)
+            .args([
+                "describe",
+                "TOKEN",
+                "deploy token",
+                flag,
+                value,
+                "--vault",
+                "test.murk",
+            ])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(format!("invalid {flag}")));
+    }
 }
 
 #[test]
@@ -5541,6 +5570,36 @@ fn agent_connect_and_disconnect_wire_mcp_config() {
         after["mcpServers"]["murk"].is_null(),
         "disconnect must remove the murk entry"
     );
+}
+
+#[test]
+fn agent_connect_and_disconnect_unknown_editor_is_usage_error() {
+    let dir = TempDir::new().unwrap();
+    let (key, _pubkey) = init_vault(&dir);
+    murk(&dir, &key)
+        .args(["add", "API_KEY", "--vault", "test.murk"])
+        .write_stdin("v\n")
+        .assert()
+        .success();
+
+    murk(&dir, &key)
+        .args([
+            "agent",
+            "connect",
+            "notepad",
+            "--only",
+            "API_KEY",
+            "--vault",
+            "test.murk",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("unknown editor 'notepad'"));
+    murk(&dir, &key)
+        .args(["agent", "disconnect", "notepad", "--vault", "test.murk"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("unknown editor 'notepad'"));
 }
 
 #[test]

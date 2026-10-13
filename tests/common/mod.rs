@@ -34,8 +34,26 @@ pub fn real_path(path: &Path) -> std::path::PathBuf {
 
 use assert_cmd::Command;
 
+/// Every environment variable that changes murk's behaviour.
+///
+/// Inherited values would make results depend on the caller's shell (an agent
+/// session exports `MURK_AGENT=1`, CI exports `CI=true`), so every spawn strips
+/// them and a test that needs one sets it explicitly. Keep in step with the
+/// readers in `src/env.rs`, `src/hardening.rs`, `src/pins.rs` and the `env =`
+/// args in `src/cli.rs`.
+pub const MURK_CONTEXT_VARS: &[&str] = &[
+    "MURK_KEY",
+    "MURK_KEY_FILE",
+    "MURK_VAULT",
+    "MURK_AGENT",
+    "MURK_STRICT",
+    "MURK_SELF_SCOPE",
+    "MURK_NO_SIGNER_PIN",
+    "CI",
+];
+
 /// Build a `murk` command with `HOME` and `XDG_RUNTIME_DIR` forced into `home`
-/// and any inherited key env removed.
+/// and every inherited murk context variable ([`MURK_CONTEXT_VARS`]) removed.
 ///
 /// murk derives `~/.config/murk/keys` straight from `HOME` (see `env::dirs_path`),
 /// and `edit` writes its scratch file under `XDG_RUNTIME_DIR`, so pinning both to
@@ -44,10 +62,10 @@ use assert_cmd::Command;
 /// or args on top.
 pub fn murk_bin(home: &Path) -> Command {
     let mut cmd = Command::cargo_bin("murk").unwrap();
-    cmd.env("HOME", home)
-        .env("XDG_RUNTIME_DIR", home)
-        .env_remove("MURK_KEY")
-        .env_remove("MURK_KEY_FILE");
+    cmd.env("HOME", home).env("XDG_RUNTIME_DIR", home);
+    for var in MURK_CONTEXT_VARS {
+        cmd.env_remove(var);
+    }
     cmd
 }
 

@@ -69,6 +69,11 @@ should use `✕` for each failing item, not repeated `warn` prefixes.
 - `0` — success, no findings
 - `1` — any fatal error, or any unresolved `warn` from a check command
   (`verify`, `doctor`, `scan`, etc.)
+- `2` — usage error: the arguments themselves are invalid, so nothing was
+  attempted. clap exits 2 for unknown flags and missing arguments; a command
+  that validates an argument value itself (`describe --rotate-every`/`--expires`,
+  an unknown editor in `agent connect`/`disconnect`) uses 2 as well. Failures
+  while doing the work (I/O, parse, crypto) are runtime errors and exit 1.
 
 Check commands must be fail-closed by default: a finding that the user
 should act on exits 1, even if the vault itself is readable.

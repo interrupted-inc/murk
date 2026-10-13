@@ -297,7 +297,25 @@ pub fn write_key_to_dotenv(secret_key: &str) -> Result<(), String> {
 
     let full_content = format!("{existing}export MURK_KEY={secret_key}\n");
 
-    // Write the file with restricted permissions from the start (Unix).
+    write_secret_file(
+        env_path,
+        full_content.as_bytes(),
+        "opening .env",
+        "writing .env",
+    )
+}
+
+/// Create or truncate `path` and write `contents`. On Unix the file is created
+/// `0600` atomically (no window where it is world-readable) and opened with
+/// `O_NOFOLLOW`, so a symlink planted after the caller's check is refused. On
+/// non-Unix platforms permissions are not hardened. Errors are prefixed with
+/// `open_context` or `write_context` depending on which step failed.
+fn write_secret_file(
+    path: &Path,
+    contents: &[u8],
+    open_context: &str,
+    write_context: &str,
+) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -307,18 +325,16 @@ pub fn write_key_to_dotenv(secret_key: &str) -> Result<(), String> {
             .truncate(true)
             .mode(SECRET_FILE_MODE)
             .custom_flags(libc::O_NOFOLLOW)
-            .open(env_path)
-            .map_err(|e| format!("opening .env: {e}"))?;
-        file.write_all(full_content.as_bytes())
-            .map_err(|e| format!("writing .env: {e}"))?;
+            .open(path)
+            .map_err(|e| format!("{open_context}: {e}"))?;
+        file.write_all(contents)
+            .map_err(|e| format!("{write_context}: {e}"))
     }
-
     #[cfg(not(unix))]
     {
-        fs::write(env_path, &full_content).map_err(|e| format!("writing .env: {e}"))?;
+        let _ = open_context;
+        fs::write(path, contents).map_err(|e| format!("{write_context}: {e}"))
     }
-
-    Ok(())
 }
 
 /// The absolute — but *lexical* — path of `vault_path`: cwd-joined when
@@ -431,38 +447,26 @@ fn shorten_home(path: &str, home: &str) -> String {
 
 /// Return `~/.config/murk/agent-keys/`, creating it if needed (dir `0700`).
 pub fn agent_keys_dir() -> Result<std::path::PathBuf, String> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map_err(|_| "cannot determine home directory")?;
-    let dir = std::path::Path::new(&home)
-        .join(".config")
-        .join("murk")
-        .join("agent-keys");
-    fs::create_dir_all(&dir).map_err(|e| format!("creating agent key directory: {e}"))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let parent = dir.parent().unwrap(); // ~/.config/murk
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
-            .map_err(|e| format!("setting permissions on {}: {e}", parent.display()))?;
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
-            .map_err(|e| format!("setting permissions on {}: {e}", dir.display()))?;
-    }
-
-    Ok(dir)
+    config_subdir("agent-keys", "agent key directory")
 }
 
-/// Return `~/.config/murk/keys/`, creating it if needed.
+/// Return `~/.config/murk/keys/`, creating it if needed (dir `0700`).
 fn dirs_path() -> Result<std::path::PathBuf, String> {
+    config_subdir("keys", "key directory")
+}
+
+/// Return `~/.config/murk/<name>/`, creating it if needed. On Unix both it and
+/// `~/.config/murk` are set to `0700`. `what` names the directory in the
+/// creation error.
+fn config_subdir(name: &str, what: &str) -> Result<std::path::PathBuf, String> {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .map_err(|_| "cannot determine home directory")?;
     let dir = std::path::Path::new(&home)
         .join(".config")
         .join("murk")
-        .join("keys");
-    fs::create_dir_all(&dir).map_err(|e| format!("creating key directory: {e}"))?;
+        .join(name);
+    fs::create_dir_all(&dir).map_err(|e| format!("creating {what}: {e}"))?;
 
     #[cfg(unix)]
     {
@@ -480,25 +484,12 @@ fn dirs_path() -> Result<std::path::PathBuf, String> {
 /// Write a secret key to a file with restricted permissions.
 pub fn write_key_to_file(path: &std::path::Path, secret_key: &str) -> Result<(), String> {
     reject_symlink(path, &path.display().to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .mode(SECRET_FILE_MODE)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(path)
-            .map_err(|e| format!("writing key file: {e}"))?;
-        file.write_all(secret_key.as_bytes())
-            .map_err(|e| format!("writing key file: {e}"))?;
-    }
-    #[cfg(not(unix))]
-    {
-        fs::write(path, secret_key).map_err(|e| format!("writing key file: {e}"))?;
-    }
-    Ok(())
+    write_secret_file(
+        path,
+        secret_key.as_bytes(),
+        "writing key file",
+        "writing key file",
+    )
 }
 
 /// Write a MURK_KEY_FILE reference to `.env`, removing any existing MURK_KEY/MURK_KEY_FILE lines.
@@ -527,26 +518,12 @@ pub fn write_key_ref_to_dotenv(key_file_path: &std::path::Path) -> Result<(), St
         key_file_path.display().to_string().replace('\'', "'\\''")
     );
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .mode(SECRET_FILE_MODE)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(env_path)
-            .map_err(|e| format!("opening .env: {e}"))?;
-        file.write_all(full_content.as_bytes())
-            .map_err(|e| format!("writing .env: {e}"))?;
-    }
-    #[cfg(not(unix))]
-    {
-        fs::write(env_path, &full_content).map_err(|e| format!("writing .env: {e}"))?;
-    }
-
-    Ok(())
+    write_secret_file(
+        env_path,
+        full_content.as_bytes(),
+        "opening .env",
+        "writing .env",
+    )
 }
 
 /// Status of `.envrc` after writing.
@@ -582,25 +559,12 @@ pub fn write_envrc(vault_name: &str) -> Result<EnvrcStatus, String> {
         writeln!(file, "\n{murk_line}").map_err(|e| format!("writing .envrc: {e}"))?;
         Ok(EnvrcStatus::Appended)
     } else {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            let mut file = fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .mode(SECRET_FILE_MODE)
-                .custom_flags(libc::O_NOFOLLOW)
-                .open(envrc)
-                .map_err(|e| format!("writing .envrc: {e}"))?;
-            file.write_all(format!("{murk_line}\n").as_bytes())
-                .map_err(|e| format!("writing .envrc: {e}"))?;
-        }
-        #[cfg(not(unix))]
-        {
-            fs::write(envrc, format!("{murk_line}\n"))
-                .map_err(|e| format!("writing .envrc: {e}"))?;
-        }
+        write_secret_file(
+            envrc,
+            format!("{murk_line}\n").as_bytes(),
+            "writing .envrc",
+            "writing .envrc",
+        )?;
         Ok(EnvrcStatus::Created)
     }
 }

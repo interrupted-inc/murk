@@ -1,6 +1,6 @@
 use super::*;
 use colored::Colorize;
-use murk_cli::{is_valid_key_name, types, vault};
+use murk_cli::{SecretTier, is_valid_key_name, types, vault};
 use std::fs;
 use std::path::Path;
 use std::process;
@@ -31,19 +31,9 @@ pub(crate) fn random_secret(length: usize, hex: bool) -> zeroize::Zeroizing<Stri
     zeroize::Zeroizing::new(value)
 }
 
-/// Resolved destination tier for a secret command, from `--group`/`--scoped`.
-pub(crate) enum SecretTier {
-    /// The shared value, encrypted to all recipients (the default).
-    Everyone,
-    /// A personal scoped value, encrypted to the caller only.
-    Me,
-    /// A named group, encrypted to that group's members.
-    Group(String),
-}
-
-/// Map `--group`/`--scoped` onto a tier. The reserved names `everyone`/`me`
-/// route to the shared/scoped tiers; `--scoped` is a deprecated alias for
-/// `--group me`. Both flags at once is a usage error.
+/// Map `--group`/`--scoped` onto a tier (see [`SecretTier::parse`] for the
+/// reserved names); `--scoped` is a deprecated alias for `--group me`. Both
+/// flags at once is a usage error.
 pub(crate) fn resolve_secret_tier(group: Option<&str>, scoped: bool) -> SecretTier {
     if let Some(g) = group {
         if scoped {
@@ -52,11 +42,7 @@ pub(crate) fn resolve_secret_tier(group: Option<&str>, scoped: bool) -> SecretTi
                 1,
             );
         }
-        match g {
-            "everyone" | "all" | "shared" => SecretTier::Everyone,
-            "me" | "self" | "mine" => SecretTier::Me,
-            _ => SecretTier::Group(g.to_string()),
-        }
+        SecretTier::parse(g)
     } else if scoped {
         eprintln!(
             "{} --scoped is deprecated; use --group me",
@@ -65,17 +51,6 @@ pub(crate) fn resolve_secret_tier(group: Option<&str>, scoped: bool) -> SecretTi
         SecretTier::Me
     } else {
         SecretTier::Everyone
-    }
-}
-
-impl SecretTier {
-    /// Short suffix for status lines, e.g. ` (group prod)`.
-    fn label(&self) -> String {
-        match self {
-            SecretTier::Everyone => String::new(),
-            SecretTier::Me => " (me)".to_string(),
-            SecretTier::Group(name) => format!(" (group {name})"),
-        }
     }
 }
 
@@ -780,7 +755,11 @@ pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vau
         }
     }
 
-    let tier_label = tier.label();
+    let tier_label = match &tier {
+        SecretTier::Everyone => String::new(),
+        SecretTier::Me => " (me)".to_string(),
+        SecretTier::Group(name) => format!(" (group {name})"),
+    };
 
     // Build the edit buffer.
     let (header, entries) = if let Some(k) = key {

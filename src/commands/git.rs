@@ -8,14 +8,14 @@ use std::process;
 
 pub(crate) fn cmd_merge_driver(base_path: &str, ours_path: &str, theirs_path: &str) {
     let base_contents = fs::read_to_string(base_path)
-        .unwrap_or_else(|e| die(&format_args!("reading base {base_path}: {e}"), 2));
+        .unwrap_or_else(|e| die(&format_args!("reading base {base_path}: {e}"), 1));
     let ours_contents = fs::read_to_string(ours_path)
-        .unwrap_or_else(|e| die(&format_args!("reading ours {ours_path}: {e}"), 2));
+        .unwrap_or_else(|e| die(&format_args!("reading ours {ours_path}: {e}"), 1));
     let theirs_contents = fs::read_to_string(theirs_path)
-        .unwrap_or_else(|e| die(&format_args!("reading theirs {theirs_path}: {e}"), 2));
+        .unwrap_or_else(|e| die(&format_args!("reading theirs {theirs_path}: {e}"), 1));
 
     let output = murk_cli::run_merge_driver(&base_contents, &ours_contents, &theirs_contents)
-        .unwrap_or_else(|e| die(&e, 2));
+        .unwrap_or_else(|e| die(&e, 1));
 
     if !output.meta_regenerated && output.result.conflicts.is_empty() {
         // Check if the merge actually changed secrets or recipients vs ours.
@@ -23,9 +23,9 @@ pub(crate) fn cmd_merge_driver(base_path: &str, ours_path: &str, theirs_path: &s
         // Skip this check when there are conflicts — the user must resolve and re-merge anyway.
         let ours_vault = vault::parse(
             &fs::read_to_string(ours_path)
-                .unwrap_or_else(|e| die(&format_args!("re-reading ours: {e}"), 2)),
+                .unwrap_or_else(|e| die(&format_args!("re-reading ours: {e}"), 1)),
         )
-        .unwrap_or_else(|e| die(&e, 2));
+        .unwrap_or_else(|e| die(&e, 1));
 
         let content_changed = output.result.vault.secrets != ours_vault.secrets
             || output.result.vault.recipients != ours_vault.recipients;
@@ -50,7 +50,7 @@ pub(crate) fn cmd_merge_driver(base_path: &str, ours_path: &str, theirs_path: &s
 
     // Write merged result to ours path (%A).
     vault::write(Path::new(ours_path), &output.result.vault)
-        .unwrap_or_else(|e| die(&format_args!("writing merged vault: {e}"), 2));
+        .unwrap_or_else(|e| die(&format_args!("writing merged vault: {e}"), 1));
 
     if output.result.conflicts.is_empty() {
         eprintln!("{} vault merged cleanly", "◆".magenta());
