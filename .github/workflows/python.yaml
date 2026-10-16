@@ -11,6 +11,9 @@ on:
       - "murk.pyi"
       - "Cargo.toml"
       - ".github/workflows/python.yaml"
+      # A toolchain bump must build the bindings in its own PR.
+      - "rust-toolchain.toml"
+      - ".github/actions/setup-rust/**"
 
 permissions:
   contents: read
@@ -33,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: ./.github/actions/setup-rust
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Build release binary (for test fixture)

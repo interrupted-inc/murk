@@ -1,0 +1,8 @@
+# The exact Rust toolchain CI builds, lints and releases with. Dependabot bumps
+# the channel in its own PR, so a new compiler or clippy lint fails that PR and
+# no other. The full version keeps a patch release from reaching CI without a
+# PR. MSRV (Cargo.toml rust-version) and the nightly fuzz jobs override this
+# with RUSTUP_TOOLCHAIN.
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]
