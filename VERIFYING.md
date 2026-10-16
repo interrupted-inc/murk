@@ -28,6 +28,24 @@ gh attestation verify murk-<version>-<target>.tar.gz --owner interrupted-inc
 This confirms the artifact was produced by this repository's release workflow —
 a builder you can inspect, with a signing identity an attacker cannot forge.
 
+### Rebuilding a release binary
+
+`rust-toolchain.toml` at the release tag names the exact Rust version the release
+was built with. With [rustup](https://rustup.rs), building from a checkout of
+the tag uses that toolchain automatically; `rustup show active-toolchain`
+confirms it. Releases tagged before `rust-toolchain.toml` was added were built
+with the then-current stable Rust.
+
+The release workflow ([`release.yaml`](.github/workflows/release.yaml)) also
+fixes the other build inputs: `SOURCE_DATE_EPOCH` set to the commit timestamp,
+`CARGO_INCREMENTAL=0`, the checkout and cargo home remapped to `/src` and
+`/cargo` with `--remap-path-prefix`, and `-Clink-arg=/Brepro` on Windows. Build
+with the same settings and `cargo build --release --locked --target <target>`
+(the Linux ARM targets use `cross`), then compare the binary inside the release
+archive by SHA-256. CI's reproducibility job checks that two builds of one
+commit from different paths are byte-identical on Linux and Windows; a build on
+a different OS image or linker can still differ.
+
 ## npm — `@interrupted/murk-secrets`
 
 Published with npm provenance (`npm publish --provenance`). After installing,

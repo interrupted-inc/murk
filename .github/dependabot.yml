@@ -23,6 +23,15 @@ updates:
       codeql-action:
         patterns:
           - "github/codeql-action*"
+  # The Rust toolchain CI uses (rust-toolchain.toml). Each bump arrives as its
+  # own PR, so new compiler warnings and clippy lints fail that PR only. The
+  # channel is a full version: a patch release (1.99.0 -> 1.99.1) is a
+  # semver-patch PR that auto-merge merges once green, and a minor release
+  # (1.99.0 -> 1.100.0) is a semver-minor PR that waits for approval.
+  - package-ecosystem: rust-toolchain
+    directory: /
+    schedule:
+      interval: weekly
   # The fuzz targets are their own workspace with their own lockfile, so the
   # root cargo entry never sees them.
   - package-ecosystem: cargo

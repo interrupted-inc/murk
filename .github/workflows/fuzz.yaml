@@ -28,6 +28,10 @@ jobs:
   fuzz:
     name: Fuzz (${{ matrix.target }})
     runs-on: ubuntu-latest
+    # cargo fuzz runs without +nightly, and rust-toolchain.toml outranks the
+    # default the toolchain action sets. RUSTUP_TOOLCHAIN outranks the toml.
+    env:
+      RUSTUP_TOOLCHAIN: nightly
     strategy:
       fail-fast: false
       matrix:

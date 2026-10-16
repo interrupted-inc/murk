@@ -15,7 +15,8 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/interrupted-inc/murk"
 keywords = ["secrets", "encryption", "age", "dotenv", "security"]
 categories = ["command-line-utilities", "cryptography"]
-exclude = ["CLAUDE.md", "AGENTS.md", "SPEC.md"]
+# rust-toolchain.toml pins CI's toolchain; it must not force crate users onto it.
+exclude = ["CLAUDE.md", "AGENTS.md", "SPEC.md", "rust-toolchain.toml"]
 
 [lints.clippy]
 # Secret-handling guardrail: dbg! prints the Debug of any value — including a

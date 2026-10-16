@@ -1,0 +1,33 @@
+name: Set up the pinned Rust toolchain
+description: >-
+  Install the toolchain that rust-toolchain.toml pins, add any extra targets to
+  it, and log what the job will run.
+# Jobs that follow the pin use this instead of dtolnay/rust-toolchain. That
+# action installs the toolchain it is given ("stable") and makes it rustup's
+# default, but rust-toolchain.toml outranks the default, so builds run on the
+# pinned toolchain while the action's targets and components land on "stable",
+# a separate rustup toolchain even when the version matches.
+inputs:
+  targets:
+    description: Comma-separated target triples to add to the pinned toolchain.
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Install the pinned Rust toolchain
+      shell: bash
+      env:
+        TARGETS: ${{ inputs.targets }}
+      run: |
+        set -euo pipefail
+        # With no toolchain argument, rustup installs the channel and components
+        # rust-toolchain.toml names. Install explicitly: rustup is deprecating
+        # auto-install on first use.
+        rustup toolchain install
+        for target in ${TARGETS//,/ }; do
+          rustup target add "$target"
+        done
+        rustup show active-toolchain
+        rustc --version
+        cargo --version
