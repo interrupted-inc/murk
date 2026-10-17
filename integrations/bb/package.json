@@ -24,16 +24,16 @@
   },
   "dependencies": {
     "@interrupted/murk-secrets": "^0.11.0",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@get-bb/plugin-sdk": "0.6.31",
+    "@get-bb/plugin-sdk": "0.6.43",
     "@types/better-sqlite3": "^9.6.0",
-    "@types/node": "^26.6.4",
+    "@types/node": "^26.6.5",
     "better-sqlite3": "^13.0.3",
-    "cron-parser": "^5.10.1",
+    "cron-parser": "^5.10.2",
     "hono": "^4.13.13",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.3"
+    "vitest": "^5.0.4"
   }
 }
