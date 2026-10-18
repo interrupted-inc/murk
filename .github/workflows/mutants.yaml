@@ -19,6 +19,11 @@ jobs:
   mutants:
     name: cargo-mutants
     runs-on: ubuntu-latest
+    # Job-level permissions replace the workflow default, so restate it.
+    # issues: write is only for the tracking-issue step on scheduled failures.
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-rust
@@ -36,15 +41,21 @@ jobs:
       # (agent-grant create/revoke), recipients (who-can-decrypt), policy
       # (agent allow-tag enforcement), and merge (three-way merge driver).
       # --lib test args keep each mutant tractable.
+      #
+      # Every section runs through scripts/mutants-step.sh, which fails the step
+      # when its filters select zero mutants (cargo-mutants itself exits 0).
       - name: Mutation test — crypto core & vault security modules
-        run: cargo mutants --output target/mutants/crypto
+        run: scripts/mutants-step.sh "crypto core & vault security modules" target/mutants/crypto
 
-      # The MAC / integrity / load trust boundary in lib.rs, scoped by function
-      # name so the run stays bounded and meaningful.
+      # The MAC / integrity / load trust boundary (mac.rs, signature.rs,
+      # load.rs), scoped by function name so the run stays bounded and
+      # meaningful. Each section runs even if an earlier one failed, so one red
+      # section cannot hide another.
       - name: Mutation test — MAC & load core
+        if: ${{ !cancelled() }}
         run: >
-          cargo mutants --output target/mutants/mac
-          --file src/lib.rs
+          scripts/mutants-step.sh "MAC & load core" target/mutants/mac
+          --file src/mac.rs --file src/signature.rs --file src/load.rs
           --re 'compute_mac|verify_mac|mac_bytes|schema_mac_bytes|decode_mac_key|generate_mac_key|signing_message|sign_vault|verify_vault_signature|check_signature|resolve_meta_state|decrypt_vault'
 
       # The config-generation invariant for `murk agent connect`: a client config
@@ -58,8 +69,9 @@ jobs:
       # 0-missed is deferred: their survivors/timeouts are byte-index arithmetic
       # in bounded parse loops, many equivalent, with no key-material exposure.
       - name: Mutation test — agent connect config generation
+        if: ${{ !cancelled() }}
         run: >
-          cargo mutants --output target/mutants/connect
+          scripts/mutants-step.sh "agent connect config generation" target/mutants/connect
           --file src/connect.rs
           --re 'render_value|render_member|render_toml_member|fresh_document|\bquote\b'
 
@@ -73,8 +85,9 @@ jobs:
       # stdout is a captured pipe) that a --lib test cannot control portably —
       # covering them to 0-missed needs a multi-OS matrix + fd redirection.
       - name: Mutation test — strict-mode & agent gates
+        if: ${{ !cancelled() }}
         run: >
-          cargo mutants --output target/mutants/hardening
+          scripts/mutants-step.sh "strict-mode & agent gates" target/mutants/hardening
           --file src/hardening.rs
           --re 'strict_mode|agent_context|ci_context|self_scope|strict_from|effective_strict_from|disable_core_dumps'
 
@@ -84,3 +97,26 @@ jobs:
         with:
           name: mutants-report
           path: target/mutants/
+
+      # A scheduled run only notifies whoever last edited the cron, so a red
+      # week used to go unseen. Open one tracking issue (fixed title) and add a
+      # comment to it on each later failure until someone closes it.
+      - name: Open or update the tracking issue
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="Weekly mutation test run is failing"
+          body="The scheduled cargo-mutants run failed on \`${GITHUB_REF_NAME}\` at ${GITHUB_SHA}: ${RUN_URL}
+
+          A missed mutant is a code change no test noticed. The job log lists each MISSED or TIMEOUT mutant; the \`mutants-report\` artifact has the full outcomes. Close this issue once the run is green."
+          number=$(gh issue list --state open --search "in:title \"$title\"" --json number,title --limit 100 \
+            | jq -r --arg t "$title" 'map(select(.title == $t)) | .[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
