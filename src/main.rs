@@ -267,9 +267,15 @@ fn run() {
             ),
             AgentCommand::Exec {
                 only,
+                allow_operator_key,
                 vault,
                 command,
-            } => cmd_agent_exec(&command, &only, &murk_cli::resolve_vault_path(&vault)),
+            } => cmd_agent_exec(
+                &command,
+                &only,
+                allow_operator_key,
+                &murk_cli::resolve_vault_path(&vault),
+            ),
             AgentCommand::Grant {
                 name,
                 only,

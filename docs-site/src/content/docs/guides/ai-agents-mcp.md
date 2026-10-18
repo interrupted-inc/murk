@@ -53,14 +53,22 @@ agent as a separate user or in a container.
 
    When the agent itself is invoking the command, use `murk agent exec`. It
    requires explicit `--only` keys, clears the inherited environment, strips
-   `MURK_KEY`, and marks the child as an agent context (`MURK_AGENT=1`). So
-   the run can only see the secrets you named and a nested `murk` won't fall
-   back to your stored key:
+   `MURK_KEY`, marks the child as an agent context (`MURK_AGENT=1`), and
+   masks the injected values in the command's output. So the run can only see
+   the secrets you named and a nested `murk` won't fall back to your stored
+   key.
+
+   `agent exec` needs a key handed to it: `MURK_KEY` or `MURK_KEY_FILE`,
+   normally pointing at a scoped [grant](/concepts/grants/) key. It refuses to
+   decrypt with your personal key that murk would otherwise find on its own in
+   `~/.config/murk/keys`, because an agent shell with no `MURK_*` set would
+   get it silently. When you are the one running it and mean to use your own
+   key, say so with `--allow-operator-key`. murk then prints a one-line
+   warning on every run:
 
    ```bash
-   murk agent exec --only DATABASE_URL -- npm test
-   murk agent exec --only DATABASE_URL --only PG_PASSWORD -- ./migrate.sh
-   murk agent exec --only STRIPE_SECRET_KEY -- python scripts/refund.py
+   MURK_KEY_FILE=~/.config/murk/agent-keys/<...>-codex murk agent exec --only DATABASE_URL -- npm test
+   murk agent exec --allow-operator-key --only DATABASE_URL --only PG_PASSWORD -- ./migrate.sh
    ```
 
 4. **Use `murk agent plan` for schema prompting.** Agents don't need secret
@@ -105,8 +113,10 @@ own environment, so it can unset those vars or read `~/.config/murk/keys`
 directly. For real containment, run agents under a separate user or in a
 container (see below). If you want a non-strict shell yourself, just don't
 set `MURK_AGENT`. In CI, murk stays out of the way but prints a one-line
-nudge toward the scoped path when it sees a pipeline decrypting with your
-personal key.
+nudge toward a scoped grant key when it sees a pipeline decrypting with your
+personal key. `murk agent exec` does not wait for CI to object: it refuses
+your personal key everywhere unless you pass `--allow-operator-key`, and that
+flag always prints a warning, in CI or not.
 
 **Self-scoping your own key.** The allow-tag policy (see [Restricting which
 secrets agents can touch](#restricting-which-secrets-agents-can-touch),
@@ -124,11 +134,11 @@ sandbox.
 
 ## Scoped agent grants
 
-`murk agent exec` is the safest pattern: the agent's command gets secret
-*values* in its environment and never sees a key. Reach for a
-[grant](/concepts/grants/) when the agent has to run `murk` itself over a
-session, for example a long-running agent that calls `murk get` as it
-works.
+`murk agent exec` with a grant key is the safest pattern: the agent's command
+gets secret *values* in its environment and never sees a key, and the grant
+bounds which values it can reach. The same [grant](/concepts/grants/) key
+covers an agent that has to run `murk` itself over a session, for example a
+long-running agent that calls `murk get` as it works.
 
 ### One-shot setup: `murk agent init`
 
@@ -191,6 +201,47 @@ Three things to keep in mind:
   bypass murk. `MURK_STRICT` stops murk from *handing over* your key, but
   for true containment run the agent in a sandbox, container, or under a
   separate user that can't read your key directory.
+
+## Output masking
+
+`murk agent exec` and the MCP `murk_exec` tool replace every injected value
+in the command's stdout and stderr with a `***KEY***` placeholder, so an
+`env` dump or a debug line doesn't drop a secret into an agent's transcript.
+It is on by default, with no flag to turn it off.
+
+:::caution[An accident guard, not a security boundary]
+This is the same idea as GitHub Actions' `::add-mask::`. Its limits:
+
+- It matches a value byte for byte. A value that is encoded (base64,
+  URL-encoding, hex), transformed, printed only in part, or split between
+  stdout and stderr gets through.
+- It covers stdout and stderr only. A value the command writes to a file, a
+  socket, or another process is not touched.
+- Values shorter than **4 bytes** are not masked. Masking `1`, `on`, or `dev`
+  would rewrite unrelated output and still not hide a value that short.
+- When one value contains another, the longer one wins: the output shows the
+  longer key's placeholder.
+
+A command that wants to leak a value it was handed can do so. Masking only
+stops the accidental case.
+:::
+
+**What changes for the command under `agent exec`.** To see the output,
+`agent exec` supervises the command instead of replacing itself with it
+(plain `murk exec` still does the latter):
+
+- The command's stdout and stderr are pipes, not your terminal. A program
+  that checks for a terminal may drop colour or progress bars, or buffer its
+  output differently. stdin is still your terminal.
+- murk holds back at most the last few bytes of a chunk, and only while they
+  could be the start of a value, so streaming output is not delayed.
+- murk exits with the command's exit code. If a signal killed the command,
+  murk re-raises the same signal.
+- Ctrl-C reaches the command once, straight from the terminal. SIGINT,
+  SIGTERM, SIGHUP and SIGQUIT sent to murk alone (for example by a harness
+  timeout) are forwarded.
+- murk waits until both streams close, so a background process that
+  inherits them keeps `agent exec` running.
 
 ## Restricting which secrets agents can touch
 
@@ -290,12 +341,13 @@ plus an opt-in exec tool:
 - **`murk_exec { only, command }`**: *opt-in*, enabled with
   `murk mcp --allow-exec`. Runs a command with the named secrets injected
   into its environment (no shell), returning captured stdout, stderr, and
-  the exit code. Every key in `only` must be in the grant's scope and
-  policy-allowed, or it fails closed before running anything. Output and
-  runtime are bounded. The caveat: `only` scopes the injected *secrets*, not
-  the command: it runs as your user with your filesystem and network
-  access, so it is **not a sandbox**. Enable it only where the server
-  already runs under OS-level isolation.
+  the exit code, with the injected values masked (see
+  [Output masking](#output-masking), above). Every key in `only` must be in
+  the grant's scope and policy-allowed, or it fails closed before running
+  anything. Output and runtime are bounded. The caveat: `only` scopes the
+  injected *secrets*, not the command: it runs as your user with your
+  filesystem and network access, so it is **not a sandbox**. Enable it only
+  where the server already runs under OS-level isolation.
 
 You can verify it end to end without a client by driving the handshake over
 a pipe:

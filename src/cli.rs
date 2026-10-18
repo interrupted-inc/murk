@@ -439,12 +439,17 @@ pub enum AgentCommand {
     },
 
     /// Run a command with strict agent-safe defaults (clears the inherited
-    /// environment, strips MURK_KEY, requires --only)
+    /// environment, strips MURK_KEY, requires --only, masks injected values in
+    /// the output)
     #[command(trailing_var_arg = true)]
     Exec {
         /// Inject these specific keys (required — agent mode fails closed)
         #[arg(long, required = true)]
         only: Vec<String>,
+        /// Decrypt with your own stored key from ~/.config/murk/keys. Without
+        /// this, agent exec needs an explicit MURK_KEY or MURK_KEY_FILE
+        #[arg(long)]
+        allow_operator_key: bool,
         /// Vault filename
         #[arg(long, env = "MURK_VAULT", default_value = ".murk")]
         vault: String,

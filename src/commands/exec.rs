@@ -101,21 +101,28 @@ pub(crate) fn cmd_exec(
         cmd.envs(&secrets);
     };
 
+    let mut cmd = process::Command::new(program);
+    cmd.args(args);
+    build_cmd(&mut cmd);
+
+    // `murk agent exec` supervises the child instead of becoming it, so it can
+    // mask the injected values in the child's stdout and stderr (an accident
+    // guard for `env` dumps landing in an agent transcript). See `supervise`.
+    if agent_mode {
+        let masker = murk_cli::mask::Masker::new(secrets.iter().map(|(k, v)| (k, v.as_bytes())));
+        drop(secrets);
+        super::supervise::run_masked(cmd, &masker);
+    }
+
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        let mut cmd = process::Command::new(program);
-        cmd.args(args);
-        build_cmd(&mut cmd);
         let err = cmd.exec();
         die(&err, 1);
     }
 
     #[cfg(not(unix))]
     {
-        let mut cmd = process::Command::new(program);
-        cmd.args(args);
-        build_cmd(&mut cmd);
         let status = cmd.status().unwrap_or_else(|e| die(&e, 1));
         process::exit(status.code().unwrap_or(1));
     }

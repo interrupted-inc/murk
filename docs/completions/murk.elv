@@ -178,7 +178,7 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand -h 'Print help'
             cand --help 'Print help'
             cand plan 'Emit schema-only context safe to paste into an AI agent prompt'
-            cand exec 'Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only)'
+            cand exec 'Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only, masks injected values in the output)'
             cand grant 'Mint a scoped ephemeral key that can read only the named secrets'
             cand init 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely'
             cand ls 'List active agent grants and their TTLs'
@@ -199,6 +199,7 @@ set edit:completion:arg-completer[murk] = {|@words|
         &'murk;agent;exec'= {
             cand --only 'Inject these specific keys (required — agent mode fails closed)'
             cand --vault 'Vault filename'
+            cand --allow-operator-key 'Decrypt with your own stored key from ~/.config/murk/keys. Without this, agent exec needs an explicit MURK_KEY or MURK_KEY_FILE'
             cand -h 'Print help'
             cand --help 'Print help'
         }
@@ -253,7 +254,7 @@ set edit:completion:arg-completer[murk] = {|@words|
         }
         &'murk;agent;help'= {
             cand plan 'Emit schema-only context safe to paste into an AI agent prompt'
-            cand exec 'Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only)'
+            cand exec 'Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only, masks injected values in the output)'
             cand grant 'Mint a scoped ephemeral key that can read only the named secrets'
             cand init 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely'
             cand ls 'List active agent grants and their TTLs'
@@ -549,7 +550,7 @@ set edit:completion:arg-completer[murk] = {|@words|
         }
         &'murk;help;agent'= {
             cand plan 'Emit schema-only context safe to paste into an AI agent prompt'
-            cand exec 'Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only)'
+            cand exec 'Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only, masks injected values in the output)'
             cand grant 'Mint a scoped ephemeral key that can read only the named secrets'
             cand init 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely'
             cand ls 'List active agent grants and their TTLs'

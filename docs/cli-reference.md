@@ -413,7 +413,7 @@ Agent-oriented commands (schema-only output for AI agent prompts)
 ###### **Subcommands:**
 
 * `plan` — Emit schema-only context safe to paste into an AI agent prompt
-* `exec` — Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only)
+* `exec` — Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only, masks injected values in the output)
 * `grant` — Mint a scoped ephemeral key that can read only the named secrets
 * `init` — One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely
 * `ls` — List active agent grants and their TTLs
@@ -442,7 +442,7 @@ Emit schema-only context safe to paste into an AI agent prompt
 
 ## `murk agent exec`
 
-Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only)
+Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only, masks injected values in the output)
 
 **Usage:** `murk agent exec [OPTIONS] --only <ONLY> <COMMAND>...`
 
@@ -453,6 +453,7 @@ Run a command with strict agent-safe defaults (clears the inherited environment,
 ###### **Options:**
 
 * `--only <ONLY>` — Inject these specific keys (required — agent mode fails closed)
+* `--allow-operator-key` — Decrypt with your own stored key from ~/.config/murk/keys. Without this, agent exec needs an explicit MURK_KEY or MURK_KEY_FILE
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`

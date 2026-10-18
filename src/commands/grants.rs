@@ -77,9 +77,44 @@ pub(crate) fn cmd_skeleton(output: Option<&str>, vault_path: &str) {
     }
 }
 
-pub(crate) fn cmd_agent_exec(command: &[String], only: &[String], vault_path: &str) {
-    // Announce the exposure boundary on stderr before exec replaces the
-    // process. After execve the subprocess owns stderr and we cannot print.
+/// `murk agent exec`: run `command` with only the `--only` keys injected.
+///
+/// Fails closed on the operator's auto-discovered personal key
+/// (`~/.config/murk/keys`): an agent shell with no `MURK_*` set would otherwise
+/// decrypt with it silently, and the allow-list would be the only gate. The run
+/// needs an explicit `MURK_KEY`/`MURK_KEY_FILE` (normally a grant key), or the
+/// operator's deliberate `--allow-operator-key`. The key source is resolved
+/// before the vault is loaded, so the refusal happens before any decryption.
+pub(crate) fn cmd_agent_exec(
+    command: &[String],
+    only: &[String],
+    allow_operator_key: bool,
+    vault_path: &str,
+) {
+    // A resolution error falls through: `load_vault` reports it with its hints.
+    let operator_key = matches!(
+        murk_cli::resolve_key_with_source(vault_path),
+        Ok((_, murk_cli::KeySource::Auto(_)))
+    );
+    if operator_key {
+        if !allow_operator_key {
+            die(
+                &"agent exec refuses your personal key (~/.config/murk/keys)\n\
+                  an agent run must present its own key, not auto-discover yours\n\
+                  point MURK_KEY_FILE at a grant key (mint one: `murk agent init`)\n\
+                  or pass --allow-operator-key to use your own key on purpose",
+                1,
+            );
+        }
+        // The opt-in is the operator's call, so it is never silent — in CI or
+        // not. It replaces the CI personal-key hint, which would repeat it.
+        super::suppress_agent_nudge();
+        eprintln!(
+            "{} agent exec is decrypting with your personal key (--allow-operator-key)",
+            "warn".yellow().bold()
+        );
+    }
+
     eprintln!(
         "{} agent exec — clean env, injecting {} key{}",
         "◆".magenta(),
