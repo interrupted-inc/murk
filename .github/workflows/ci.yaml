@@ -20,9 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
-        with:
-          components: rustfmt, clippy
+      - uses: ./.github/actions/setup-rust
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo fmt --check
       - run: cargo clippy --all-features --all-targets -- -D warnings
@@ -59,17 +57,22 @@ jobs:
   msrv:
     name: MSRV
     runs-on: ubuntu-latest
+    # dtolnay/rust-toolchain makes 1.89 rustup's default, but rust-toolchain.toml
+    # outranks the default. RUSTUP_TOOLCHAIN outranks the toml.
+    env:
+      RUSTUP_TOOLCHAIN: "1.89"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
         with:
           toolchain: "1.89"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      # The runner image also carries a current stable, so record the pair this
-      # job really compiles with. A gate that has quietly drifted off the pinned
-      # toolchain still goes green and still tells you nothing — and the same
-      # mismatch is easy to hit locally, where a distro or Homebrew rustc can
-      # shadow the toolchain a `cargo` was launched from.
+      # The runner image also carries a current stable and the repo pins another
+      # in rust-toolchain.toml, so record the pair this job really compiles with.
+      # A gate that has quietly drifted off the MSRV toolchain still goes green
+      # and still tells you nothing — and the same mismatch is easy to hit
+      # locally, where a distro or Homebrew rustc can shadow the toolchain a
+      # `cargo` was launched from.
       - name: Record the toolchain this job runs
         run: |
           cargo --version
@@ -94,7 +97,7 @@ jobs:
       CARGO_INCREMENTAL: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: ./.github/actions/setup-rust
         with:
           targets: ${{ matrix.target }}
       # No target cache: restoring one would warm tree A but not the fresh
@@ -149,7 +152,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: ./.github/actions/setup-rust
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - uses: taiki-e/install-action@f092c064826410a38929a5791d2c0225b94432fe # nextest
       - run: cargo nextest run --all-features --profile ci
@@ -177,7 +180,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: ./.github/actions/setup-rust
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - uses: taiki-e/install-action@f092c064826410a38929a5791d2c0225b94432fe # cargo-llvm-cov
         with:
@@ -194,7 +197,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: ./.github/actions/setup-rust
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: sudo apt-get install -y direnv
       - run: make test-demos
@@ -224,7 +227,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: ./.github/actions/setup-rust
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo build --release
       - name: Smoke-test install.sh against a local fixture

@@ -7,6 +7,9 @@ on:
     paths:
       - "node/**"
       - ".github/workflows/node.yaml"
+      # A toolchain bump must build the bindings in its own PR.
+      - "rust-toolchain.toml"
+      - ".github/actions/setup-rust/**"
   workflow_dispatch:
 
 permissions:
@@ -35,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: ./.github/actions/setup-rust
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -84,7 +87,7 @@ jobs:
         with:
           node-version: "22"
 
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: ./.github/actions/setup-rust
         if: ${{ !matrix.settings.docker }}
         with:
           targets: ${{ matrix.settings.target }}
@@ -133,8 +136,14 @@ jobs:
             # Manual bump: update the tag and hash together (Dependabot cannot).
             curl --proto '=https' --tlsv1.2 -sSfL https://raw.githubusercontent.com/rust-lang/rustup/1.29.1/rustup-init.sh -o rustup-init.sh
             echo '7d0ea0f8eba7fa1ebfe998091cd7ec4501e33ec5ca6b884eb4d894d7da5170af  rustup-init.sh' | sha256sum -c -
-            sh rustup-init.sh -y --default-toolchain stable
+            # Install the toolchain rust-toolchain.toml pins (rustup finds it from
+            # /build/node) and its build target explicitly, rather than leaning
+            # on rustup auto-installing it on first use, which it is deprecating.
+            sh rustup-init.sh -y --profile minimal --default-toolchain none
             export PATH="$HOME/.cargo/bin:$PATH"
+            rustup toolchain install
+            rustup target add ${{ matrix.settings.target }}
+            rustup show active-toolchain
             rustc --version
             node --version
             npm ci

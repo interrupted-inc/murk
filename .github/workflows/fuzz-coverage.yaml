@@ -21,6 +21,11 @@ jobs:
   coverage:
     name: fuzz-coverage
     runs-on: ubuntu-latest
+    # cargo fuzz runs without +nightly, and rust-toolchain.toml outranks the
+    # default the toolchain action sets. RUSTUP_TOOLCHAIN outranks the toml, so
+    # cargo, rustc and the llvm-tools-preview lookup below all stay on nightly.
+    env:
+      RUSTUP_TOOLCHAIN: nightly
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
