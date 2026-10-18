@@ -32,6 +32,7 @@ pub(crate) mod groups;
 pub mod hardening;
 pub(crate) mod info;
 pub(crate) mod init;
+pub mod mask;
 pub(crate) mod merge;
 pub mod pins;
 pub(crate) mod policy;

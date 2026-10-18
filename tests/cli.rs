@@ -3096,9 +3096,11 @@ fn agent_exec_injects_only_specified_keys() {
         .assert()
         .success();
 
+    // Injected values come back masked; the placeholder proves which keys
+    // reached the child.
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
-    assert!(stdout.contains("DB_URL=postgres://prod"));
-    assert!(!stdout.contains("API_KEY=topsecret"));
+    assert!(stdout.contains("DB_URL=***DB_URL***"));
+    assert!(!stdout.contains("API_KEY="));
 }
 
 #[test]
@@ -3131,7 +3133,7 @@ fn agent_exec_clears_inherited_environment() {
     assert!(!stdout.contains("UNRELATED_VAR=should-not-appear"));
     assert!(!stdout.contains("MURK_KEY="));
     assert!(!stdout.contains("MURK_KEY_FILE="));
-    assert!(stdout.contains("DB_URL=postgres://prod"));
+    assert!(stdout.contains("DB_URL=***DB_URL***"));
     // PATH preserved so the subprocess can run.
     assert!(stdout.contains("PATH="));
 }
@@ -3220,6 +3222,357 @@ fn agent_exec_unknown_key_fails_closed() {
         ])
         .assert()
         .failure();
+}
+
+/// A murk command as an agent shell would run it: `HOME` holds the operator's
+/// stored key (written by `init_vault`), and no `MURK_*` or `CI` variable is
+/// set (`murk_bin` strips them), so key resolution falls through to
+/// auto-discovery.
+fn operator_shell(dir: &TempDir) -> assert_cmd::Command {
+    let mut cmd = murk_bin(dir.path());
+    cmd.current_dir(dir.path());
+    cmd
+}
+
+/// `murk agent exec --only DB_URL -- sh -c <script>` as a spawnable
+/// `std::process::Command` with the hermetic test env, for tests that signal
+/// murk while it runs (assert_cmd only runs to completion).
+#[cfg(unix)]
+fn spawn_agent_exec_sh(dir: &TempDir, script: &str) -> std::process::Command {
+    let key = fs::read_to_string(stored_key_file(dir)).unwrap();
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("murk"));
+    for var in MURK_CONTEXT_VARS {
+        cmd.env_remove(var);
+    }
+    cmd.current_dir(dir.path())
+        .env("HOME", dir.path())
+        .env("XDG_RUNTIME_DIR", dir.path())
+        .env("MURK_KEY", key.trim())
+        .args([
+            "agent",
+            "exec",
+            "--only",
+            "DB_URL",
+            "--vault",
+            "test.murk",
+            "--",
+            "sh",
+            "-c",
+            script,
+        ]);
+    cmd
+}
+
+/// The operator's auto-discovered key file under `<dir>/.config/murk/keys`.
+fn stored_key_file(dir: &TempDir) -> std::path::PathBuf {
+    fs::read_dir(dir.path().join(".config/murk/keys"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path()
+}
+
+/// Add `DB_URL` and return the dir, ready for agent exec.
+fn agent_exec_vault() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    murk(&dir, &key)
+        .args(["add", "DB_URL", "--vault", "test.murk"])
+        .write_stdin("postgres://prod-sentinel\n")
+        .assert()
+        .success();
+    dir
+}
+
+#[test]
+fn agent_exec_refuses_auto_discovered_operator_key() {
+    let dir = agent_exec_vault();
+
+    let assertion = operator_shell(&dir)
+        .args([
+            "agent",
+            "exec",
+            "--only",
+            "DB_URL",
+            "--vault",
+            "test.murk",
+            "--",
+            "echo",
+            "ran",
+        ])
+        .assert()
+        .failure()
+        .stdout("");
+    let stderr = String::from_utf8(assertion.get_output().stderr.clone()).unwrap();
+
+    // It says why and names both ways forward, and fails before the run starts.
+    assert_narrow_error(&stderr, "agent exec refuses your personal key");
+    assert!(stderr.contains("MURK_KEY_FILE"), "{stderr}");
+    assert!(stderr.contains("--allow-operator-key"), "{stderr}");
+    assert!(!stderr.contains("injecting"), "{stderr}");
+}
+
+#[test]
+fn agent_exec_allow_operator_key_runs_and_always_warns() {
+    let dir = agent_exec_vault();
+
+    // CI is set to show the warning is not CI-gated, and that it replaces the
+    // CI personal-key hint instead of stacking a second notice on top.
+    let assertion = operator_shell(&dir)
+        .env("CI", "true")
+        .args([
+            "agent",
+            "exec",
+            "--allow-operator-key",
+            "--only",
+            "DB_URL",
+            "--vault",
+            "test.murk",
+            "--",
+            "sh",
+            "-c",
+            "test \"$DB_URL\" = postgres://prod-sentinel && echo injected-ok",
+        ])
+        .assert()
+        .success()
+        .stdout("injected-ok\n");
+    let stderr = String::from_utf8(assertion.get_output().stderr.clone()).unwrap();
+
+    assert!(
+        stderr.contains("warn agent exec is decrypting with your personal key"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("CI is decrypting"), "{stderr}");
+}
+
+#[test]
+fn agent_exec_runs_with_an_explicit_key_file() {
+    let dir = agent_exec_vault();
+
+    operator_shell(&dir)
+        .env("MURK_KEY_FILE", stored_key_file(&dir))
+        .args([
+            "agent",
+            "exec",
+            "--only",
+            "DB_URL",
+            "--vault",
+            "test.murk",
+            "--",
+            "sh",
+            "-c",
+            "test \"$DB_URL\" = postgres://prod-sentinel && echo injected-ok",
+        ])
+        .assert()
+        .success()
+        .stdout("injected-ok\n")
+        .stderr(predicate::str::contains("personal key").not());
+}
+
+/// Values are masked on both streams: repeated, written in two pieces with a
+/// pause between (so murk reads them separately), and at the end of a stream
+/// with no newline. A value under the 4-byte floor is left alone.
+#[cfg(unix)]
+#[test]
+fn agent_exec_masks_injected_values_on_both_streams() {
+    let dir = agent_exec_vault();
+    let key = fs::read_to_string(stored_key_file(&dir)).unwrap();
+    murk(&dir, &key)
+        .args(["add", "SHORT", "--vault", "test.murk"])
+        .write_stdin("abc\n")
+        .assert()
+        .success();
+
+    let script = r#"
+        echo "DB_URL=$DB_URL DB_URL=$DB_URL$DB_URL"
+        printf %s "$(printf %s "$DB_URL" | cut -c1-12)"
+        sleep 0.3
+        printf '%s\n' "$(printf %s "$DB_URL" | cut -c13-)"
+        echo "SHORT=$SHORT"
+        printf 'err %s' "$DB_URL" >&2
+    "#;
+    let assertion = murk(&dir, &key)
+        .args([
+            "agent",
+            "exec",
+            "--only",
+            "DB_URL",
+            "--only",
+            "SHORT",
+            "--vault",
+            "test.murk",
+            "--",
+            "sh",
+            "-c",
+            script,
+        ])
+        .assert()
+        .success();
+    let out = assertion.get_output();
+    let stdout = String::from_utf8(out.stdout.clone()).unwrap();
+    let stderr = String::from_utf8(out.stderr.clone()).unwrap();
+
+    assert_eq!(
+        stdout,
+        "DB_URL=***DB_URL*** DB_URL=***DB_URL******DB_URL***\n***DB_URL***\nSHORT=abc\n"
+    );
+    assert!(stderr.ends_with("err ***DB_URL***"), "{stderr}");
+    assert!(!stderr.contains("prod-sentinel"), "{stderr}");
+}
+
+#[test]
+fn agent_exec_propagates_exit_code() {
+    let dir = agent_exec_vault();
+    let key = fs::read_to_string(stored_key_file(&dir)).unwrap();
+
+    #[cfg(unix)]
+    let command = ["sh", "-c", "exit 7"];
+    #[cfg(windows)]
+    let command = ["cmd", "/C", "exit 7"];
+
+    murk(&dir, &key)
+        .args([
+            "agent",
+            "exec",
+            "--only",
+            "DB_URL",
+            "--vault",
+            "test.murk",
+            "--",
+        ])
+        .args(command)
+        .assert()
+        .code(7);
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_exec_propagates_signal_death() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let dir = agent_exec_vault();
+    let key = fs::read_to_string(stored_key_file(&dir)).unwrap();
+
+    let output = murk(&dir, &key)
+        .args([
+            "agent",
+            "exec",
+            "--only",
+            "DB_URL",
+            "--vault",
+            "test.murk",
+            "--",
+            "sh",
+            "-c",
+            "kill -TERM $$",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.signal(), Some(15), "{:?}", output.status);
+}
+
+/// The child writes more than a pipe buffer to stderr before it writes to
+/// stdout, then the reverse. Reading one stream to EOF first would deadlock.
+#[cfg(unix)]
+#[test]
+fn agent_exec_large_output_on_both_streams_does_not_hang() {
+    let dir = agent_exec_vault();
+    let key = fs::read_to_string(stored_key_file(&dir)).unwrap();
+
+    let assertion = murk(&dir, &key)
+        .timeout(std::time::Duration::from_secs(60))
+        .args([
+            "agent",
+            "exec",
+            "--only",
+            "DB_URL",
+            "--vault",
+            "test.murk",
+            "--",
+            "sh",
+            "-c",
+            "head -c 300000 /dev/zero >&2; head -c 300000 /dev/zero; head -c 300000 /dev/zero >&2",
+        ])
+        .assert()
+        .success();
+    let out = assertion.get_output();
+    assert_eq!(out.stdout.len(), 300_000);
+    // stderr also carries murk's own two-line agent exec banner.
+    assert_eq!(out.stderr.iter().filter(|&&b| b == 0).count(), 600_000);
+}
+
+/// A SIGTERM sent to murk alone reaches the child, which can handle it; murk
+/// then exits with the child's code.
+#[cfg(unix)]
+#[test]
+fn agent_exec_forwards_sigterm_to_the_child() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+
+    let dir = agent_exec_vault();
+    let mut murk_proc = spawn_agent_exec_sh(
+        &dir,
+        "trap 'echo got-term; exit 5' TERM; echo ready; while :; do sleep 0.1; done",
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::null())
+    .spawn()
+    .unwrap();
+    let mut lines = BufReader::new(murk_proc.stdout.take().unwrap()).lines();
+    assert_eq!(lines.next().unwrap().unwrap(), "ready");
+
+    let killed = Command::new("kill")
+        .args(["-TERM", &murk_proc.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+
+    assert_eq!(lines.next().unwrap().unwrap(), "got-term");
+    assert_eq!(murk_proc.wait().unwrap().code(), Some(5));
+}
+
+/// Once the child has exited, murk may still be draining pipes a background
+/// descendant holds open. A SIGTERM then has no child to go to, so murk must
+/// die from it instead of swallowing it and waiting for the pipes to close.
+#[cfg(unix)]
+#[test]
+fn agent_exec_dies_from_sigterm_after_child_exits_with_pipes_held_open() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let dir = agent_exec_vault();
+    // `sh` exits at once; the backgrounded `sleep` inherits and holds both pipes.
+    let mut murk_proc = spawn_agent_exec_sh(&dir, "sleep 10 & echo ready")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(murk_proc.stdout.take().unwrap()).lines();
+    assert_eq!(lines.next().unwrap().unwrap(), "ready");
+    // Give `sh` time to exit and murk time to reap it.
+    std::thread::sleep(Duration::from_millis(300));
+
+    let killed = Command::new("kill")
+        .args(["-TERM", &murk_proc.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let status = loop {
+        if let Some(status) = murk_proc.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > deadline {
+            murk_proc.kill().unwrap();
+            panic!("murk ignored SIGTERM while a background process held its pipes");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(status.signal(), Some(libc::SIGTERM));
 }
 
 #[test]
@@ -5474,10 +5827,13 @@ fn mcp_exec_runs_command_with_injected_secret() {
     let dir = TempDir::new().unwrap();
     let grant = setup_mcp_grant(&dir);
 
+    // The child proves it received the value without printing it: the output
+    // that comes back is masked (see `mcp_exec_masks_injected_values`).
     #[cfg(unix)]
-    let exec_args = r#"{"only":["DB_URL"],"command":["printenv","DB_URL"]}"#;
+    let exec_args = r#"{"only":["DB_URL"],"command":["sh","-c","test \"$DB_URL\" = db-val && echo injected-ok"]}"#;
     #[cfg(windows)]
-    let exec_args = r#"{"only":["DB_URL"],"command":["cmd","/C","echo %DB_URL%"]}"#;
+    let exec_args =
+        r#"{"only":["DB_URL"],"command":["cmd","/C","if %DB_URL%==db-val echo injected-ok"]}"#;
 
     murk_bin(dir.path())
         .current_dir(dir.path())
@@ -5488,7 +5844,44 @@ fn mcp_exec_runs_command_with_injected_secret() {
         .assert()
         .success()
         .stdout(
-            predicate::str::contains("db-val").and(predicate::str::contains("\"isError\":false")),
+            predicate::str::contains("injected-ok")
+                .and(predicate::str::contains("\"isError\":false")),
+        );
+}
+
+/// An env-style dump of the injected values comes back masked on both streams:
+/// a value repeated back to back, a value at the very end of stdout with no
+/// newline, and the same value again at the very start of stderr.
+#[cfg(unix)]
+#[test]
+fn mcp_exec_masks_injected_values() {
+    let dir = TempDir::new().unwrap();
+    let grant = setup_mcp_grant(&dir);
+
+    let script = r#"echo \"DB_URL=$DB_URL\"; echo \"CACHE_URL=$CACHE_URL$CACHE_URL\"; printf %s \"$DB_URL\"; printf '%s\\n' \"$CACHE_URL\" >&2"#;
+    let exec_args =
+        format!(r#"{{"only":["DB_URL","CACHE_URL"],"command":["sh","-c","{script}"]}}"#);
+
+    murk_bin(dir.path())
+        .current_dir(dir.path())
+        .env("MURK_KEY_FILE", grant.to_str().unwrap())
+        .env("MURK_AGENT", "1")
+        .args(["mcp", "--vault", "test.murk", "--allow-exec"])
+        .write_stdin(mcp_handshake_and_call("murk_exec", &exec_args))
+        .assert()
+        .success()
+        // The payload is JSON text inside a JSON-RPC string, so a newline in the
+        // child's output arrives as `\\n` and a quote as `\"`.
+        .stdout(
+            predicate::str::contains(r"DB_URL=***DB_URL***\\n")
+                .and(predicate::str::contains(
+                    r"CACHE_URL=***CACHE_URL******CACHE_URL***\\n***DB_URL***",
+                ))
+                .and(predicate::str::contains(
+                    r#"\"stderr\": \"***CACHE_URL***\\n"#,
+                ))
+                .and(predicate::str::contains("db-val").not())
+                .and(predicate::str::contains("cache-val").not()),
         );
 }
 
@@ -5513,6 +5906,48 @@ fn mcp_exec_output_is_capped() {
             predicate::str::contains("\"isError\":true")
                 .and(predicate::str::contains(r#"\"truncated\": true"#)),
         );
+}
+
+/// A value cut in half by the 1 MiB output cap must not leak its first half:
+/// the stream is padded so `cache-val` starts 5 bytes before the cap, which
+/// leaves `cache` as the last bytes read.
+#[cfg(unix)]
+#[test]
+fn mcp_exec_value_straddling_the_output_cap_leaks_no_prefix() {
+    const OUTPUT_CAP: usize = 1 << 20; // src/mcp.rs
+    let pad = OUTPUT_CAP - 5;
+
+    let dir = TempDir::new().unwrap();
+    let grant = setup_mcp_grant(&dir);
+    let script = format!(r#"head -c {pad} /dev/zero | tr '\\0' x; printf %s \"$CACHE_URL\"; yes"#);
+    let exec_args = format!(r#"{{"only":["CACHE_URL"],"command":["sh","-c","{script}"]}}"#);
+
+    let out = murk_bin(dir.path())
+        .current_dir(dir.path())
+        .env("MURK_KEY_FILE", grant.to_str().unwrap())
+        .env("MURK_AGENT", "1")
+        .args(["mcp", "--vault", "test.murk", "--allow-exec"])
+        .write_stdin(mcp_handshake_and_call("murk_exec", &exec_args))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let response: serde_json::Value = String::from_utf8(out)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .find(|v| v["id"] == 2)
+        .expect("tools/call response");
+    let text = response["result"]["content"][0]["text"].as_str().unwrap();
+    let payload: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(payload["truncated"], true);
+    let stdout = payload["stdout"].as_str().unwrap();
+    // Exactly the padding survives: the cut-off `cache` is dropped, not passed
+    // through and not masked into a placeholder that would hint at it.
+    assert_eq!(stdout.len(), pad, "stdout must end where the padding ends");
+    assert!(stdout.bytes().all(|b| b == b'x'), "only padding may remain");
 }
 
 // ── agent connect / disconnect (MCP editor wiring) ──

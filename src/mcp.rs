@@ -160,12 +160,12 @@ impl MurkMcp {
     }
 
     /// Run a command with the named secrets injected into its environment and
-    /// return the captured output. Opt-in via `murk mcp --allow-exec`. Fails
-    /// closed: every requested key must be in this grant's scope and allowed by
-    /// the agent policy. No shell, a cleaned environment, and bounded output +
-    /// runtime.
+    /// return the captured output, with every injected value masked as
+    /// `***KEY***`. Opt-in via `murk mcp --allow-exec`. Fails closed: every
+    /// requested key must be in this grant's scope and allowed by the agent
+    /// policy. No shell, a cleaned environment, and bounded output + runtime.
     #[tool(
-        description = "Run a command with scoped secrets injected into its environment (no shell), returning captured stdout/stderr and the exit code as JSON. Requires `only` (keys to inject) and `command` (argv). Fails closed on any key outside this grant's scope or the agent policy."
+        description = "Run a command with scoped secrets injected into its environment (no shell), returning captured stdout/stderr and the exit code as JSON. Injected values in the output are replaced with ***KEY*** (values under 4 bytes are not masked). Requires `only` (keys to inject) and `command` (argv). Fails closed on any key outside this grant's scope or the agent policy."
     )]
     async fn murk_exec(
         &self,
@@ -384,8 +384,23 @@ async fn run_command(
         )));
     }
 
-    let stdout = String::from_utf8_lossy(&ob.unwrap_or_default()).into_owned();
-    let stderr = String::from_utf8_lossy(&eb.unwrap_or_default()).into_owned();
+    // Scrub the injected values before the output reaches the agent. An
+    // accident guard (an `env` dump, a debug line), not a boundary: encoded,
+    // partial, or file-written values get through. See `murk_cli::mask`.
+    // Over the cap, both streams may end mid-value (one was cut, the other
+    // killed), so a trailing possible value prefix is dropped too.
+    let masker = murk_cli::mask::Masker::new(secrets.iter().map(|(k, v)| (k, v.as_bytes())));
+    let scrub = |b: Option<Vec<u8>>| {
+        let b = b.unwrap_or_default();
+        let masked = if over_cap {
+            masker.mask_truncated(&b)
+        } else {
+            masker.mask(&b)
+        };
+        String::from_utf8_lossy(&masked).into_owned()
+    };
+    let stdout = scrub(ob);
+    let stderr = scrub(eb);
     let payload = serde_json::json!({
         "exit_code": status.and_then(|s| s.code()),
         "stdout": stdout,

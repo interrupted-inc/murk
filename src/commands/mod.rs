@@ -16,6 +16,7 @@ pub(crate) mod recipients;
 pub(crate) mod recover;
 pub(crate) mod scan;
 pub(crate) mod secrets;
+pub(crate) mod supervise;
 pub(crate) mod verify;
 
 // `murk agent exec` reuses the plain `exec` handler.
@@ -133,13 +134,19 @@ pub(crate) fn load_vault(vault: &str) -> (types::Vault, types::Murk, MurkIdentit
     result
 }
 
+/// Fires the CI personal-key hint at most once per process. Module-level so
+/// [`suppress_agent_nudge`] can consume it.
+static AGENT_NUDGE: std::sync::Once = std::sync::Once::new();
+
 /// One-time hint when CI is decrypting with the operator's personal stored key —
 /// the agent anti-pattern. CI context alone never changes behavior (see
 /// `hardening::ci_context`); this only points at the scoped path. Stays quiet
 /// with an explicit key/grant, in agent context, or under strict.
+///
+/// The remedy it names is a grant key, never `murk agent exec`: agent exec
+/// refuses the stored key unless `--allow-operator-key` is passed, and that path
+/// prints its own warning (in or out of CI) and suppresses this hint.
 pub(crate) fn maybe_nudge_agent_path(vault: &str) {
-    use std::sync::Once;
-    static NUDGE: Once = Once::new();
     if !murk_cli::hardening::ci_context()
         || murk_cli::hardening::agent_context()
         || murk_cli::hardening::strict_mode()
@@ -147,18 +154,25 @@ pub(crate) fn maybe_nudge_agent_path(vault: &str) {
         return;
     }
     if let Ok((_, murk_cli::KeySource::Auto(_))) = murk_cli::resolve_key_with_source(vault) {
-        NUDGE.call_once(|| {
+        AGENT_NUDGE.call_once(|| {
             eprintln!(
                 "{} CI is decrypting with your personal key",
                 "hint".cyan().bold()
             );
             eprintln!(
                 "  {}",
-                "prefer a scoped `murk agent grant` + MURK_AGENT=1, or `murk agent exec`".dimmed()
+                "prefer a scoped grant key: `murk agent init`, then MURK_KEY_FILE + MURK_AGENT=1"
+                    .dimmed()
             );
             eprintln!("  {}", "see docs/ai-agents.md".dimmed());
         });
     }
+}
+
+/// Silence [`maybe_nudge_agent_path`] for the rest of the process. For a command
+/// that has already printed its own personal-key warning.
+pub(crate) fn suppress_agent_nudge() {
+    AGENT_NUDGE.call_once(|| {});
 }
 
 /// Load the vault while holding an exclusive lock for the entire read-modify-write cycle.

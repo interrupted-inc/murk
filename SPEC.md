@@ -363,9 +363,13 @@ Emits schema-only context safe to paste into an AI agent prompt — key names, d
 
 ---
 
-### `murk agent exec --only KEY [--vault NAME] COMMAND...`
+### `murk agent exec --only KEY [--allow-operator-key] [--vault NAME] COMMAND...`
 
-`murk exec` with strict agent-safe defaults: clears the inherited environment, strips `MURK_KEY` so the child process cannot read the vault, and requires explicit `--only` keys (repeatable). Agent mode fails closed — there is no inject-everything path. See `docs/ai-agents.md`.
+`murk exec` with strict agent-safe defaults: clears the inherited environment, strips `MURK_KEY` so the child process cannot read the vault, and requires explicit `--only` keys (repeatable). Agent mode fails closed — there is no inject-everything path.
+
+The key must be handed over explicitly via `MURK_KEY` or `MURK_KEY_FILE` (normally a grant key). An auto-discovered key from `~/.config/murk/keys` is refused before the vault is loaded, unless `--allow-operator-key` is passed; that flag prints a warning on every run.
+
+The child runs supervised, not `exec`-ed: its stdout and stderr are pipes, and every injected value of 4 bytes or more is replaced with `***KEY***` before it is written out. murk forwards SIGINT, SIGTERM, SIGHUP and SIGQUIT sent to it by another process, and exits with the child's code or re-raises its terminating signal. See `docs/ai-agents.md`.
 
 ---
 

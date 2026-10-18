@@ -534,7 +534,7 @@ _murk() {
             return 0
             ;;
         murk__subcmd__agent__subcmd__exec)
-            opts="-h --only --vault --help"
+            opts="-h --only --allow-operator-key --vault --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

@@ -66,9 +66,20 @@ values into your shell session:
 set -a; source .murk-<threadId>.env; set +a; ./migrate.sh   # path from the murk_get result
 ```
 
-`murk agent exec --only KEY -- CMD` also injects secrets into a subprocess
-without a file — but only in environments that hold their own `MURK_KEY` or
-`MURK_KEY_FILE` (an operator's shell, a CI job with its own identity). A bb
-thread never holds key material — grants live only as 0600 identity files
-under the plugin's data dir — so that command always fails here. Use the
+**Never dump the environment under anything that injects secrets.** Do not
+run `env`, `printenv`, `set`, `export -p`, `declare -x`, or any other command
+that prints environment variables after sourcing the delivered file, or
+inside `murk exec`, `murk agent exec`, or any other secret-injecting wrapper.
+To check that a variable is set, test it without printing it:
+`test -n "$KEY" && echo set`.
+
+Do not use `murk agent exec` in a bb thread. It needs a key handed to it in
+`MURK_KEY` or `MURK_KEY_FILE`, and a bb thread holds none: grants live only as
+0600 identity files under the plugin's data dir. Without one it fails closed
+and refuses to fall back to the user's personal key in `~/.config/murk/keys`.
+Its `--allow-operator-key` flag overrides that refusal and decrypts with the
+user's own key: never pass it, and never point `MURK_KEY_FILE` at anything
+under `~/.config/murk`. That is the user's decision, not yours. `agent exec`
+also masks injected values in its output, but masking is an accident guard,
+not permission to print: an encoded or partial value gets through. Use the
 delivered dotenv file instead.

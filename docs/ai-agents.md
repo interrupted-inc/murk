@@ -17,12 +17,13 @@ murk gives agents access to secrets without exposing them in plaintext.
    murk exec -- npm run migrate
    ```
 
-   When the agent itself is invoking the command, use `murk agent exec`. It requires explicit `--only` keys, clears the inherited environment, strips `MURK_KEY`, and marks the child as an agent context (`MURK_AGENT=1`) — so the run can only see the secrets you named and a nested `murk` won't fall back to your stored key:
+   When the agent itself is invoking the command, use `murk agent exec`. It requires explicit `--only` keys, clears the inherited environment, strips `MURK_KEY`, marks the child as an agent context (`MURK_AGENT=1`), and masks the injected values in the command's output — so the run can only see the secrets you named and a nested `murk` won't fall back to your stored key.
+
+   `agent exec` needs a key handed to it: `MURK_KEY` or `MURK_KEY_FILE`, normally pointing at a scoped grant key (see _Scoped agent grants_, below). It refuses to decrypt with your personal key that murk would otherwise find on its own in `~/.config/murk/keys`, because an agent shell with no `MURK_*` set would get it silently. When you are the one running it and mean to use your own key, say so with `--allow-operator-key`; murk then prints a one-line warning on every run:
 
    ```bash
-   murk agent exec --only DATABASE_URL -- npm test
-   murk agent exec --only DATABASE_URL --only PG_PASSWORD -- ./migrate.sh
-   murk agent exec --only STRIPE_SECRET_KEY -- python scripts/refund.py
+   MURK_KEY_FILE=~/.config/murk/agent-keys/<...>-codex murk agent exec --only DATABASE_URL -- npm test
+   murk agent exec --allow-operator-key --only DATABASE_URL --only PG_PASSWORD -- ./migrate.sh
    ```
 
 4. **Use `murk agent plan` for schema prompting.** Agents don't need secret values to understand what's available. `agent plan` emits key names, descriptions, examples, and tags as text or JSON — no decryption, no `MURK_KEY`, no recipient metadata:
@@ -41,13 +42,13 @@ murk gives agents access to secrets without exposing them in plaintext.
 
 Set `MURK_AGENT=1` to tell murk it's running for an agent. In an agent context, **strict mode is forced**: murk won't fall back to your stored key in `~/.config/murk/keys` (the agent must present its own `MURK_KEY`/`MURK_KEY_FILE` — e.g. a grant key — or fail closed), won't write plaintext secrets to a file, and requires a RAM-backed tmpdir for `murk edit`.
 
-`murk agent exec` sets `MURK_AGENT=1` and `MURK_STRICT=1` for the child, so a nested `murk` stays strict and won't fall back to your stored key on the normal path. This is a safe default, **not a sandbox**: a child controls its own environment, so it can unset those vars or read `~/.config/murk/keys` directly — for real containment, run agents under a separate user or in a container (see below). If you want a non-strict shell yourself, just don't set `MURK_AGENT`. In CI, murk stays out of the way but prints a nudge toward the scoped path when it sees a pipeline decrypting with your personal key.
+`murk agent exec` sets `MURK_AGENT=1` and `MURK_STRICT=1` for the child, so a nested `murk` stays strict and won't fall back to your stored key on the normal path. This is a safe default, **not a sandbox**: a child controls its own environment, so it can unset those vars or read `~/.config/murk/keys` directly — for real containment, run agents under a separate user or in a container (see below). If you want a non-strict shell yourself, just don't set `MURK_AGENT`. In CI, murk stays out of the way but prints a nudge toward a scoped grant key when it sees a pipeline decrypting with your personal key. `murk agent exec` does not wait for CI to object: it refuses your personal key everywhere unless you pass `--allow-operator-key`, and that flag always prints a warning, in CI or not.
 
 **Self-scoping your own key.** The allow-tag policy (see _Restricting which secrets agents can touch_, below) normally binds only agent grant keys — `murk get`/`export`/`edit` with your _own_ key ignore it. Set `MURK_SELF_SCOPE=1` (agent context implies it) to hold your own reads to the policy too: `get`, `exec` (and `agent exec`), and single-key `edit KEY` fail closed on a non-allowed key; `export` withholds forbidden keys (with a note on stderr); and bulk `murk edit` is refused. Reach for it when you run an agent in your own shell and want the guardrail to actually bite — it's still the murk binary enforcing it, not a sandbox.
 
 ## Scoped agent grants
 
-`murk agent exec` is the safest pattern: the agent's command gets secret _values_ in its environment and never sees a key. Reach for a **grant** when the agent has to run `murk` itself over a session — for example a long-running agent that calls `murk get` as it works.
+`murk agent exec` with a grant key is the safest pattern: the agent's command gets secret _values_ in its environment and never sees a key, and the grant bounds which values it can reach. The same grant key covers an agent that has to run `murk` itself over a session — for example a long-running agent that calls `murk get` as it works.
 
 ### One-shot setup: `murk agent init`
 
@@ -91,6 +92,21 @@ Three things to keep in mind:
 - **The key is a bearer credential.** Whoever holds the key file has the access. Treat it like the secret it unlocks.
 - **Real isolation is the OS's job.** An agent running as you, with read access to your home directory, can read `~/.config/murk/keys` directly and bypass murk. `MURK_STRICT` stops murk from _handing over_ your key, but for true containment run the agent in a sandbox, container, or under a separate user that can't read your key directory.
 
+## Output masking
+
+`murk agent exec` and the MCP `murk_exec` tool replace every injected value in the command's stdout and stderr with a `***KEY***` placeholder, so an `env` dump or a debug line doesn't drop a secret into an agent's transcript. It is on by default, with no flag to turn it off.
+
+This is an **accident guard, not a security boundary** — the same idea as GitHub Actions' `::add-mask::`. Its limits:
+
+- It matches a value byte for byte. A value that is encoded (base64, URL-encoding, hex), transformed, printed only in part, or split between stdout and stderr gets through.
+- It covers stdout and stderr only. A value the command writes to a file, a socket, or another process is not touched.
+- Values shorter than **4 bytes** are not masked. Masking `1`, `on`, or `dev` would rewrite unrelated output and still not hide a value that short.
+- When one value contains another, the longer one wins: the output shows the longer key's placeholder.
+
+A command that wants to leak a value it was handed can do so. Masking only stops the accidental case.
+
+**What changes for the command under `agent exec`.** To see the output, `agent exec` now supervises the command instead of replacing itself with it (plain `murk exec` still does the latter). The command's stdout and stderr are pipes, not your terminal, so a program that checks for a terminal may drop colour or progress bars, or buffer its output differently. stdin is still your terminal. murk holds back at most the last few bytes of a chunk, and only while they could be the start of a value, so streaming output is not delayed. murk exits with the command's exit code; if the command was killed by a signal, murk re-raises the same signal. Ctrl-C reaches the command once, straight from the terminal; SIGINT, SIGTERM, SIGHUP and SIGQUIT sent to murk alone (for example by a harness timeout) are forwarded. murk waits until both streams close, so a background process that inherits them keeps `agent exec` running.
+
 ## Restricting which secrets agents can touch
 
 Tag your secrets and set an allow-list, and murk will refuse to inject or grant anything outside it in agent mode:
@@ -119,7 +135,7 @@ The server speaks JSON-RPC over stdout and logs only to stderr, so point your MC
 
 - **`murk_plan`** — the schema (key names, descriptions, examples, tags) of the secrets _this grant may read_, as JSON. No values, and no keys outside the grant's scope or the vault's agent policy — a narrowly-scoped agent can't even enumerate what else the vault holds. Takes an optional `tags` filter.
 - **`murk_get { key }`** — one secret value, if the grant may read it. A key outside the grant's scope or forbidden by the agent policy returns an error result and never the value: fail-closed, like every other agent path.
-- **`murk_exec { only, command }`** — _opt-in_, enabled with `murk mcp --allow-exec`. Runs a command with the named secrets injected into its environment (no shell), returning captured stdout, stderr, and the exit code. Every key in `only` must be in the grant's scope and policy-allowed, or it fails closed before running anything; output and runtime are bounded. The caveat: `only` scopes the injected _secrets_, not the command — it runs as your user with your filesystem and network access, so it is **not a sandbox**. Enable it only where the server already runs under OS-level isolation.
+- **`murk_exec { only, command }`** — _opt-in_, enabled with `murk mcp --allow-exec`. Runs a command with the named secrets injected into its environment (no shell), returning captured stdout, stderr, and the exit code, with the injected values masked (see _Output masking_, above). Every key in `only` must be in the grant's scope and policy-allowed, or it fails closed before running anything; output and runtime are bounded. The caveat: `only` scopes the injected _secrets_, not the command — it runs as your user with your filesystem and network access, so it is **not a sandbox**. Enable it only where the server already runs under OS-level isolation.
 
 You can verify it end to end without a client by driving the handshake over a pipe:
 
@@ -171,7 +187,10 @@ An agent harness — Claude Code, Cursor, and the like — can auto-approve some
 | `murk init`, `murk recover`, `murk restore`           | Create or rewrite vault or key material.                                                                 |
 | `murk exec -- CMD`                                    | Decrypts your full scope into a subprocess; use `murk agent exec` instead.                               |
 
-**Special case: `murk agent exec --only KEY -- CMD`.** The wrapper is safe by design — it clears the inherited environment, strips `MURK_KEY`, injects only the named secrets, and marks the child as an agent context. It needs no confirmation. But the inner `CMD` still runs as your user with your filesystem and network access, so it must pass the harness's normal command rules like any other command it would run.
+**Special case: `murk agent exec --only KEY -- CMD`.** The wrapper is safe by design — it clears the inherited environment, strips `MURK_KEY`, injects only the named secrets, marks the child as an agent context, masks the injected values in the output, and refuses your auto-discovered personal key. It needs no confirmation when the key comes from the agent's own `MURK_KEY_FILE` (a grant). Two things still do:
+
+- **`--allow-operator-key`** tells `agent exec` to decrypt with _your_ stored key. That is your call, never the agent's: require confirmation for any command that carries it.
+- **The inner `CMD`** still runs as your user with your filesystem and network access, so it must pass the harness's normal command rules like any other command it would run. Deny environment dumps (`env`, `printenv`, `set`, `export -p`) under `agent exec` or any other wrapper that injects secrets: masking catches a verbatim value, not an encoded or partial one.
 
 **Why the split holds.** Under `murk agent exec` the subprocess has no `MURK_KEY`, so every command that needs decryption fails closed. The allow list is exactly the set that still works in that state — the commands that read the header and schema and nothing more. That is what makes it safe to auto-approve: stripped of a key, nothing on the list can produce a secret value even if asked to.
 
