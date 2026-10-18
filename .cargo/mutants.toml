@@ -17,8 +17,9 @@
 # enforcement (policy), the three-way merge driver (merge), and secret
 # add/rotate/group-scoping (secrets). All are covered
 # by the lib tests, so a survivor here is a genuine assertion gap rather than a
-# test-tool artifact. The lib.rs MAC/integrity/load functions are mutation-
-# tested by a second, function-scoped invocation in mutants.yaml.
+# test-tool artifact. The MAC/integrity/load functions (mac.rs, signature.rs,
+# load.rs) are mutation-tested by a second, function-scoped invocation in
+# mutants.yaml.
 examine_globs = [
     "src/crypto.rs",
     "src/signing.rs",

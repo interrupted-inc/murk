@@ -1569,6 +1569,112 @@ mod tests {
     }
 
     #[test]
+    fn vault_hash_is_truncated_sha256_of_the_path() {
+        // The key filename scheme is on-disk state: changing it orphans every
+        // operator's stored key. Pinned against
+        // `printf '%s' /project/.murk | shasum -a 256 | cut -c1-16`.
+        assert_eq!(vault_hash(Path::new("/project/.murk")), "55cdcbc361a1e937");
+        assert_eq!(vault_hash(Path::new("/other/.murk")), "5db2a3f97067d5c8");
+    }
+
+    #[test]
+    fn vault_key_file_is_keyed_on_absolute_lexical_path() {
+        // Which key file a vault uses must depend only on where the vault sits:
+        // relative and absolute spellings of one vault share a key, two vaults
+        // never do, and a symlinked vault does not borrow its target's key.
+        let _env = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _cwd = CWD_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let prev_home = std::env::var_os("HOME");
+        let original_dir = std::env::current_dir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        std::env::set_current_dir(project.path()).unwrap();
+
+        // current_dir, not project.path(): macOS reports /var temp dirs as
+        // /private/var once they are the cwd.
+        let cwd = std::env::current_dir().unwrap();
+        let abs = cwd.join("proj.murk");
+        let abs_str = abs.to_str().unwrap().to_string();
+        let other = cwd.join("other").join("proj.murk");
+
+        let resolved_rel = absolute_vault_path("proj.murk");
+        let resolved_abs = absolute_vault_path(&abs_str);
+        let key_rel = key_file_path("proj.murk");
+        let key_abs = key_file_path(&abs_str);
+        let key_other = key_file_path(other.to_str().unwrap());
+        let agent_rel = agent_key_file_path("proj.murk", "cursor");
+
+        #[cfg(unix)]
+        let (key_real, key_link) = {
+            std::fs::create_dir_all(cwd.join("a")).unwrap();
+            std::fs::create_dir_all(cwd.join("b")).unwrap();
+            std::fs::write(cwd.join("a").join(".murk"), "").unwrap();
+            std::os::unix::fs::symlink(cwd.join("a").join(".murk"), cwd.join("b").join(".murk"))
+                .unwrap();
+            (key_file_path("a/.murk"), key_file_path("b/.murk"))
+        };
+
+        std::env::set_current_dir(&original_dir).unwrap();
+        unsafe {
+            match &prev_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+
+        let keys_root = home.path().join(".config").join("murk").join("keys");
+        let agent_root = home.path().join(".config").join("murk").join("agent-keys");
+        let hash = vault_hash(&abs);
+
+        assert_eq!(resolved_rel.unwrap(), abs);
+        assert_eq!(resolved_abs.unwrap(), abs);
+        assert_eq!(key_rel.unwrap(), keys_root.join(&hash));
+        assert_eq!(key_abs.unwrap(), keys_root.join(&hash));
+        assert_eq!(key_other.unwrap(), keys_root.join(vault_hash(&other)));
+        assert_ne!(vault_hash(&other), hash);
+        assert_eq!(
+            agent_rel.unwrap(),
+            agent_root.join(format!("{hash}-cursor"))
+        );
+        #[cfg(unix)]
+        assert_ne!(
+            key_link.unwrap(),
+            key_real.unwrap(),
+            "a symlinked vault must not resolve to its target's key file"
+        );
+    }
+
+    #[test]
+    fn home_short_collapses_the_process_home() {
+        // The env-reading wrapper a grant handoff prints through; the prefix
+        // rule itself is covered by shorten_home_collapses_only_whole_components.
+        let _env = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let prev_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", "/home/mickey") };
+
+        let inside = home_short("/home/mickey/.config/murk/agent-keys/ab-codex");
+        let outside = home_short("/etc/murk/k");
+
+        unsafe {
+            match &prev_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+
+        assert_eq!(inside, "~/.config/murk/agent-keys/ab-codex");
+        assert_eq!(outside, "/etc/murk/k");
+    }
+
+    #[test]
     fn shorten_home_collapses_only_whole_components() {
         // The display path a grant handoff prints: $HOME becomes `~`, and a
         // shell expands it back, so the printed command stays runnable.
