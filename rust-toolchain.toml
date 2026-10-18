@@ -4,5 +4,5 @@
 # PR. MSRV (Cargo.toml rust-version) and the nightly fuzz jobs override this
 # with RUSTUP_TOOLCHAIN.
 [toolchain]
-channel = "1.99.0"
+channel = "1.99.1"
 components = ["rustfmt", "clippy"]
