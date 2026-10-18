@@ -15,7 +15,7 @@
 //! - **Signals.** The child stays in murk's process group, so a key the terminal
 //!   turns into a signal (Ctrl-C, Ctrl-\, a hangup) reaches both directly, as it
 //!   did before. SIGINT, SIGTERM, SIGHUP and SIGQUIT sent to murk alone by
-//!   another process (`kill <murk-pid>`, a harness timeout) are forwarded to the
+//!   another process (`kill <pid>`, a harness timeout) are forwarded to the
 //!   child. Terminal-generated signals are not forwarded, so the child does not
 //!   see a Ctrl-C twice. Once the child has exited, these signals get their
 //!   default action back (one caught in between is re-raised), so murk stays
