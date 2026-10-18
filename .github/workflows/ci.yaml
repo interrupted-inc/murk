@@ -7,6 +7,11 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      render_demos:
+        description: Render the VHS tapes as a dry run and upload the GIFs as artifacts (never publishes)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -205,7 +210,7 @@ jobs:
       # vhs image runs glibc newer than this runner's, so the host build works
       # there and no separate musl build is needed.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.render_demos)
         with:
           name: murk-linux
           path: target/release/murk
@@ -287,7 +292,9 @@ jobs:
     name: VHS (${{ matrix.tape }})
     needs: demo-test
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    # Tag pushes record for publishing; a manual run with render_demos records
+    # a dry run whose GIFs stay as workflow artifacts.
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.render_demos)
     strategy:
       fail-fast: false
       matrix:
@@ -325,7 +332,9 @@ jobs:
     name: VHS
     needs: vhs-record
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    # Publish only on release tags. Branch protection requires a check named
+    # "VHS", so this job stays in the workflow and reports skipped elsewhere.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     concurrency:
       group: vhs-publish-demo
       cancel-in-progress: false
