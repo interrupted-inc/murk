@@ -9,6 +9,10 @@
     "type": "git",
     "url": "https://github.com/interrupted-sh/murk"
   },
+  "homepage": "https://murk.interrupted.sh",
+  "bugs": {
+    "url": "https://github.com/interrupted-sh/murk/issues"
+  },
   "keywords": [
     "secrets",
     "encryption",

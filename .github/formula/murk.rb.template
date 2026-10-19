@@ -1,6 +1,6 @@
 class Murk < Formula
   desc "Encrypted secrets manager for developers"
-  homepage "https://github.com/interrupted-sh/murk"
+  homepage "https://murk.interrupted.sh"
   version "__VERSION__"
   license any_of: ["MIT", "Apache-2.0"]
 
