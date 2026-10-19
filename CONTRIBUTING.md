@@ -27,6 +27,10 @@ Homebrew's `rust` formula and distro packages ignore `rust-toolchain.toml`. Thei
 
 Dependabot opens a PR for each new Rust release. Patch releases merge automatically once CI is green. Minor releases wait for a maintainer: fix any new lints on that PR before merging it.
 
+### Security advisories
+
+CI checks dependencies against the RustSec advisory database only on pushes to `main`, tags, and PRs that change any `Cargo.toml`, any `Cargo.lock` or `deny.toml`, so a newly published advisory does not fail unrelated PRs. A daily workflow (`.github/workflows/advisories.yaml`, logic in `scripts/fix-advisories.sh`) updates each affected crate to the lowest semver-compatible patched version and opens or refreshes one PR from the `deps/rustsec-fixes` branch; it merges automatically once CI is green if it changes only lockfiles. Once anyone else pushes a commit to that branch, the job stops updating it and leaves the PR for review. Advisories it cannot fix this way go to an open issue titled "Unfixable RustSec advisories" for a maintainer to resolve: upgrade by hand, replace the dependency, or add a documented ignore to `deny.toml`. Run `scripts/fix-advisories.sh` locally to apply the same fixes.
+
 ## Pull Requests
 
 - Keep PRs focused — one logical change per PR
