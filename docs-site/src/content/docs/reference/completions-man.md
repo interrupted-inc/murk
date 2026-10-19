@@ -27,13 +27,13 @@ murk completion generate zsh > ~/.zfunc/_murk
 Both are documented in the [CLI reference](/reference/cli/#murk-completion).
 Pre-generated scripts for every supported shell (bash, zsh, fish, elvish,
 PowerShell) are committed under
-[`docs/completions/`](https://github.com/interrupted-inc/murk/tree/main/docs/completions)
+[`docs/completions/`](https://github.com/interrupted-sh/murk/tree/main/docs/completions)
 for packagers who want to ship them without running murk.
 
 ## Man pages
 
 Man pages for the root command and every subcommand are committed under
-[`docs/man/`](https://github.com/interrupted-inc/murk/tree/main/docs/man) in roff format
+[`docs/man/`](https://github.com/interrupted-sh/murk/tree/main/docs/man) in roff format
 (`murk.1`, `murk-init.1`, `murk-agent-plan.1`, …). Install them where your
 `MANPATH` can find them, or read one directly:
 

@@ -9,7 +9,7 @@ murk's vault is per-recipient: every teammate has their own key, and adding
 or removing someone is a normal git-tracked change to the vault file: no
 shared password to rotate, no separate secrets server to run.
 
-![Alice authorizes Bob as a recipient, then Bob decrypts the shared vault](https://raw.githubusercontent.com/interrupted-inc/murk/demo/team.gif)
+![Alice authorizes Bob as a recipient, then Bob decrypts the shared vault](https://raw.githubusercontent.com/interrupted-sh/murk/demo/team.gif)
 
 ## Adding a teammate
 

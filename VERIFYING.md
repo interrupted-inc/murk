@@ -19,14 +19,27 @@ git verify-tag vX.Y.Z
 
 The prebuilt binaries and `SHA256SUMS` on the [releases page][releases] carry
 signed build provenance (`actions/attest-build-provenance`, Sigstore/Fulcio).
-Verify a downloaded artifact:
+Verify a downloaded artifact of murk 0.12.0 or later:
 
 ```bash
-gh attestation verify murk-<version>-<target>.tar.gz --owner interrupted-inc
+gh attestation verify murk-<version>-<target>.tar.gz --owner interrupted-sh
 ```
 
 This confirms the artifact was produced by this repository's release workflow —
 a builder you can inspect, with a signing identity an attacker cannot forge.
+
+Releases up to and including 0.11.0 were built before the GitHub organization
+was renamed from `interrupted-inc` to `interrupted-sh`, so their provenance
+names `interrupted-inc/murk`. Fetch the attestation from the current
+repository, then verify it against the old identity:
+
+```bash
+gh attestation download murk-<version>-<target>.tar.gz --repo interrupted-sh/murk
+gh attestation verify murk-<version>-<target>.tar.gz \
+  --bundle sha256:<sha256-of-archive>.jsonl --repo interrupted-inc/murk
+```
+
+`gh attestation download` prints the bundle file name it wrote.
 
 ### Rebuilding a release binary
 
@@ -68,9 +81,13 @@ a downloaded file against its published provenance:
 
 ```bash
 pipx run pypi-attestations verify pypi \
-  --repository https://github.com/interrupted-inc/murk \
+  --repository https://github.com/interrupted-sh/murk \
   pypi:murk_secrets-<version>-<...>.whl
 ```
+
+For murk-secrets 0.11.0 and earlier, pass
+`--repository https://github.com/interrupted-inc/murk` instead; those files
+were published before the organization rename.
 
 `pip` does not verify attestations natively yet.
 
@@ -87,4 +104,4 @@ nothing to attach at publish time. Trust here rests on two things:
 This is the one gap in murk's provenance story, and it is upstream: it closes
 when crates.io ships attestation support.
 
-[releases]: https://github.com/interrupted-inc/murk/releases
+[releases]: https://github.com/interrupted-sh/murk/releases

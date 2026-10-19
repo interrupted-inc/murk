@@ -7,7 +7,7 @@
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/interrupted-inc/murk"
+    "url": "https://github.com/interrupted-sh/murk"
   },
   "keywords": [
     "secrets",
