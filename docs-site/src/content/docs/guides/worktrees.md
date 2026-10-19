@@ -38,6 +38,8 @@ murk get API_KEY
 murk exec ./deploy.sh
 ```
 
+![A fresh worktree has the committed .murk and no .env; murk get works via the sibling checkout, and the same read fails closed in agent context](/demos/worktree.gif)
+
 No `.env` to copy, no `murk env` to re-run, no key to export. The same holds
 for a worktree created by an agent harness, a `git worktree add` in a
 post-checkout hook, or a bare-repo layout where *every* checkout is a linked
