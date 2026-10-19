@@ -136,7 +136,10 @@ jobs:
 
           # Merge on green CI only when the whole PR is nothing but lockfile
           # updates; otherwise make sure auto-merge is off.
-          others=$(gh pr diff "$pr" --name-only | grep -vxE 'Cargo\.lock|fuzz/Cargo\.lock' || true)
+          # Fetch the file list on its own line so a failed request fails the
+          # step instead of reading as "lockfiles only".
+          files=$(gh pr diff "$pr" --name-only)
+          others=$(grep -vxE 'Cargo\.lock|fuzz/Cargo\.lock' <<<"$files" || true)
           if [ -z "$others" ] && [ -z "$manual" ]; then
             gh pr merge "$pr" --auto --rebase
           elif [ -n "$others" ]; then
