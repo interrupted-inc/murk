@@ -13,6 +13,8 @@ rust-version = "1.89"
 description = "Encrypted secrets manager for developers — one file, age encryption, git-friendly"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/interrupted-sh/murk"
+homepage = "https://murk.interrupted.sh"
+documentation = "https://murk.interrupted.sh"
 keywords = ["secrets", "encryption", "age", "dotenv", "security"]
 categories = ["command-line-utilities", "cryptography"]
 # rust-toolchain.toml pins CI's toolchain; it must not force crate users onto it.

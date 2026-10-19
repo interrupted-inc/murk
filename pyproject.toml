@@ -25,7 +25,8 @@ classifiers = [
 keywords = ["secrets", "encryption", "age", "dotenv", "security"]
 
 [project.urls]
-Homepage = "https://github.com/interrupted-sh/murk"
+Homepage = "https://murk.interrupted.sh"
+Documentation = "https://murk.interrupted.sh"
 Repository = "https://github.com/interrupted-sh/murk"
 Issues = "https://github.com/interrupted-sh/murk/issues"
 
