@@ -12,7 +12,7 @@ to different keys. murk ships its own merge driver to handle this correctly,
 plus first-class support for SSH keys as recipients so you don't need a
 separate age key at all.
 
-![Using an SSH key as a murk recipient](https://raw.githubusercontent.com/interrupted-inc/murk/demo/ssh.gif)
+![Using an SSH key as a murk recipient](https://raw.githubusercontent.com/interrupted-sh/murk/demo/ssh.gif)
 
 ## Setting up the merge driver
 

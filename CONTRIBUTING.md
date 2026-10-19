@@ -36,7 +36,7 @@ Dependabot opens a PR for each new Rust release. Patch releases merge automatica
 
 ## Security
 
-If you find a security vulnerability, **do not open a public issue**. Use [GitHub's private vulnerability reporting](https://github.com/interrupted-inc/murk/security/advisories/new) instead.
+If you find a security vulnerability, **do not open a public issue**. Use [GitHub's private vulnerability reporting](https://github.com/interrupted-sh/murk/security/advisories/new) instead.
 
 ## Developer Certificate of Origin
 

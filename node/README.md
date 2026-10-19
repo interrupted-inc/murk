@@ -2,15 +2,15 @@
 
 [![npm](https://img.shields.io/npm/v/@interrupted/murk-secrets)](https://www.npmjs.com/package/@interrupted/murk-secrets)
 
-Node.js/TypeScript bindings for [murk](https://github.com/interrupted-inc/murk) — an encrypted secrets manager for developers.
+Node.js/TypeScript bindings for [murk](https://github.com/interrupted-sh/murk) — an encrypted secrets manager for developers.
 
 ## Prerequisites
 
-You need the [murk CLI](https://github.com/interrupted-inc/murk) to create and manage vaults. This package can read them and store secrets into them; trust-changing operations (rotation, recipient/group changes, agent grants) stay CLI-only.
+You need the [murk CLI](https://github.com/interrupted-sh/murk) to create and manage vaults. This package can read them and store secrets into them; trust-changing operations (rotation, recipient/group changes, agent grants) stay CLI-only.
 
 ```bash
 # Install the CLI first
-brew tap interrupted-inc/murk && brew install murk
+brew tap interrupted-sh/murk && brew install murk
 
 # Initialize a vault and add secrets
 murk init
@@ -109,7 +109,7 @@ from its own memory when a value is dropped, but that guarantee ends at the FFI
 boundary: once a value crosses into JavaScript the runtime owns it, and its
 garbage collector — not murk — controls its lifetime. This is inherent to
 reading secrets into a process (see the
-[threat model](https://github.com/interrupted-inc/murk/blob/main/THREAT_MODEL.md)); avoid
+[threat model](https://github.com/interrupted-sh/murk/blob/main/THREAT_MODEL.md)); avoid
 holding decrypted values longer than you need them.
 
 The write path makes this sharper. To call `vault.add(key, value)` you already hold
@@ -126,7 +126,7 @@ When the loaded key is an agent grant (minted with `murk agent grant`), the vaul
 ## Requirements
 
 - Node.js >= 16
-- [murk CLI](https://github.com/interrupted-inc/murk) installed (to create and manage vaults)
+- [murk CLI](https://github.com/interrupted-sh/murk) installed (to create and manage vaults)
 - A `.murk` vault file in your project (created with `murk init`)
 - `MURK_KEY` or `MURK_KEY_FILE` in the environment (created by `murk init`, loaded via `source .env`)
 

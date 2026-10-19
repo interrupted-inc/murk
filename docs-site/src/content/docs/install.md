@@ -11,7 +11,7 @@ install method fits your setup.
 ## Homebrew
 
 ```bash
-brew tap interrupted-inc/murk && brew install murk
+brew tap interrupted-sh/murk && brew install murk
 ```
 
 ## Cargo
@@ -27,14 +27,14 @@ cargo install murk-cli
 Downloads a pre-built binary for your platform:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/interrupted-inc/murk/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/interrupted-sh/murk/main/install.sh | sh
 ```
 
 ## GitHub Releases
 
 murk provides pre-built binaries for Linux (x86_64, aarch64, armhf), macOS
 (x86_64, Apple Silicon), and Windows on the
-[releases page](https://github.com/interrupted-inc/murk/releases).
+[releases page](https://github.com/interrupted-sh/murk/releases).
 
 murk is also published to npm as
 [`@interrupted/murk-secrets`](https://www.npmjs.com/package/@interrupted/murk-secrets) and
@@ -50,12 +50,17 @@ Binary releases carry signed build provenance
 backed by Sigstore/Fulcio). Verify a downloaded artifact with the GitHub CLI:
 
 ```bash
-gh attestation verify murk-<version>-<target>.tar.gz --owner interrupted-inc
+gh attestation verify murk-<version>-<target>.tar.gz --owner interrupted-sh
 ```
 
 This confirms the artifact was produced by this repository's release
 workflow: a builder you can inspect, with a signing identity an attacker
 cannot forge.
+
+Releases up to and including 0.11.0 were signed as `interrupted-inc/murk`,
+before the organization rename; see
+[Verifying releases](/security/verifying/#github-release-binaries) for the
+command that verifies them.
 
 npm, PyPI, and crates.io releases each have their own verification path (npm
 provenance, PEP 740 attestations, and signed release tags respectively). See

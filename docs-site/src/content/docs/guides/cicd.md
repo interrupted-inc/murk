@@ -11,17 +11,21 @@ a CI secret, and decrypt at run time.
 
 ## GitHub Actions
 
-Use [murk-action](https://github.com/interrupted-inc/murk-action) to decrypt secrets
+Use [murk-action](https://github.com/interrupted-sh/murk-action) to decrypt secrets
 into the job environment:
 
 ```yaml
 steps:
   - uses: actions/checkout@v4
-  - uses: interrupted-inc/murk-action@v1
+  - uses: interrupted-sh/murk-action@v1
     with:
       murk-key: ${{ secrets.MURK_KEY }}
   - run: ./deploy.sh  # all vault secrets are now in the environment
 ```
+
+Workflows that still reference `interrupted-inc/murk-action` must switch to
+`interrupted-sh/murk-action`: GitHub does not redirect action references after
+an organization rename.
 
 Store your `MURK_KEY` as a GitHub Actions secret (`Settings → Secrets and
 variables → Actions`). GitHub's log masking registers decrypted values,

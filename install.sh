@@ -1,9 +1,12 @@
 #!/bin/sh
-# Install murk — https://github.com/interrupted-inc/murk
-# Usage: curl -fsSL https://raw.githubusercontent.com/interrupted-inc/murk/main/install.sh | sh
+# Install murk — https://github.com/interrupted-sh/murk
+# Usage: curl -fsSL https://raw.githubusercontent.com/interrupted-sh/murk/main/install.sh | sh
 set -e
 
-REPO="interrupted-inc/murk"
+REPO="interrupted-sh/murk"
+# Releases up to v0.11.0 were built before the GitHub org rename and are signed
+# as this repository under its old name.
+LEGACY_REPO="interrupted-inc/murk"
 INSTALL_DIR="${MURK_INSTALL_DIR:-/usr/local/bin}"
 
 os=$(uname -s)
@@ -86,7 +89,23 @@ fi
 if [ "${MURK_SKIP_ATTESTATION:-0}" = "1" ]; then
     echo "warning: skipping provenance verification (MURK_SKIP_ATTESTATION=1)" >&2
 elif command -v gh >/dev/null 2>&1; then
+    verified=0
     if gh attestation verify "$tmpdir/$archive" --repo "$REPO" >/dev/null 2>&1; then
+        verified=1
+    else
+        case "$tag" in
+            v0.[0-9].*|v0.1[01].*)
+                # Fetch the attestation from the current repository and check it
+                # against the signing identity the release was built under.
+                bundle="$tmpdir/sha256:$actual.jsonl"
+                if (cd "$tmpdir" && gh attestation download "$archive" --repo "$REPO" >/dev/null 2>&1) &&
+                    gh attestation verify "$tmpdir/$archive" --bundle "$bundle" --repo "$LEGACY_REPO" >/dev/null 2>&1; then
+                    verified=1
+                fi
+                ;;
+        esac
+    fi
+    if [ "$verified" = "1" ]; then
         echo "verified build provenance attestation"
     else
         echo "error: attestation verification failed — aborting install" >&2

@@ -8,7 +8,7 @@ sidebar:
 When someone leaves the team, revoke their access and rotate whatever they
 could read.
 
-![Revoking a teammate and rotating the secrets they could read](https://raw.githubusercontent.com/interrupted-inc/murk/demo/offboard.gif)
+![Revoking a teammate and rotating the secrets they could read](https://raw.githubusercontent.com/interrupted-sh/murk/demo/offboard.gif)
 
 ## Revoke and rotate in one step
 

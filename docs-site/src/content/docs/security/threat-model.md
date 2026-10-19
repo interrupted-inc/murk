@@ -7,9 +7,9 @@ sidebar:
 
 This document describes murk's security properties and limits. It's for anyone evaluating murk for team use. Read it before you trust it with production credentials.
 
-murk is pre-1.0 software and has **not been independently audited**. If you find a vulnerability, see the [security policy](https://github.com/interrupted-inc/murk/blob/main/SECURITY.md) for how to report it privately.
+murk is pre-1.0 software and has **not been independently audited**. If you find a vulnerability, see the [security policy](https://github.com/interrupted-sh/murk/blob/main/SECURITY.md) for how to report it privately.
 
-![What an unauthorized person with the repo sees: key names, but no values](https://raw.githubusercontent.com/interrupted-inc/murk/demo/eve.gif)
+![What an unauthorized person with the repo sees: key names, but no values](https://raw.githubusercontent.com/interrupted-sh/murk/demo/eve.gif)
 
 ## What murk protects
 
@@ -79,7 +79,7 @@ It constrains the *murk binary*: it does nothing against a human insider using a
 
 murk signs the vault with an Ed25519 key so tampering by someone with write access to the repo is detectable: the property the MAC alone can't provide.
 
-![Tampering with the vault by an unauthorized writer is caught on load](https://raw.githubusercontent.com/interrupted-inc/murk/demo/mallory.gif)
+![Tampering with the vault by an unauthorized writer is caught on load](https://raw.githubusercontent.com/interrupted-sh/murk/demo/mallory.gif)
 
 **How it works.** On save, a signing-capable writer signs a canonical serialization of the vault: recipients, all ciphertexts, schema, groups, grants, policy, GitHub pins, and the signer registry. On load, murk verifies the signature and confirms the signer is a current recipient. A present-but-invalid signature fails the load as tampering. An absent signature is a warning (integrity then rests on git). Where the *verifying* key comes from depends on the key type:
 

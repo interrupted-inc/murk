@@ -25,9 +25,9 @@ classifiers = [
 keywords = ["secrets", "encryption", "age", "dotenv", "security"]
 
 [project.urls]
-Homepage = "https://github.com/interrupted-inc/murk"
-Repository = "https://github.com/interrupted-inc/murk"
-Issues = "https://github.com/interrupted-inc/murk/issues"
+Homepage = "https://github.com/interrupted-sh/murk"
+Repository = "https://github.com/interrupted-sh/murk"
+Issues = "https://github.com/interrupted-sh/murk/issues"
 
 [tool.maturin]
 features = ["python"]

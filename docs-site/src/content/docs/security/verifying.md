@@ -11,13 +11,23 @@ See [Install](/install/) to get murk in the first place, and the [threat model](
 
 ## GitHub release binaries
 
-The prebuilt binaries and `SHA256SUMS` on the [releases page](https://github.com/interrupted-inc/murk/releases) carry signed build provenance (`actions/attest-build-provenance`, Sigstore/Fulcio). Verify a downloaded artifact with the [GitHub CLI](https://cli.github.com/):
+The prebuilt binaries and `SHA256SUMS` on the [releases page](https://github.com/interrupted-sh/murk/releases) carry signed build provenance (`actions/attest-build-provenance`, Sigstore/Fulcio). Verify a downloaded artifact of murk 0.12.0 or later with the [GitHub CLI](https://cli.github.com/):
 
 ```bash
-gh attestation verify murk-<version>-<target>.tar.gz --owner interrupted-inc
+gh attestation verify murk-<version>-<target>.tar.gz --owner interrupted-sh
 ```
 
 This confirms the artifact was produced by this repository's release workflow: a builder you can inspect, with a signing identity an attacker cannot forge.
+
+Releases up to and including 0.11.0 were built before the GitHub organization was renamed from `interrupted-inc` to `interrupted-sh`, so their provenance names `interrupted-inc/murk`. Fetch the attestation from the current repository, then verify it against the old identity:
+
+```bash
+gh attestation download murk-<version>-<target>.tar.gz --repo interrupted-sh/murk
+gh attestation verify murk-<version>-<target>.tar.gz \
+  --bundle sha256:<sha256-of-archive>.jsonl --repo interrupted-inc/murk
+```
+
+`gh attestation download` prints the bundle file name it wrote.
 
 ## npm (`@interrupted/murk-secrets`)
 
@@ -35,9 +45,11 @@ Programmatic verification is still maturing. The experimental [`pypi-attestation
 
 ```bash
 pipx run pypi-attestations verify pypi \
-  --repository https://github.com/interrupted-inc/murk \
+  --repository https://github.com/interrupted-sh/murk \
   pypi:murk_secrets-<version>-<...>.whl
 ```
+
+For murk-secrets 0.11.0 and earlier, pass `--repository https://github.com/interrupted-inc/murk` instead; those files were published before the organization rename.
 
 `pip` does not verify attestations natively yet.
 
