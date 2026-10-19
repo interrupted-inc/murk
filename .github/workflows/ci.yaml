@@ -25,18 +25,48 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # On a PR the checkout is the merge commit; its first parent is the
+          # base branch, which the advisory gate below diffs against.
+          fetch-depth: 2
       - uses: ./.github/actions/setup-rust
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo fmt --check
       - run: cargo clippy --all-features --all-targets -- -D warnings
+      # Advisory checks read the live RustSec database, so a new advisory
+      # against an existing dependency would fail every open PR. PRs that leave
+      # dependencies alone skip them; pushes, tags and dependency PRs run them,
+      # and the daily Advisories workflow opens a fix PR for main.
+      - name: Decide whether to check advisories
+        id: deps
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != pull_request ]; then
+            check=true
+          elif git diff --name-only HEAD^1 HEAD \
+            | grep -qxE '(fuzz/)?Cargo\.(lock|toml)|deny\.toml'; then
+            check=true
+          else
+            check=false
+          fi
+          echo "Check advisories: $check"
+          echo "advisories=$check" >>"$GITHUB_OUTPUT"
+      # One invocation: each run of the action reinstalls the toolchain in its
+      # container.
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+        with:
+          command: check ${{ steps.deps.outputs.advisories == 'true' && 'advisories ' || '' }}bans licenses sources
       - uses: taiki-e/install-action@f092c064826410a38929a5791d2c0225b94432fe # cargo-audit
+        if: steps.deps.outputs.advisories == 'true'
         with:
           tool: cargo-audit
       # Unmaintained and unsound advisories are warnings by default, but OSV
       # counts them, so deny them here to catch drift before a scan does. The
       # fuzz targets are a separate workspace and need their own lockfile pass.
       - name: Audit dependencies
+        if: steps.deps.outputs.advisories == 'true'
         run: |
           audit() { cargo audit --ignore RUSTSEC-2023-0071 --deny unmaintained --deny unsound "$@"; }
           audit
