@@ -10,7 +10,7 @@ most crypto wallets. `murk init` generates 256 bits of entropy, prints it as
 24 recovery words, and derives your age keypair directly from those bytes
 (no intermediate hashing step: same bytes, same key every time).
 
-![Recovering a lost key from the 24-word BIP39 phrase](https://raw.githubusercontent.com/interrupted-inc/murk/demo/recovery.gif)
+![Recovering a lost key from the 24-word BIP39 phrase](https://raw.githubusercontent.com/interrupted-sh/murk/demo/recovery.gif)
 
 ## Write the words down when you run `murk init`
 

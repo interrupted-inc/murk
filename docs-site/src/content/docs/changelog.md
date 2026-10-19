@@ -7,7 +7,7 @@ sidebar:
 
 The authoritative, per-version changelog lives on the GitHub releases page:
 
-- **[github.com/interrupted-inc/murk/releases](https://github.com/interrupted-inc/murk/releases)**
+- **[github.com/interrupted-sh/murk/releases](https://github.com/interrupted-sh/murk/releases)**
 
 Each release's notes are generated from the commit history at tag time (via
 [git-cliff](https://git-cliff.org/), grouped by

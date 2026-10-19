@@ -45,4 +45,4 @@ Recipients and groups are for people. AI agents and automation get a separate me
 
 Because any recipient can decrypt every shared secret by design, murk's access control is a convenience and audit boundary, not a hard security perimeter against an insider: a malicious recipient, or an old murk binary, can always read what their key is authorized for. Git is the audit trail: every recipient change, rotation, and grant is a commit. The [threat model](/security/threat-model/) spells out exactly what murk protects against and what it doesn't.
 
-For the authoritative, byte-level specification (including the exact JSON schema and the integrity hash algorithm), see [SPEC.md](https://github.com/interrupted-inc/murk/blob/main/SPEC.md) on GitHub.
+For the authoritative, byte-level specification (including the exact JSON schema and the integrity hash algorithm), see [SPEC.md](https://github.com/interrupted-sh/murk/blob/main/SPEC.md) on GitHub.

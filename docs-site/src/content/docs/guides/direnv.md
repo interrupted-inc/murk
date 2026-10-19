@@ -10,7 +10,7 @@ on your current directory. murk has built-in support for it, so secrets can
 load automatically the moment you `cd` into a project: no manual `export`
 or wrapper script.
 
-![Secrets loading automatically on cd via direnv](https://raw.githubusercontent.com/interrupted-inc/murk/demo/direnv.gif)
+![Secrets loading automatically on cd via direnv](https://raw.githubusercontent.com/interrupted-sh/murk/demo/direnv.gif)
 
 ## Setting it up
 

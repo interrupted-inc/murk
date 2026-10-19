@@ -5,7 +5,7 @@ sidebar:
   order: 2
 ---
 
-A `.murk` file is a single JSON document. Every field is plaintext except the per-key encrypted values and one encrypted `meta` blob. This page walks through the structure conceptually. See [SPEC.md](https://github.com/interrupted-inc/murk/blob/main/SPEC.md#file-format) on GitHub for the exact field-by-field schema.
+A `.murk` file is a single JSON document. Every field is plaintext except the per-key encrypted values and one encrypted `meta` blob. This page walks through the structure conceptually. See [SPEC.md](https://github.com/interrupted-sh/murk/blob/main/SPEC.md#file-format) on GitHub for the exact field-by-field schema.
 
 ## The plaintext header
 

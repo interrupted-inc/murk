@@ -2,17 +2,17 @@
 
 [![PyPI](https://img.shields.io/pypi/v/murk-secrets)](https://pypi.org/project/murk-secrets/)
 
-Python bindings for [murk](https://github.com/interrupted-inc/murk) — an encrypted secrets manager for developers.
+Python bindings for [murk](https://github.com/interrupted-sh/murk) — an encrypted secrets manager for developers.
 
 murk stores encrypted secrets in a single `.murk` file safe to commit to git. This package lets Python apps read those secrets at runtime.
 
 ## Prerequisites
 
-You need the [murk CLI](https://github.com/interrupted-inc/murk) to create and manage vaults. This package only reads them.
+You need the [murk CLI](https://github.com/interrupted-sh/murk) to create and manage vaults. This package only reads them.
 
 ```bash
 # Install the CLI first
-brew tap interrupted-inc/murk && brew install murk
+brew tap interrupted-sh/murk && brew install murk
 
 # Initialize a vault and add secrets
 murk init
@@ -87,7 +87,7 @@ its own memory when a value is dropped, but that guarantee ends at the FFI
 boundary: once a value crosses into Python the interpreter owns it, and its
 garbage collector — not murk — controls its lifetime. This is inherent to
 reading secrets into a process (see the
-[threat model](https://github.com/interrupted-inc/murk/blob/main/THREAT_MODEL.md)); avoid
+[threat model](https://github.com/interrupted-sh/murk/blob/main/THREAT_MODEL.md)); avoid
 holding decrypted values longer than you need them.
 
 ## Agent policy
@@ -105,7 +105,7 @@ The easiest setup is `source .env` in your project directory after running `murk
 ## Requirements
 
 - Python >= 3.9
-- [murk CLI](https://github.com/interrupted-inc/murk) installed (to create and manage vaults)
+- [murk CLI](https://github.com/interrupted-sh/murk) installed (to create and manage vaults)
 - A `.murk` vault file in your project (created with `murk init`)
 - `MURK_KEY` or `MURK_KEY_FILE` in the environment (created by `murk init`, loaded via `source .env`)
 

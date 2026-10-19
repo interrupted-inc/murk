@@ -66,7 +66,7 @@ with good judgment, today.
 - Reproducible, attested releases (SLSA Build L2) that you can
   [verify](/security/verifying/).
 - Coordinated vulnerability reporting through
-  [SECURITY.md](https://github.com/interrupted-inc/murk/blob/main/SECURITY.md).
+  [SECURITY.md](https://github.com/interrupted-sh/murk/blob/main/SECURITY.md).
 
 **What murk deliberately does not claim yet:**
 

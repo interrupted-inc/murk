@@ -136,8 +136,10 @@ murk includes a git merge driver (`murk merge-driver`) that performs three-way m
 **Binary distribution:** Release binaries are built in GitHub Actions, checksummed (SHA256SUMS), and signed with Sigstore build provenance attestation ([SLSA Level 2](https://slsa.dev)). Provenance is in [in-toto/SLSA v1](https://slsa.dev/provenance/v1) format, covering the release binaries and `SHA256SUMS`. The npm and PyPI packages carry their own provenance; crates.io has no attestation support yet — see [VERIFYING.md](VERIFYING.md) for per-channel details. Verify a binary with:
 
 ```bash
-gh attestation verify murk-v*.tar.gz --owner interrupted-inc
+gh attestation verify murk-v*.tar.gz --owner interrupted-sh
 ```
+
+Releases up to and including 0.11.0 were signed as `interrupted-inc/murk`, before the organization rename; see [VERIFYING.md](VERIFYING.md) for how to verify them.
 
 **Install script:** `install.sh` downloads the binary archive and SHA256SUMS, then verifies the checksum before extracting. It does not execute downloaded code before verification.
 

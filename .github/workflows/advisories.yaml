@@ -1,0 +1,174 @@
+name: Advisories
+
+# RustSec advisories often never reach GitHub's advisory database, so Dependabot
+# does not fix them. Once a day, apply the smallest lockfile update that clears
+# each new advisory and open (or refresh) one PR with it. Advisories with no
+# automatic fix go to one tracking issue instead.
+on:
+  schedule:
+    - cron: "17 6 * * *" # daily 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: advisories
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  BRANCH: deps/rustsec-fixes
+  ISSUE_TITLE: Unfixable RustSec advisories
+
+jobs:
+  fix:
+    name: Fix advisories
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      # Always build the fix from the default branch, even when dispatched from
+      # another branch, so the PR never carries unrelated work. Full history
+      # lets the push step find the fix branch's commits since main.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: |
+            .
+            fuzz
+      - uses: taiki-e/install-action@f092c064826410a38929a5791d2c0225b94432fe # cargo-audit, cargo-deny
+        with:
+          tool: cargo-audit,cargo-deny
+
+      - name: Update vulnerable dependencies
+        id: fix
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/advisories"
+          scripts/fix-advisories.sh "$out"
+          echo "out=$out" >>"$GITHUB_OUTPUT"
+          if [ -s "$out/fixed.tsv" ]; then echo "fixed=true" >>"$GITHUB_OUTPUT"; fi
+          if [ -s "$out/unfixable.tsv" ]; then echo "unfixable=true" >>"$GITHUB_OUTPUT"; fi
+
+      # A PR opened with GITHUB_TOKEN does not trigger CI, so open it with a
+      # GitHub App installation token. This reuses the app release preflight
+      # mints its read-only token from. That app needs Contents: write and Pull
+      # requests: write granted in its settings (and accepted on the murk
+      # installation); each workflow down-scopes its own token, so release
+      # preflight stays read-only.
+      - name: Mint PR token
+        if: steps.fix.outputs.fixed == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: app-token
+        with:
+          app-id: ${{ secrets.PREFLIGHT_APP_ID }}
+          private-key: ${{ secrets.PREFLIGHT_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Open or update the fix PR
+        if: steps.fix.outputs.fixed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          OUT: ${{ steps.fix.outputs.out }}
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          title=$(cat "$OUT/commit-message")
+          name="github-actions[bot]"
+          email="41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "$name"
+          git config user.email "$email"
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          pr=$(gh pr list --head "$BRANCH" --base "$BASE" --state open --json number --jq '.[0].number // empty')
+
+          # The branch is only rebuilt when every commit on it since main was
+          # made by this workflow. A maintainer's commit (say, a deny.toml
+          # ignore for an unfixable advisory) must survive the next daily run.
+          remote_sha='' manual=''
+          if git ls-remote --exit-code --heads "$remote" "$BRANCH" >/dev/null; then
+            git fetch -q "$remote" "refs/heads/$BRANCH"
+            remote_sha=$(git rev-parse FETCH_HEAD)
+            manual=$(git log --format='%an <%ae>%n%cn <%ce>' "HEAD..$remote_sha" \
+              | grep -vxF "$name <$email>" | sort -u || true)
+          else
+            rc=$?
+            # 2 means the branch does not exist; anything else is a real error.
+            [ "$rc" -eq 2 ] || exit "$rc"
+          fi
+
+          if [ -n "$manual" ]; then
+            echo "::warning::$BRANCH has commits from others ($(paste -sd, - <<<"$manual")); leaving it alone"
+            marker="<!-- rustsec-fixes: manual commits -->"
+            if [ -n "$pr" ] && [ "$(gh pr view "$pr" --json comments \
+              --jq "[.comments[].body | select(contains(\"$marker\"))] | length")" = 0 ]; then
+              printf '%s\n\n%s\n' \
+                "This branch has manual commits, so the daily advisories job is leaving it alone. It will not push here again until those commits are gone (merge or close this PR, or reset the branch). Its latest fixes: $title." \
+                "$marker" | gh pr comment "$pr" --body-file -
+            fi
+          else
+            git switch -C "$BRANCH"
+            git add -A
+            git commit -q -m "$title"
+            if [ -z "$remote_sha" ]; then
+              git push -q "$remote" "HEAD:refs/heads/$BRANCH"
+            elif [ "$(git rev-parse "$remote_sha^{tree}")" = "$(git rev-parse 'HEAD^{tree}')" ]; then
+              # Same content already pushed: skip, so CI does not rerun daily.
+              echo "$BRANCH is already up to date"
+            else
+              git push -q --force-with-lease="refs/heads/$BRANCH:$remote_sha" "$remote" "HEAD:refs/heads/$BRANCH"
+            fi
+            if [ -n "$pr" ]; then
+              gh pr edit "$pr" --title "$title" --body-file "$OUT/pr-body.md"
+            else
+              gh pr create --head "$BRANCH" --base "$BASE" --title "$title" --body-file "$OUT/pr-body.md"
+              pr=$(gh pr list --head "$BRANCH" --base "$BASE" --state open --json number --jq '.[0].number')
+            fi
+          fi
+          [ -n "$pr" ] || exit 0
+
+          # Merge on green CI only when the whole PR is nothing but lockfile
+          # updates; otherwise make sure auto-merge is off.
+          # Fetch the file list on its own line so a failed request fails the
+          # step instead of reading as "lockfiles only".
+          files=$(gh pr diff "$pr" --name-only)
+          others=$(grep -vxE 'Cargo\.lock|fuzz/Cargo\.lock' <<<"$files" || true)
+          if [ -z "$others" ] && [ -z "$manual" ]; then
+            gh pr merge "$pr" --auto --rebase
+          elif [ -n "$others" ]; then
+            echo "::notice::PR #$pr changes more than lockfiles, leaving it for review: $(paste -sd, - <<<"$others")"
+            if [ "$(gh pr view "$pr" --json autoMergeRequest --jq '.autoMergeRequest != null')" = true ]; then
+              gh pr merge "$pr" --disable-auto
+            fi
+          fi
+
+      - name: Open or update the unfixable-advisories issue
+        if: steps.fix.outputs.unfixable == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OUT: ${{ steps.fix.outputs.out }}
+        run: |
+          set -euo pipefail
+          body="$OUT/issue-body.md"
+          issue=$(gh issue list --state open --search "in:title \"$ISSUE_TITLE\"" --json number,title \
+            --jq "map(select(.title == env.ISSUE_TITLE)) | .[0].number // empty")
+          if [ -z "$issue" ]; then
+            gh issue create --title "$ISSUE_TITLE" --body-file "$body"
+            exit 0
+          fi
+          # Comment only when the set of unfixable advisories changed, so the
+          # issue does not collect an identical comment every day.
+          marker=$(grep -m1 '^<!-- advisories:' "$body")
+          last=$(gh issue view "$issue" --json body,comments --jq '[.body] + [.comments[].body] | last')
+          if grep -qxF "$marker" <<<"$last"; then
+            echo "Issue #$issue already lists these advisories"
+          else
+            gh issue comment "$issue" --body-file "$body"
+          fi

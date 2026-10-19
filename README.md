@@ -1,7 +1,7 @@
 # <img src="logo.svg" height="28"> murk
 
-[![CI](https://github.com/interrupted-inc/murk/actions/workflows/ci.yaml/badge.svg)](https://github.com/interrupted-inc/murk/actions/workflows/ci.yaml)
-[![codecov](https://codecov.io/gh/interrupted-inc/murk/graph/badge.svg)](https://codecov.io/gh/interrupted-inc/murk)
+[![CI](https://github.com/interrupted-sh/murk/actions/workflows/ci.yaml/badge.svg)](https://github.com/interrupted-sh/murk/actions/workflows/ci.yaml)
+[![codecov](https://codecov.io/gh/interrupted-sh/murk/graph/badge.svg)](https://codecov.io/gh/interrupted-sh/murk)
 [![Crates.io](https://img.shields.io/crates/v/murk-cli)](https://crates.io/crates/murk-cli)
 [![docs.rs](https://img.shields.io/docsrs/murk-cli)](https://docs.rs/murk-cli)
 [![License](https://img.shields.io/crates/l/murk-cli)](LICENSE-MIT)
@@ -17,7 +17,7 @@ murk stores encrypted secrets in a single `.murk` file designed to be committed 
 > Deciding whether to adopt it? See [Is murk right for you?](https://murk.interrupted.sh/suitability/) for a suitability matrix and the 0.x release contract.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/interrupted-inc/murk/demo/hero.gif" alt="murk demo" width="900">
+  <img src="https://raw.githubusercontent.com/interrupted-sh/murk/demo/hero.gif" alt="murk demo" width="900">
 </p>
 
 ## Why
@@ -50,7 +50,7 @@ murk is simple: one key on your machine, one encrypted file in your repo. See [T
 ## Install
 
 ```bash
-brew tap interrupted-inc/murk && brew install murk
+brew tap interrupted-sh/murk && brew install murk
 ```
 
 Or via Cargo (requires [Rust toolchain](https://rustup.rs)):
@@ -62,10 +62,10 @@ cargo install murk-cli
 Or download a pre-built binary:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/interrupted-inc/murk/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/interrupted-sh/murk/main/install.sh | sh
 ```
 
-Pre-built binaries are available for Linux (x86_64, aarch64, armhf), macOS (x86_64, Apple Silicon), and Windows on the [releases page](https://github.com/interrupted-inc/murk/releases). Binary releases are [attested](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds) and can be verified with `gh attestation verify murk-* --owner interrupted-inc`. See [VERIFYING.md](VERIFYING.md) for verifying the npm, PyPI, and crates.io releases too.
+Pre-built binaries are available for Linux (x86_64, aarch64, armhf), macOS (x86_64, Apple Silicon), and Windows on the [releases page](https://github.com/interrupted-sh/murk/releases). Binary releases are [attested](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds) and can be verified with `gh attestation verify murk-* --owner interrupted-sh` (0.12.0 and later; releases up to 0.11.0 were signed as `interrupted-inc/murk`). See [VERIFYING.md](VERIFYING.md) for verifying older releases and the npm, PyPI, and crates.io releases too.
 
 ## Quick start
 
@@ -141,7 +141,7 @@ murk add DATABASE_URL --group me
 ```
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/interrupted-inc/murk/demo/team.gif" alt="murk team demo" width="900">
+  <img src="https://raw.githubusercontent.com/interrupted-sh/murk/demo/team.gif" alt="murk team demo" width="900">
 </p>
 
 ## Offboarding
@@ -163,7 +163,7 @@ murk import .env.rotated  # bulk-update from a file
 ```
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/interrupted-inc/murk/demo/offboard.gif" alt="murk offboarding demo" width="900">
+  <img src="https://raw.githubusercontent.com/interrupted-sh/murk/demo/offboard.gif" alt="murk offboarding demo" width="900">
 </p>
 
 ## Git worktrees
@@ -182,16 +182,18 @@ Only real worktrees of the repo count, verified against git's own metadata; a co
 
 [![GitHub Marketplace](https://img.shields.io/badge/GitHub%20Marketplace-murk--action-2ea44f?logo=github&logoColor=white)](https://github.com/marketplace/actions/murk-action)
 
-Use [murk-action](https://github.com/interrupted-inc/murk-action) to decrypt secrets in GitHub Actions workflows:
+Use [murk-action](https://github.com/interrupted-sh/murk-action) to decrypt secrets in GitHub Actions workflows:
 
 ```yaml
 steps:
   - uses: actions/checkout@v4
-  - uses: interrupted-inc/murk-action@v1
+  - uses: interrupted-sh/murk-action@v1
     with:
       murk-key: ${{ secrets.MURK_KEY }}
   - run: ./deploy.sh  # all vault secrets are now in the environment
 ```
+
+Workflows that still reference `interrupted-inc/murk-action` must switch to `interrupted-sh/murk-action`: GitHub does not redirect action references after an organization rename.
 
 Store your `MURK_KEY` as a GitHub Actions secret. Decrypted values are registered with GitHub's log masking, but masking depends on GitHub's runner behavior and is not a hard security boundary.
 
@@ -295,7 +297,7 @@ murk provides a [pre-commit](https://pre-commit.com/) hook to scan staged files 
 
 ```yaml
 repos:
-  - repo: https://github.com/interrupted-inc/murk
+  - repo: https://github.com/interrupted-sh/murk
     rev: main  # hook ships in releases after v0.11.0; then run 'pre-commit autoupdate' to pin a tag
     hooks:
       - id: murk-scan
