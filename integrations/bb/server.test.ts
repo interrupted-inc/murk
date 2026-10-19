@@ -223,6 +223,7 @@ describe("grant lifecycle", () => {
     );
     expect(result.isError).toBe(true);
     expect(result.text).toContain("no active grant");
+    expect(result.text).toContain(`bb murk grant mint --keys KEY[,KEY…] --thread ${THREAD_ID}`);
   });
 
   it("mints a file-only grant via the CLI", async () => {
@@ -302,6 +303,7 @@ describe("grant lifecycle", () => {
     );
     expect(result.isError).toBe(true);
     expect(result.text).toContain("OTHER_SECRET is not covered");
+    expect(result.text).toContain(`bb murk grant mint --keys OTHER_SECRET --thread ${THREAD_ID}`);
     expect(result.text).not.toContain(OTHER_VALUE);
   });
 
