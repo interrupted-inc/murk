@@ -26,11 +26,12 @@ the grant can read.
 
 This narrows where secrets are exposed. It doesn't make a leak impossible: a
 command the agent runs can still print a value to its own output, and
-anything running as your user can read a grant key stored on disk. A grant's
-TTL is a reminder to revoke rather than an expiry — nothing stops an old
-grant key from working until you revoke and rotate. murk gives you
-least-privilege, revocable access, not a sandbox. For real isolation, run the
-agent as a separate user or in a container.
+anything running as your user can read a grant key stored on disk. murk
+refuses an expired grant at read time at every entry point, but the key
+itself can't expire and still reads old vault versions with raw age, so
+revoke and rotate to close it. murk gives you least-privilege, revocable
+access, not a sandbox. For real isolation, run the agent as a separate user
+or in a container.
 
 ## Rules
 
