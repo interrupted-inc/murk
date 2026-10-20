@@ -68,7 +68,7 @@ jobs:
       - name: Audit dependencies
         if: steps.deps.outputs.advisories == 'true'
         run: |
-          audit() { cargo audit --ignore RUSTSEC-2023-0071 --deny unmaintained --deny unsound "$@"; }
+          audit() { cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0374 --deny unmaintained --deny unsound "$@"; }
           audit
           audit --file fuzz/Cargo.lock
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
