@@ -663,12 +663,15 @@ fn wait_bounded(
 }
 
 /// A signal the child sends to murk itself is not echoed back to the child,
-/// and does not stop murk.
+/// and does not stop murk. The child waits before signalling so murk is
+/// already supervising it; a signal sent in the instant between spawn and
+/// that point takes a different path.
 #[cfg(unix)]
 #[test]
 fn agent_exec_does_not_echo_a_childs_own_signal_back() {
-    let (_dir, mut cmd) =
-        agent_exec_sh("trap 'echo echoed; exit 9' TERM; kill -TERM $PPID; sleep 0.5; echo done");
+    let (_dir, mut cmd) = agent_exec_sh(
+        "trap 'echo echoed; exit 9' TERM; sleep 0.3; kill -TERM $PPID; sleep 0.5; echo done",
+    );
     let out = cmd.output().unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout), "done\n");
     assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
