@@ -86,8 +86,8 @@ It ships only when all of these gates hold, each tracked on the [roadmap](/roadm
   enforcement, with findings published and addressed.
 - Continuous fuzzing through OSS-Fuzz, beyond the current nightly in-repo run.
 - SLSA Build L3 provenance, up from the current L2.
-- A soak period: several months of 0.9.x in real use with no vault-format change
-  and no critical security fix.
+- A soak period: several months of the current 0.x line in real use with no
+  vault-format change and no critical security fix.
 - Migration and policy docs: an upgrade guide, an MSRV policy, and a deprecation
   policy.
 

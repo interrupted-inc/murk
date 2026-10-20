@@ -109,7 +109,7 @@ pub(crate) fn cmd_diff(git_ref: &str, show_values: bool, json: bool, vault_path:
     let (_vault, current_murk, identity) = load_vault(vault_path);
 
     // Get the old vault contents from git.
-    let output = process::Command::new("git")
+    let output = murk_cli::git_command()
         .args(["show", &format!("{git_ref}:{vault_path}")])
         .output()
         .unwrap_or_else(|e| die(&format_args!("running git: {e}"), 1));

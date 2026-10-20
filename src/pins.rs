@@ -179,9 +179,43 @@ fn write_pin(path: &std::path::Path, pin: &SignerPin) {
         }
         let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
     }
-    if let Ok(json) = serde_json::to_string_pretty(pin) {
-        let _ = std::fs::write(path, json);
+    let Ok(json) = serde_json::to_string_pretty(pin) else {
+        return;
+    };
+    // Best-effort like the rest of the pin; a failed write just skips anchoring.
+    let _ = write_pin_file(path, json.as_bytes());
+}
+
+/// Write the pin file atomically: a `0600` temp file in the same directory,
+/// fsynced, then renamed over `path`. A symlink at `path` is refused outright —
+/// pins are integrity data, and writing through a planted link would clobber
+/// its target and let whoever controls that target steer the pin. The rename
+/// replaces a directory entry and never follows a link, so a symlink planted
+/// after the check cannot redirect the write either.
+fn write_pin_file(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "signer pin is a symlink — refusing to follow: {}",
+                path.display()
+            ),
+        ));
     }
+    let dir = path.parent().unwrap_or(std::path::Path::new("."));
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tmp.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    tmp.write_all(contents)?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(path).map_err(|e| e.error)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -349,6 +383,42 @@ mod tests {
             unsafe { std::env::set_var("MURK_NO_SIGNER_PIN", "1") };
             assert!(!downgraded_of(reconcile("/proj/.murk", &map(&[]), false)));
             unsafe { std::env::remove_var("MURK_NO_SIGNER_PIN") };
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_pin_is_refused_and_its_target_untouched() {
+        with_home(|home| {
+            let path = pin_path("/proj/.murk").unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let target = std::path::Path::new(home).join("victim");
+            std::fs::write(&target, "original").unwrap();
+            std::os::unix::fs::symlink(&target, &path).unwrap();
+
+            reconcile("/proj/.murk", &map(&[("age1alice", "vkALICE")]), true);
+
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "original");
+            assert!(
+                std::fs::symlink_metadata(&path)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_pin_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        with_home(|_| {
+            reconcile("/proj/.murk", &map(&[("age1alice", "vkALICE")]), true);
+            let mode = std::fs::metadata(pin_path("/proj/.murk").unwrap())
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
         });
     }
 }

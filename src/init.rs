@@ -4,7 +4,6 @@
 //! Vault initialization logic.
 
 use std::collections::{BTreeMap, HashMap};
-use std::process::Command;
 // Only the tests touch the process environment directly; the runtime key read
 // now goes through env::key_from_env_only (see tests/invariants.rs).
 #[cfg(test)]
@@ -125,7 +124,7 @@ pub fn create_vault(
     let recipient = crypto::parse_recipient(pubkey)?;
 
     // Detect git repo URL, stripping any embedded credentials.
-    let repo = Command::new("git")
+    let repo = crate::git::git_command()
         .args(["remote", "get-url", "origin"])
         .output()
         .ok()

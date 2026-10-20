@@ -15,6 +15,18 @@ const GITATTRIBUTES_LINE: &str = "*.murk merge=murk";
 const GIT_CONFIG_MERGE_NAME: &str = "merge.murk.name";
 const GIT_CONFIG_MERGE_DRIVER: &str = "merge.murk.driver";
 
+/// A `git` command with murk's key variables removed from its environment.
+///
+/// The only way murk spawns git. git runs hooks, filters, credential helpers,
+/// and pagers that inherit its environment, and none of them needs the key.
+/// The merge driver is unaffected: git invokes `murk merge-driver` with the
+/// user's environment, not with the one murk hands git here.
+pub fn git_command() -> Command {
+    let mut cmd = Command::new("git");
+    crate::env::strip_key_env(&mut cmd);
+    cmd
+}
+
 /// A step completed during merge driver setup.
 #[derive(Debug, PartialEq, Eq)]
 pub enum MergeDriverSetupStep {
@@ -68,7 +80,7 @@ pub fn setup_merge_driver() -> Result<Vec<MergeDriverSetupStep>, String> {
         (GIT_CONFIG_MERGE_DRIVER, "murk merge-driver %O %A %B"),
     ];
     for (key, value) in &configs {
-        let status = Command::new("git")
+        let status = git_command()
             .args(["config", key, value])
             .status()
             .map_err(|e| format!("running git config: {e}"))?;
@@ -103,7 +115,7 @@ pub enum CommitSignature {
 /// when git is unavailable, the repo has no such commit, or the path is
 /// untracked — i.e. there is no git anchor to check.
 pub fn last_commit_signature(path: &str) -> Option<CommitSignature> {
-    let output = Command::new("git")
+    let output = git_command()
         .args(["log", "-1", "--format=%G?", "--", path])
         .output()
         .ok()?;

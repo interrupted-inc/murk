@@ -139,3 +139,33 @@ fn library_modules_do_not_print_to_stdout() {
         offenders.join("\n"),
     );
 }
+
+/// murk spawns `git` through one constructor, `git::git_command`, which strips
+/// the key from the child's environment. A direct `Command::new("git")` in
+/// runtime code is a call site that would hand the key to git and to every
+/// hook, filter and helper git runs. Unit-test modules (everything from a
+/// file's `#[cfg(test)] mod tests`) set up fixture repos and are exempt.
+#[test]
+fn git_is_spawned_only_through_the_key_stripping_constructor() {
+    const ALLOWED: &str = "src/git.rs";
+
+    let mut allowed_hits = 0;
+    let mut offenders = Vec::new();
+    for (path, body) in source_files() {
+        let runtime = code_lines(&body).take_while(|(_, l)| *l != "mod tests {");
+        for (n, line) in runtime.filter(|(_, l)| l.contains("Command::new(\"git\")")) {
+            if path == ALLOWED && allowed_hits == 0 {
+                allowed_hits += 1;
+            } else {
+                offenders.push(format!("  {path}:{n}: {line}"));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "spawn git through git::git_command (murk_cli::git_command in the binary), \
+         which keeps MURK_KEY / MURK_KEY_FILE out of git's environment.\n{}",
+        offenders.join("\n"),
+    );
+}

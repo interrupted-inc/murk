@@ -380,10 +380,5 @@ pub(crate) fn rotation_finding(issue: &murk_cli::RotationIssue) -> Finding {
             ),
             fix: Some(format!("rotate it: `murk rotate {key}`")),
         },
-        BadTimestamp { key, field, value } => Finding {
-            category: "schema",
-            message: format!("{key} has an unparseable {field} timestamp ({value})"),
-            fix: Some("re-set it with a write command, or fix it by hand".into()),
-        },
     }
 }

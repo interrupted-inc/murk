@@ -248,12 +248,12 @@ Symlinks are refused:
 - At key files read through `MURK_KEY_FILE` or auto-discovery. Key files are also refused if they are group- or world-accessible (`read_secret_file` in `src/env.rs`; test `world_readable_key_file_rejected`).
 - At key files and `.env` on write. On Unix, those writes also open with `O_NOFOLLOW` (`write_key_to_file` and `write_secret_file` in `src/env.rs`).
 - At the lock file, which is opened with `O_NOFOLLOW` (`vault::lock`; test `lock_file_symlink_rejected`).
+- At signer-pin files on write. The pin is written to a `0600` temporary file in the same directory and renamed into place, so the write never goes through a link planted after the check (`write_pin_file` in `src/pins.rs`; test `symlinked_pin_is_refused_and_its_target_untouched`).
 
 Auto-discovery hashes the literal vault path, without resolving symlinks, so a symlinked `.murk` does not borrow another project's key (`absolute_vault_path` in `src/env.rs`). *Gaps:*
 
 - The symlink checks look only at the final path component.
 - On non-Unix platforms there is no `O_NOFOLLOW` and no file-permission hardening.
-- Signer-pin files are written with a plain `std::fs::write`, with no symlink check (`write_pin` in `src/pins.rs`).
 - The `.envrc` append and the zero-overwrite in `overwrite_and_remove` (`src/commands/secrets.rs`) open without `O_NOFOLLOW`. The `.envrc` append is guarded only by a prior symlink check.
 
 **Race conditions, TOCTOU (CWE-367).** Vault writes are atomic. The vault goes to a temporary file in the same directory, which is set to `0600`, fsynced and renamed over the vault, and then the directory is fsynced (`vault::write`). Read-modify-write cycles hold an exclusive lock on `.murk.lock` (`vault::lock`). Key and `.env` writes use `O_NOFOLLOW` at open time, so a symlink planted after the check is still refused. *Gaps:* reads check for a symlink and then open the file by path (`read_with_raw`, `read_secret_file`), which leaves a window between the check and the open. The lock on non-Unix platforms is check-then-create, as `vault::lock` notes.
@@ -269,6 +269,7 @@ Auto-discovery hashes the literal vault path, without resolving symlinks, so a s
 - Secret values are never taken from the command line. `murk add` and `murk rotate` read them from a prompt that does not echo, or from stdin (`resolve_value` in `src/commands/mod.rs`).
 - The key reaches murk only through `MURK_KEY`, `MURK_KEY_FILE` or a key file.
 - The commands that `murk exec`, `murk agent exec` and the MCP `murk_exec` tool run do not inherit `MURK_KEY` or `MURK_KEY_FILE`: `cmd_exec` either clears the environment or removes both variables, and `run_command` clears the environment.
+- `git` and the editor that `murk edit` starts do not inherit `MURK_KEY` or `MURK_KEY_FILE` either. Both are removed by `strip_key_env` in `src/env.rs`. murk starts every `git` process through `git_command` in `src/git.rs`, and a test enforces this (`git_is_spawned_only_through_the_key_stripping_constructor` in `tests/invariants.rs`; test `git_does_not_inherit_the_key`). The merge driver is not affected: git starts `murk merge-driver` with the user's own environment.
 - Library modules must not print to stdout, and only `src/env.rs` reads the `MURK_KEY*` variables. Both rules are enforced by tests (`library_modules_do_not_print_to_stdout` and `murk_key_is_read_only_in_the_env_module` in `tests/invariants.rs`).
 - `dbg!` is denied (`[lints.clippy]` in `Cargo.toml`).
 - The `Debug` output of `MurkIdentity` (`src/crypto.rs`) and `DiffEntry` (`src/export.rs`) never prints key material or values.
@@ -279,7 +280,6 @@ Auto-discovery hashes the literal vault path, without resolving symlinks, so a s
 *Gaps:*
 
 - Other processes of the same user can see `MURK_KEY` in murk's environment.
-- The editor that `murk edit` starts, and the `git` subprocesses, inherit murk's environment unchanged, including `MURK_KEY` if it is set.
 - CodeQL's `rust/cleartext-logging` query is excluded repo-wide as a false positive for a local CLI (`.github/codeql/codeql-config.yml`), so CodeQL does not check this class.
 - The invariant tests scan source text, not types. The type-aware lints in `lints/murk_lints` are run by hand and are not part of CI.
 - The Python and Node bindings do not turn off core dumps.

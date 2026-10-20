@@ -231,7 +231,7 @@ pub(crate) fn cmd_doctor(vault_path: &str) {
     // .gitignore files, global excludes, and negated rules.
     if env_path.exists()
         && cwd.join(".git").exists()
-        && let Ok(output) = std::process::Command::new("git")
+        && let Ok(output) = murk_cli::git_command()
             .args(["check-ignore", "--quiet", ".env"])
             .current_dir(&cwd)
             .status()
