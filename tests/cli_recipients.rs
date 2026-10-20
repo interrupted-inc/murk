@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! CLI behavior of the recipient circle, groups and agent policy, the shared
 //! load/prompt plumbing every command runs through, and `murk agent exec`
 //! supervision edge cases.
