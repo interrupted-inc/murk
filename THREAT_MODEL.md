@@ -316,7 +316,7 @@ Each block has a comment that explains why it is sound. All other `unsafe` in `s
 *Gaps:*
 
 - RUSTSEC-2023-0071 is ignored, with the reason given in `deny.toml`.
-- crates.io packages carry no attestation ([VERIFYING.md](VERIFYING.md)).
+- crates.io has no attestation support of its own. From the first release after 0.12.0, the release workflow attests the exact `.crate` published to crates.io, checks it against the crates.io index checksum, and attaches it to the GitHub release. Crates for 0.12.0 and earlier have no attestation and can only be checked by rebuilding from the signed tag ([VERIFYING.md](VERIFYING.md)).
 - The release workflow does not run the test suite again. It relies on CI having passed on `main`.
 
 ## Scope
