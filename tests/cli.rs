@@ -3683,6 +3683,85 @@ fn agent_exec_forwards_sigterm_to_the_child() {
     assert_eq!(murk_proc.wait().unwrap().code(), Some(5));
 }
 
+/// A child that signals murk as soon as it starts can do so before murk has
+/// recorded its pid; that signal must not be echoed back either. The window
+/// is narrow, so run many children, several at once.
+#[cfg(unix)]
+#[test]
+fn agent_exec_does_not_echo_a_signal_the_child_sends_at_startup() {
+    let dir = agent_exec_vault();
+    let script = "trap 'echo echoed; exit 9' TERM; kill -TERM $PPID; sleep 0.2; echo done";
+    for _ in 0..5 {
+        std::thread::scope(|s| {
+            let runs: Vec<_> = (0..10)
+                .map(|_| {
+                    s.spawn(|| {
+                        spawn_agent_exec_sh(&dir, script)
+                            .stderr(std::process::Stdio::null())
+                            .output()
+                            .unwrap()
+                    })
+                })
+                .collect();
+            for run in runs {
+                let out = run.join().unwrap();
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                assert_eq!(stdout, "done\n", "{:?}", out.status);
+                assert_eq!(out.status.code(), Some(0));
+            }
+        });
+    }
+}
+
+/// A SIGTERM sent to murk at any point around the child's spawn must end
+/// the child: before murk knows its pid the signal is kept, and must be
+/// delivered once it does, never lost. The window cannot be hit on demand,
+/// so send it at staggered delays to many runs at once; a lost signal shows
+/// as the child's 5 s sleep running out instead.
+#[cfg(unix)]
+#[test]
+fn agent_exec_sigterm_around_spawn_always_ends_the_child() {
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let dir = agent_exec_vault();
+    std::thread::scope(|s| {
+        let runs: Vec<_> = (0..50u64)
+            .map(|i| {
+                let dir = &dir;
+                s.spawn(move || {
+                    let mut murk_proc = spawn_agent_exec_sh(dir, "exec sleep 5")
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn()
+                        .unwrap();
+                    std::thread::sleep(Duration::from_micros(i * 1500));
+                    // SAFETY: plain syscall on a child we have not reaped.
+                    unsafe {
+                        libc::kill(murk_proc.id() as libc::pid_t, libc::SIGTERM);
+                    }
+                    let deadline = Instant::now() + Duration::from_secs(3);
+                    loop {
+                        if let Some(status) = murk_proc.try_wait().unwrap() {
+                            return status;
+                        }
+                        if Instant::now() > deadline {
+                            murk_proc.kill().unwrap();
+                            panic!("SIGTERM {} ms after start was lost", i * 3 / 2);
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                })
+            })
+            .collect();
+        for run in runs {
+            let status = run.join().unwrap();
+            assert_eq!(status.signal(), Some(libc::SIGTERM), "{status:?}");
+        }
+    });
+}
+
 /// Once the child has exited, murk may still be draining pipes a background
 /// descendant holds open. A SIGTERM then has no child to go to, so murk must
 /// die from it instead of swallowing it and waiting for the pipes to close.

@@ -313,6 +313,37 @@ fn terminate_to_murk_alone_leaves_no_plaintext() {
     f.assert_value(VALUE);
 }
 
+/// An editor that signals murk as soon as it starts can do so before murk
+/// has recorded its process group; that signal must not be echoed back to
+/// it. The window is narrow, so run many editors, several at once.
+#[test]
+fn signal_from_the_editor_at_startup_is_not_echoed() {
+    std::thread::scope(|s| {
+        let runs: Vec<_> = (0..10)
+            .map(|_| {
+                s.spawn(|| {
+                    let f = Fixture::new();
+                    let editor = f.script(
+                        "signals-murk.sh",
+                        r#"trap 'exit 9' TERM
+kill -TERM $PPID
+sleep 0.2
+echo new-value > "$1""#,
+                    );
+                    for _ in 0..5 {
+                        f.edit(&editor).assert().success();
+                    }
+                    f.assert_no_leftover();
+                    f.assert_value("new-value");
+                })
+            })
+            .collect();
+        for run in runs {
+            run.join().unwrap();
+        }
+    });
+}
+
 /// The editor's whole process tree is gone before murk wipes the file, so a
 /// descendant cannot save it again afterwards: checked after a grace period
 /// longer than any of the child's delayed saves.
