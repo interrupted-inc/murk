@@ -30,6 +30,23 @@ Downloads a pre-built binary for your platform:
 curl -fsSL https://raw.githubusercontent.com/interrupted-sh/murk/main/install.sh | sh
 ```
 
+It installs to `/usr/local/bin/murk` by default, using `sudo` only when that
+directory is not writable. The location follows the standard conventions:
+
+- `PREFIX` sets the installation prefix; the binary goes to `$PREFIX/bin`
+  (default `/usr/local`).
+- `DESTDIR` is prepended to the final path for staged installs, as with
+  `make install`: `DESTDIR=/tmp/stage PREFIX=/usr` writes
+  `/tmp/stage/usr/bin/murk`.
+- `MURK_INSTALL_DIR` names the exact bin directory and takes precedence over
+  `PREFIX`. `DESTDIR` still applies on top of it.
+
+Set the variables for `sh`, not `curl`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/interrupted-sh/murk/main/install.sh | PREFIX="$HOME/.local" sh
+```
+
 ## GitHub Releases
 
 murk provides pre-built binaries for Linux (x86_64, aarch64, armhf), macOS
@@ -63,9 +80,10 @@ before the organization rename; see
 command that verifies them.
 
 npm, PyPI, and crates.io releases each have their own verification path (npm
-provenance, PEP 740 attestations, and signed release tags respectively). See
-[Verifying releases](/security/verifying/) for the full walkthrough across
-every distribution channel.
+provenance, PEP 740 attestations, and an attested `.crate` respectively), and
+release tags are SSH-signed. See [Verifying releases](/security/verifying/)
+for the full walkthrough across every distribution channel, including where to
+get the tag-signing key.
 
 ## Next steps
 

@@ -100,5 +100,6 @@ Setting `MURK_KEY` to a raw `AGE-SECRET-KEY-1...` string works, but the key
 is then plaintext in your environment/`.env`. Prefer `MURK_KEY_FILE`
 pointing at either a file under `~/.config/murk/keys/` (the `murk init`
 default, fine for development) or a hardware-backed plugin identity file
-(recommended for production use). See [environment
+(recommended for production use). Set one or the other: murk refuses to run
+when both are non-empty, and treats an empty value as unset. See [environment
 variables](/concepts/env-vars/) for the full list murk reads.

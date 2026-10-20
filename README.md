@@ -65,6 +65,8 @@ Or download a pre-built binary:
 curl -fsSL https://raw.githubusercontent.com/interrupted-sh/murk/main/install.sh | sh
 ```
 
+It installs to `/usr/local/bin` by default. Set `PREFIX` (binary goes to `$PREFIX/bin`), `DESTDIR` (staging root prepended to the path), or `MURK_INSTALL_DIR` (exact bin directory, overrides `PREFIX`) on the `sh` side of the pipe, e.g. `... | PREFIX="$HOME/.local" sh`.
+
 Pre-built binaries are available for Linux (x86_64, aarch64, armhf), macOS (x86_64, Apple Silicon), and Windows on the [releases page](https://github.com/interrupted-sh/murk/releases). Binary releases are [attested](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds) and can be verified with `gh attestation verify murk-* --owner interrupted-sh` (0.12.0 and later; releases up to 0.11.0 were signed as `interrupted-inc/murk`). See [VERIFYING.md](VERIFYING.md) for verifying older releases and the npm, PyPI, and crates.io releases too.
 
 ## Quick start
@@ -416,7 +418,7 @@ If the plugin binary isn't on `$PATH`, murk fails with `age-plugin-yubikey unava
 
 **No BIP39 recovery for hardware identities.** The whole point of hardware-backed keys is that the raw key bytes never leave the device, so there are no bytes to encode as a recovery phrase. Instead, enroll a second hardware device at setup and add both pubkeys as recipients (`murk circle authorize <backup-pubkey>`) — if you lose one, the backup still decrypts.
 
-**`MURK_KEY` vs `MURK_KEY_FILE`.** Setting `MURK_KEY` to a raw `AGE-SECRET-KEY-1...` string in `.env` works, but the key is then plaintext on disk. Prefer `MURK_KEY_FILE` pointing at either a file under `~/.config/murk/keys/` (convenience) or a hardware-backed plugin identity file (strongly recommended for production).
+**`MURK_KEY` vs `MURK_KEY_FILE`.** Setting `MURK_KEY` to a raw `AGE-SECRET-KEY-1...` string in `.env` works, but the key is then plaintext on disk. Prefer `MURK_KEY_FILE` pointing at either a file under `~/.config/murk/keys/` (convenience) or a hardware-backed plugin identity file (strongly recommended for production). Set one, not both: murk refuses to run when both are non-empty, and treats an empty value as unset.
 
 ## License
 

@@ -4,13 +4,20 @@
 
 # Install murk — https://github.com/interrupted-sh/murk
 # Usage: curl -fsSL https://raw.githubusercontent.com/interrupted-sh/murk/main/install.sh | sh
+#
+# Install location (standard conventions):
+#   PREFIX            installation prefix; the binary goes to $PREFIX/bin (default /usr/local)
+#   MURK_INSTALL_DIR  exact bin directory; takes precedence over PREFIX
+#   DESTDIR           staging root prepended to the final path, as in `make install`:
+#                     DESTDIR=/tmp/stage PREFIX=/usr installs to /tmp/stage/usr/bin/murk
 set -e
 
 REPO="interrupted-sh/murk"
 # Releases up to v0.11.0 were built before the GitHub org rename and are signed
 # as this repository under its old name.
 LEGACY_REPO="interrupted-inc/murk"
-INSTALL_DIR="${MURK_INSTALL_DIR:-/usr/local/bin}"
+PREFIX="${PREFIX:-/usr/local}"
+INSTALL_DIR="${DESTDIR:-}${MURK_INSTALL_DIR:-$PREFIX/bin}"
 
 os=$(uname -s)
 arch=$(uname -m)
@@ -127,6 +134,11 @@ fi
 
 tar xzf "$tmpdir/$archive" -C "$tmpdir"
 
+# Create the bin directory if needed (a DESTDIR staging tree usually starts
+# empty), escalating with sudo only when the current user cannot.
+if [ ! -d "$INSTALL_DIR" ] && ! mkdir -p "$INSTALL_DIR" 2>/dev/null; then
+    sudo mkdir -p "$INSTALL_DIR"
+fi
 if [ -w "$INSTALL_DIR" ]; then
     mv "$tmpdir/murk" "$INSTALL_DIR/murk"
 else

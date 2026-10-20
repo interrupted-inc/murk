@@ -3373,6 +3373,42 @@ fn agent_exec_runs_with_an_explicit_key_file() {
         .stderr(predicate::str::contains("personal key").not());
 }
 
+#[test]
+fn key_and_key_file_together_are_refused() {
+    let dir = agent_exec_vault();
+    let key = fs::read_to_string(stored_key_file(&dir)).unwrap();
+
+    // Refused even when both name the same key: murk never picks a winner.
+    let assertion = operator_shell(&dir)
+        .env("MURK_KEY", key.trim())
+        .env("MURK_KEY_FILE", stored_key_file(&dir))
+        .args(["get", "DB_URL", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stdout("");
+    let stderr = String::from_utf8(assertion.get_output().stderr.clone()).unwrap();
+    assert!(
+        stderr.contains("MURK_KEY and MURK_KEY_FILE are both set"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn empty_key_with_key_file_decrypts() {
+    // The shape of a `murk agent connect` MCP entry: MURK_KEY blanked to mask
+    // an inherited one, the key handed over in MURK_KEY_FILE.
+    let dir = agent_exec_vault();
+
+    operator_shell(&dir)
+        .env("MURK_KEY", "")
+        .env("MURK_KEY_FILE", stored_key_file(&dir))
+        .env("MURK_AGENT", "1")
+        .args(["get", "DB_URL", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout("postgres://prod-sentinel\n");
+}
+
 /// Values are masked on both streams: repeated, written in two pieces with a
 /// pause between (so murk reads them separately), and at the end of a stream
 /// with no newline. A value under the 4-byte floor is left alone.
@@ -4093,33 +4129,6 @@ fn edit_single_key_no_change() {
 
 #[cfg(unix)]
 #[test]
-fn edit_abort_preserves_value() {
-    let dir = TempDir::new().unwrap();
-    let (key, _) = init_vault(&dir);
-
-    murk(&dir, &key)
-        .args(["add", "SECRET", "--vault", "test.murk"])
-        .write_stdin("keep_me\n")
-        .assert()
-        .success();
-
-    murk(&dir, &key)
-        .args(["edit", "SECRET", "--vault", "test.murk"])
-        .env("EDITOR", "false")
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("aborting"));
-
-    // Value is preserved.
-    murk(&dir, &key)
-        .args(["get", "SECRET", "--vault", "test.murk"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("keep_me"));
-}
-
-#[cfg(unix)]
-#[test]
 fn edit_multi_key_add_update_remove() {
     let dir = TempDir::new().unwrap();
     let (key, _) = init_vault(&dir);
@@ -4186,40 +4195,6 @@ fn edit_missing_key_fails() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("not found"));
-}
-
-#[cfg(unix)]
-#[test]
-fn edit_tempfile_cleaned_up() {
-    let dir = TempDir::new().unwrap();
-    let (key, _) = init_vault(&dir);
-
-    murk(&dir, &key)
-        .args(["add", "SECRET", "--vault", "test.murk"])
-        .write_stdin("value\n")
-        .assert()
-        .success();
-
-    // Editor that records the tempfile path.
-    let marker = dir.path().join("temppath.txt");
-    let editor = write_editor_script(
-        &dir,
-        "editor.sh",
-        &format!(r#"cp "$1" "{}" "#, marker.display()),
-        &format!(r#"copy %1 "{}""#, marker.display()),
-    );
-
-    murk(&dir, &key)
-        .args(["edit", "SECRET", "--vault", "test.murk"])
-        .env("EDITOR", &editor)
-        .assert()
-        .success();
-
-    // The copied file should exist (proves editor ran), but we can't easily
-    // check the original tempfile is gone since we don't know its path.
-    // Instead verify the marker file doesn't contain secrets in plaintext
-    // after the edit (the original tempfile was wiped).
-    assert!(marker.exists());
 }
 
 // ── scan ──

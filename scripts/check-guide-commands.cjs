@@ -48,7 +48,6 @@ const CORPUS_TAPE_DIR = "demo";
 const ALLOWLIST = {
   exec: "run-a-command wrapper; tests/cli.rs (agent-exec tape covers the scoped variant)",
   "agent init": "agent grant onboarding; tests/cli.rs (multi-identity flow doesn't render as one tape)",
-  "agent connect": "MCP editor wiring; tests/cli.rs",
   "agent ls": "grant listing; tests/cli.rs",
   "agent revoke": "grant revocation; tests/cli.rs",
   "policy set": "agent policy write; tests/cli.rs",

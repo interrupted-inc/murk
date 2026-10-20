@@ -20,6 +20,13 @@ resolve_murk_key() {
     fi
 }
 
+# Switch this shell to an inline MURK_KEY. `source .env` exports MURK_KEY_FILE,
+# personas later switch with `export MURK_KEY=...`, and murk refuses both set.
+use_murk_key() {
+    unset MURK_KEY_FILE
+    export MURK_KEY="$1"
+}
+
 # Print the public key from `murk init` output (strips ANSI codes).
 murk_pubkey() {
     murk init 2>&1 | strip_ansi | grep -o "age1[a-z0-9]*"
@@ -79,6 +86,7 @@ demo_alice_vault() {
     echo "alice" | murk init >/dev/null 2>&1
     source .env
     export ALICE_KEY="$(resolve_murk_key)"
+    use_murk_key "$ALICE_KEY"
 
     echo "postgres://prod:secret@db.example.com/app" | murk add DATABASE_URL --desc "Production database" >/dev/null 2>&1
     echo "sk-proj-abc123def456" | murk add API_KEY --desc "OpenAI API key" >/dev/null 2>&1
@@ -106,6 +114,8 @@ demo_onboard() {
     murk init >/dev/null 2>&1
     source .env
     export "${upper}_KEY=$(resolve_murk_key)"
+    local key_var="${upper}_KEY"
+    use_murk_key "${!key_var}"
     export "${upper}_PUBKEY=$(murk_pubkey)"
 }
 
@@ -119,8 +129,11 @@ demo_capture_key() {
     local dir_var="${upper}_DIR"
 
     cd "${!dir_var}" || return 1
+    unset MURK_KEY MURK_KEY_FILE
     source .env
     export "${upper}_KEY=$(resolve_murk_key)"
+    local key_var="${upper}_KEY"
+    use_murk_key "${!key_var}"
     export "${upper}_PUBKEY=$(murk_pubkey)"
 }
 

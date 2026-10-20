@@ -26,11 +26,12 @@ the grant can read.
 
 This narrows where secrets are exposed. It doesn't make a leak impossible: a
 command the agent runs can still print a value to its own output, and
-anything running as your user can read a grant key stored on disk. A grant's
-TTL is a reminder to revoke rather than an expiry — nothing stops an old
-grant key from working until you revoke and rotate. murk gives you
-least-privilege, revocable access, not a sandbox. For real isolation, run the
-agent as a separate user or in a container.
+anything running as your user can read a grant key stored on disk. murk
+refuses an expired grant at read time at every entry point, but the key
+itself can't expire and still reads old vault versions with raw age, so
+revoke and rotate to close it. murk gives you least-privilege, revocable
+access, not a sandbox. For real isolation, run the agent as a separate user
+or in a container.
 
 ## Rules
 
@@ -302,8 +303,9 @@ murk agent connect cursor --only STRIPE_SECRET_KEY
 ```
 
 `connect` mints one scoped grant for the vault and writes each editor's
-project-local config, pointing at `murk mcp` with `MURK_KEY_FILE` and
-`MURK_AGENT=1`:
+project-local config, pointing at `murk mcp` with `MURK_KEY_FILE`,
+`MURK_AGENT=1`, and an empty `MURK_KEY` (murk refuses to run with both key
+variables set, so the entry masks one the editor passes down from your shell):
 
 | Editor | Config file | Format |
 | --- | --- | --- |
@@ -323,6 +325,8 @@ offers to add the path to `.gitignore`.
 `murk agent disconnect [CLIENT]` removes only murk's entry, leaving other
 servers untouched. Add `--rotate` to revoke the grant and rotate the keys it
 could read.
+
+![murk agent connect mints a scoped grant and writes the editor's MCP entry with a key-file path; a read outside the grant fails closed, and disconnect --rotate revokes and rotates](/demos/agent-connect.gif)
 
 The server speaks JSON-RPC over stdout and logs only to stderr, so point
 your MCP client at that command with `MURK_KEY_FILE` and `MURK_AGENT=1` in
@@ -367,8 +371,8 @@ treat it like `murk agent exec`: a safe default, not a sandbox, with
 OS-level isolation the real boundary (see
 [Scoped agent grants](#scoped-agent-grants), above).
 For an editor murk doesn't wire automatically yet, add the same `murk mcp`
-entry (with `MURK_KEY_FILE` and `MURK_AGENT=1`) to that harness's MCP config
-by hand.
+entry (with `MURK_KEY_FILE`, `MURK_AGENT=1`, and an empty `MURK_KEY`) to that
+harness's MCP config by hand.
 
 ## Check the code an agent wrote
 

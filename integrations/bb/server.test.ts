@@ -1,12 +1,10 @@
-// SPDX-FileCopyrightText: murk contributors
-// SPDX-License-Identifier: MIT OR Apache-2.0
-
-// Integration-style tests: real murk CLI (on PATH), real murk Node binding,
-// real temp vault, fake bb plugin host. HOME is redirected to a temp dir so
+// Integration-style tests: this repo's murk CLI (npm test builds it and puts it
+// first on PATH), real murk Node binding, real temp vault, fake bb plugin
+// host. HOME is redirected to a temp dir so
 // murk's stored operator key never touches the developer's real key directory.
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import type { PluginAgentConfigurationContext, PluginAgentToolResult } from "@get-bb/plugin-sdk";
@@ -28,6 +26,7 @@ let tmpRoot: string;
 let worktree: string;
 let host: FakePluginHost;
 const savedEnv: Record<string, string | undefined> = {};
+const providerCatalog: Array<{ id: string }> = [{ id: "acp-omp" }, { id: "claude-code" }];
 
 function sha256(content: string | Buffer): string {
   return createHash("sha256").update(content).digest("hex");
@@ -99,6 +98,9 @@ beforeAll(async () => {
       system: {
         config: async () => ({ primaryHostId: LOCAL_HOST }),
       },
+      providers: {
+        catalog: async () => providerCatalog,
+      },
       threads: {
         get: async (args: { threadId: string }) =>
           args.threadId === "thread-remote"
@@ -164,6 +166,97 @@ describe("registrations", () => {
   });
 });
 
+describe("agent context env", () => {
+  const envContext = { threadId: THREAD_ID, projectId: PROJECT_ID, hostId: LOCAL_HOST };
+
+  async function contributedEnv(providerId: string): Promise<Record<string, string>> {
+    const env: Record<string, string> = {};
+    for (const { name, value } of await host.harness.behavior.resolveProviderEnv(providerId, envContext)) {
+      if (typeof value !== "string") throw new Error(`${name} is not a literal value`);
+      env[name] = value;
+    }
+    return env;
+  }
+
+  function murkGet(env: NodeJS.ProcessEnv): { status: number | null; stdout: string } {
+    return spawnSync("murk", ["get", "TEST_API_KEY"], { cwd: worktree, encoding: "utf8", env });
+  }
+
+  it("keeps every catalog provider's murk off the operator key, even after a dotenv refill", async () => {
+    const keysDir = path.join(process.env.HOME ?? "", ".config", "murk", "keys");
+    const operatorKeyFile = path.join(keysDir, readdirSync(keysDir)[0]);
+    const operatorKey = readFileSync(operatorKeyFile, "utf8").trim();
+    const inheritedKeyFile = { ...process.env, MURK_KEY_FILE: operatorKeyFile };
+    const inheritedKey = { ...process.env, MURK_KEY: operatorKey };
+    // Every operator path decrypts without the contribution: an inherited
+    // MURK_KEY_FILE or MURK_KEY, and the stored-key fallback with nothing set.
+    for (const base of [inheritedKeyFile, inheritedKey, process.env]) {
+      expect(murkGet(base).stdout).toContain(SECRET_VALUE);
+    }
+
+    // omp fills every unset or empty variable from dotenv files, where
+    // `murk init` leaves a MURK_KEY_FILE pointer at the operator key and an
+    // older murk left the key inline in MURK_KEY.
+    const dotenvRefill = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
+      const filled = { ...env };
+      for (const [name, value] of Object.entries({ MURK_KEY_FILE: operatorKeyFile, MURK_KEY: operatorKey })) {
+        if (!filled[name]) filled[name] = value;
+      }
+      return filled;
+    };
+
+    for (const { id } of providerCatalog) {
+      const agentEnv = await contributedEnv(id);
+      for (const base of [inheritedKeyFile, inheritedKey, process.env]) {
+        for (const env of [{ ...base, ...agentEnv }, dotenvRefill({ ...base, ...agentEnv })]) {
+          const result = murkGet(env);
+          expect(result.status).not.toBe(0);
+          expect(result.stdout).not.toContain(SECRET_VALUE);
+        }
+      }
+      // A key file handed to a child explicitly (a `murk agent connect` MCP
+      // entry sets MURK_KEY_FILE alone) still wins over the contribution.
+      expect(murkGet({ ...inheritedKey, ...agentEnv, MURK_KEY_FILE: operatorKeyFile }).stdout).toContain(SECRET_VALUE);
+    }
+  });
+
+  it("covers a provider that joins the catalog after load once a thread is created", async () => {
+    providerCatalog.push({ id: "acp-late" });
+    expect(await contributedEnv("acp-late")).toEqual({});
+
+    const { errors } = await host.harness.behavior.emitThreadEvent("thread.created", {
+      thread: makeThreadResponse({ id: THREAD_ID }),
+    });
+    expect(errors).toEqual([]);
+    expect(await contributedEnv("acp-late")).toMatchObject({ MURK_AGENT: "1" });
+  });
+
+  it("contributes before load resolves, even when the catalog answers late", async () => {
+    const slow = createFakePluginHost({
+      pluginId: "murk",
+      dataDir: path.join(tmpRoot, "bb-data-slow"),
+      agentSkillIds: ["murk"],
+      sdk: {
+        system: { config: async () => ({ primaryHostId: LOCAL_HOST }) },
+        providers: {
+          // Answers after other load work has had several turns to finish.
+          catalog: async () => {
+            for (let turn = 0; turn < 20; turn++) await Promise.resolve();
+            return [{ id: "acp-slow" }];
+          },
+        },
+      },
+    });
+    try {
+      await plugin(slow.bb);
+      const entries = await slow.harness.behavior.resolveProviderEnv("acp-slow", envContext);
+      expect(entries.map(({ name }) => name)).toContain("MURK_AGENT");
+    } finally {
+      await slow.harness.lifecycle.dispose();
+    }
+  });
+});
+
 describe("local-host gate", () => {
   it("offers tools and the skill on the local host only", async () => {
     // The factory warms the primary-host cache at load; a tool call would too.
@@ -226,6 +319,7 @@ describe("grant lifecycle", () => {
     );
     expect(result.isError).toBe(true);
     expect(result.text).toContain("no active grant");
+    expect(result.text).toContain(`bb murk grant mint --keys KEY[,KEY…] --thread ${THREAD_ID}`);
   });
 
   it("mints a file-only grant via the CLI", async () => {
@@ -305,6 +399,7 @@ describe("grant lifecycle", () => {
     );
     expect(result.isError).toBe(true);
     expect(result.text).toContain("OTHER_SECRET is not covered");
+    expect(result.text).toContain(`bb murk grant mint --keys OTHER_SECRET --thread ${THREAD_ID}`);
     expect(result.text).not.toContain(OTHER_VALUE);
   });
 

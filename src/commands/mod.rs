@@ -10,6 +10,7 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use std::process;
 
 pub(crate) mod completion;
+pub(crate) mod editor;
 pub(crate) mod exec;
 pub(crate) mod git;
 pub(crate) mod grants;
@@ -19,6 +20,8 @@ pub(crate) mod recipients;
 pub(crate) mod recover;
 pub(crate) mod scan;
 pub(crate) mod secrets;
+#[cfg(unix)]
+pub(crate) mod signals;
 pub(crate) mod supervise;
 pub(crate) mod verify;
 
