@@ -7,6 +7,11 @@ ignore = [
     # queries against a server; murk is a local CLI). Prefer ed25519 keys.
     # Revisit when the rsa crate ships a fix.
     "RUSTSEC-2023-0071",
+    # basic-toml is unmaintained (archived upstream), no replacement release.
+    # Not shipped: it only runs at compile time inside age's i18n-embed-fl and
+    # i18n-embed-impl proc macros, which read age's own bundled i18n.toml, so
+    # it never parses murk input. Drop this once age moves off i18n-config.
+    "RUSTSEC-2026-0374",
 ]
 
 [licenses]
