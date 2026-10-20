@@ -12,6 +12,13 @@
 use std::fs;
 use std::path::Path;
 
+/// A syntactically valid age recipient that no test vault was encrypted to
+/// (the age README example key). Tamper tests inject it so the vault passes
+/// load-time validation and the integrity check is what rejects it.
+// Not every integration binary tampers with recipients.
+#[allow(dead_code)]
+pub const FOREIGN_PK: &str = "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p";
+
 /// `fs::canonicalize` with Windows' `\\?\` verbatim prefix removed.
 ///
 /// The worktree fixtures hand these paths straight to `git`, which on Windows

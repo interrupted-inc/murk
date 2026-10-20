@@ -130,6 +130,11 @@ fn resolve_meta_state(
     let meta: types::Meta = serde_json::from_slice(&plaintext).map_err(|_| {
         MurkError::Integrity("vault meta is corrupt — vault may have been tampered with".into())
     })?;
+    crate::validate::meta(&meta).map_err(|e| {
+        MurkError::Integrity(format!(
+            "vault meta is invalid ({e}) — vault may have been tampered with"
+        ))
+    })?;
 
     if meta.mac.is_empty() {
         if !vault.secrets.is_empty() {
@@ -429,7 +434,7 @@ mod tests {
         // re-MAC + re-encrypt meta using only the (public) recipient key.
         let mut tampered: types::Vault =
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        let stale_meta = decrypt_meta(&tampered, &identity).unwrap();
+        let stale_meta = decrypt_meta(&tampered, &identity).unwrap().unwrap();
         tampered.secrets.get_mut("API_KEY").unwrap().shared =
             encrypt_value(b"POISON", std::slice::from_ref(&recipient)).unwrap();
         let mac_key_hex = generate_mac_key();
@@ -460,6 +465,132 @@ mod tests {
         );
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // one case per untrusted meta field
+    fn load_rejects_invalid_meta_fields_naming_them() {
+        // The meta blob is re-encryptable by anyone holding the public
+        // recipient keys, so its fields are untrusted and checked on load.
+        type Mutate<'a> = Box<dyn Fn(&mut types::Meta) + 'a>;
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (secret, pubkey) = generate_keypair();
+        let recipient = make_recipient(&pubkey);
+        let identity = make_identity(&secret);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.murk");
+
+        let mut vault = signed_test_vault(&pubkey, &recipient);
+        let original = types::Murk {
+            values: HashMap::from([("API_KEY".into(), crate::testutil::secret("REAL"))]),
+            recipients: HashMap::from([(pubkey.clone(), "alice".to_string())]),
+            ..Default::default()
+        };
+        unsafe { std::env::set_var("MURK_KEY", &secret) };
+        unsafe { std::env::remove_var("MURK_KEY_FILE") };
+        save_vault(path.to_str().unwrap(), &mut vault, &original, &original).unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+
+        let grant = |expires_at: &str| types::GrantEntry {
+            pubkey: pubkey.clone(),
+            scope: vec!["API_KEY".into()],
+            issued_at: "2026-01-01T00:00:00Z".into(),
+            expires_at: expires_at.into(),
+            issuer: pubkey.clone(),
+        };
+        let cases: Vec<(&str, Mutate)> = vec![
+            (
+                "meta.grants[codex].expires_at: not an RFC 3339",
+                Box::new(|m| {
+                    m.grants.insert("codex".into(), grant("tomorrow"));
+                }),
+            ),
+            (
+                "meta.grants key: invalid grant name",
+                Box::new(|m| {
+                    m.grants
+                        .insert("../x".into(), grant("2026-01-02T00:00:00Z"));
+                }),
+            ),
+            (
+                "meta.groups key: invalid group name",
+                Box::new(|m| {
+                    m.groups.insert("a b".into(), vec![pubkey.clone()]);
+                }),
+            ),
+            (
+                "meta.groups[prod] member: not a valid",
+                Box::new(|m| {
+                    m.groups.insert("prod".into(), vec!["age1nope".into()]);
+                }),
+            ),
+            (
+                "contains control characters",
+                Box::new(|m| {
+                    m.recipients.insert(pubkey.clone(), "\u{1b}[2Jalice".into());
+                }),
+            ),
+            (
+                "meta.github_pins key: invalid GitHub username",
+                Box::new(|m| {
+                    m.github_pins
+                        .insert("../../evil".into(), vec!["SHA256:abc".into()]);
+                }),
+            ),
+            (
+                "meta.mac_key: not a 64-character hex key",
+                Box::new(|m| m.mac_key = Some("zz".into())),
+            ),
+            (
+                "meta.groups key: invalid group name \\u{1b}[31mprod",
+                Box::new(|m| {
+                    m.groups
+                        .insert("\u{1b}[31mprod".into(), vec![pubkey.clone()]);
+                }),
+            ),
+            (
+                "meta.grants key: invalid grant name \\u{1b}]0;pwned\\u{7}",
+                Box::new(|m| {
+                    m.grants
+                        .insert("\u{1b}]0;pwned\u{7}".into(), grant("2026-01-02T00:00:00Z"));
+                }),
+            ),
+        ];
+        for (expected, mutate) in cases {
+            let mut tampered: types::Vault = serde_json::from_str(&saved).unwrap();
+            let mut meta = decrypt_meta(&tampered, &identity).unwrap().unwrap();
+            mutate(&mut meta);
+            tampered.meta = encrypt_value(
+                &serde_json::to_vec(&meta).unwrap(),
+                std::slice::from_ref(&recipient),
+            )
+            .unwrap();
+            fs::write(&path, serde_json::to_string_pretty(&tampered).unwrap()).unwrap();
+
+            let err = load_vault(path.to_str().unwrap())
+                .expect_err(&format!("expected rejection: {expected}"))
+                .to_string();
+            assert!(
+                err.contains("vault meta is invalid") && err.contains(expected),
+                "want {expected:?}, got {err:?}"
+            );
+            assert!(
+                !err.chars().any(char::is_control),
+                "raw control char in {err:?}"
+            );
+
+            // The best-effort reader (info, circle, merge) fails closed too.
+            let other = decrypt_meta(&tampered, &identity)
+                .expect_err(&format!("decrypt_meta must reject: {expected}"));
+            assert!(other.contains(expected), "want {expected:?}, got {other:?}");
+            assert!(
+                !other.chars().any(char::is_control),
+                "raw control char in {other:?}"
+            );
+        }
+        unsafe { std::env::remove_var("MURK_KEY") };
     }
 
     #[test]
@@ -505,7 +636,7 @@ mod tests {
         let att_vk = signing::verifying_key_b64(&att_sk);
         let mut tampered: types::Vault =
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        let stale = decrypt_meta(&tampered, &identity).unwrap();
+        let stale = decrypt_meta(&tampered, &identity).unwrap().unwrap();
         tampered.secrets.get_mut("API_KEY").unwrap().shared =
             encrypt_value(b"POISON", std::slice::from_ref(&recipient)).unwrap();
         let mut signers = stale.signers.clone();
@@ -761,7 +892,7 @@ mod tests {
         // Strip the signature: decrypt meta, clear sig, re-encrypt. The MAC does
         // not cover the sig, so it stays valid — a clean unsigned downgrade.
         let mut on_disk = read_vault(path_str).unwrap();
-        let mut meta = decrypt_meta(&on_disk, &identity).unwrap();
+        let mut meta = decrypt_meta(&on_disk, &identity).unwrap().unwrap();
         meta.sig = None;
         let meta_json = serde_json::to_vec(&meta).unwrap();
         on_disk.meta = encrypt_value(&meta_json, std::slice::from_ref(&recipient)).unwrap();
@@ -1030,8 +1161,8 @@ mod tests {
         );
 
         // Tamper differently: garble the meta blob so it no longer decodes.
-        // A recipient hitting damaged meta should still see an integrity
-        // error, not "not a recipient".
+        // Damaged meta must never read as "not a recipient"; non-base64 meta
+        // is refused at parse time, naming the field.
         let mut garbled: types::Vault =
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         garbled.meta = "not-base64!!".into();
@@ -1039,10 +1170,12 @@ mod tests {
 
         let result = load_vault(path.to_str().unwrap());
 
-        let err = result.expect_err("expected corrupt meta to fail");
+        let err = result
+            .expect_err("expected corrupt meta to fail")
+            .to_string();
         assert!(
-            err.to_string().contains("integrity check failed"),
-            "expected integrity check failure, got: {err}"
+            err.contains("meta: not valid base64") && !err.contains("not a recipient"),
+            "expected meta to be rejected as invalid, got: {err}"
         );
 
         // Tamper again: valid base64 that fails authenticated decryption (a

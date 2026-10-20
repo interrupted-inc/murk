@@ -657,7 +657,8 @@ pub fn run_merge_driver(base: &str, ours: &str, theirs: &str) -> Result<MergeDri
     let theirs_vault = vault::parse(theirs).map_err(|e| format!("parsing theirs: {e}"))?;
 
     let mut result = merge_vaults(&base_vault, &ours_vault, &theirs_vault);
-    let meta_regenerated = regenerate_meta(&mut result.vault, &ours_vault, &theirs_vault).is_some();
+    let meta_regenerated =
+        regenerate_meta(&mut result.vault, &ours_vault, &theirs_vault)?.is_some();
 
     Ok(MergeDriverOutput {
         result,
@@ -668,15 +669,25 @@ pub fn run_merge_driver(base: &str, ours: &str, theirs: &str) -> Result<MergeDri
 /// Attempt to regenerate the meta blob for a merged vault.
 ///
 /// Decrypts meta from `ours` and `theirs` to merge recipient name maps,
-/// recomputes the MAC, and re-encrypts. Falls back to `ours.meta` if
-/// MURK_KEY is unavailable.
-pub fn regenerate_meta(merged: &mut Vault, ours: &Vault, theirs: &Vault) -> Option<String> {
+/// recomputes the MAC, and re-encrypts. Returns `Ok(None)` (leaving
+/// `ours.meta` in place) if MURK_KEY is unavailable or cannot read a side's
+/// meta. A side whose meta decrypts but is invalid is an error: merging it as
+/// empty would silently drop its groups, grants, and pins.
+pub fn regenerate_meta(
+    merged: &mut Vault,
+    ours: &Vault,
+    theirs: &Vault,
+) -> Result<Option<String>, String> {
     use crate::{compute_mac, crypto, decrypt_meta, encrypt_value, parse_recipients, resolve_key};
     use age::secrecy::ExposeSecret;
     use std::collections::HashMap;
 
-    let secret_key = resolve_key().ok()?;
-    let identity = crypto::parse_identity(secret_key.expose_secret()).ok()?;
+    let Ok(secret_key) = resolve_key() else {
+        return Ok(None);
+    };
+    let Ok(identity) = crypto::parse_identity(secret_key.expose_secret()) else {
+        return Ok(None);
+    };
 
     let default_meta = || crate::types::Meta {
         recipients: HashMap::new(),
@@ -689,8 +700,12 @@ pub fn regenerate_meta(merged: &mut Vault, ours: &Vault, theirs: &Vault) -> Opti
         sig: None,
     };
 
-    let ours_meta = decrypt_meta(ours, &identity).unwrap_or_else(default_meta);
-    let theirs_meta = decrypt_meta(theirs, &identity).unwrap_or_else(default_meta);
+    let ours_meta = decrypt_meta(ours, &identity)
+        .map_err(|e| format!("ours: {e}"))?
+        .unwrap_or_else(default_meta);
+    let theirs_meta = decrypt_meta(theirs, &identity)
+        .map_err(|e| format!("theirs: {e}"))?
+        .unwrap_or_else(default_meta);
 
     // Merge name maps: union, ours wins on conflict.
     let mut names = theirs_meta.recipients;
@@ -752,16 +767,21 @@ pub fn regenerate_meta(merged: &mut Vault, ours: &Vault, theirs: &Vault) -> Opti
         sig: None,
     };
 
-    let recipients = parse_recipients(&merged.recipients).ok()?;
+    let Ok(recipients) = parse_recipients(&merged.recipients) else {
+        return Ok(None);
+    };
 
     if recipients.is_empty() {
-        return None;
+        return Ok(None);
     }
 
-    let meta_json = serde_json::to_vec(&meta).ok()?;
-    let encrypted = encrypt_value(&meta_json, &recipients).ok()?;
+    crate::validate::meta(&meta).map_err(|e| format!("merged meta is invalid: {e}"))?;
+    let meta_json = serde_json::to_vec(&meta).map_err(|e| format!("meta serialize: {e}"))?;
+    let Ok(encrypted) = encrypt_value(&meta_json, &recipients) else {
+        return Ok(None);
+    };
     merged.meta = encrypted;
-    Some("meta regenerated".into())
+    Ok(Some("meta regenerated".into()))
 }
 
 #[cfg(test)]
@@ -803,6 +823,21 @@ mod tests {
             secrets,
             meta: "base-meta".into(),
         }
+    }
+
+    /// `base_vault()` serialized with recipient and ciphertext values that pass
+    /// load-time validation, for tests that go through `run_merge_driver`.
+    fn base_vault_json() -> String {
+        let mut v = base_vault();
+        v.recipients = vec![
+            crate::testutil::AGE_PK.into(),
+            crate::testutil::SSH_ED25519_PK.into(),
+        ];
+        for entry in v.secrets.values_mut() {
+            entry.shared = "Y2lwaGVy".into();
+        }
+        v.meta = "bWV0YQ==".into();
+        serde_json::to_string(&v).unwrap()
     }
 
     // -- No-change merge --
@@ -1282,7 +1317,7 @@ mod tests {
 
     #[test]
     fn run_merge_driver_invalid_ours() {
-        let base = serde_json::to_string(&base_vault()).unwrap();
+        let base = base_vault_json();
         let result = run_merge_driver(&base, "not json", &base);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("parsing ours"));
@@ -1290,7 +1325,7 @@ mod tests {
 
     #[test]
     fn run_merge_driver_invalid_theirs() {
-        let base = serde_json::to_string(&base_vault()).unwrap();
+        let base = base_vault_json();
         let result = run_merge_driver(&base, &base, "not json");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("parsing theirs"));
@@ -1298,7 +1333,7 @@ mod tests {
 
     #[test]
     fn run_merge_driver_clean_no_changes() {
-        let base = serde_json::to_string(&base_vault()).unwrap();
+        let base = base_vault_json();
         let output = run_merge_driver(&base, &base, &base).unwrap();
         assert!(output.result.conflicts.is_empty());
         // meta_regenerated depends on MURK_KEY availability — don't assert it.
@@ -1875,7 +1910,10 @@ mod tests {
             recipients: std::collections::HashMap::from([(pubkey.clone(), "alice".to_string())]),
             groups: BTreeMap::from([
                 ("team".to_string(), vec![pubkey.clone()]),
-                ("ghost".to_string(), vec!["age1stranger".to_string()]),
+                (
+                    "ghost".to_string(),
+                    vec![crate::testutil::AGE_PK.to_string()],
+                ),
             ]),
             ..Default::default()
         };
@@ -1890,20 +1928,22 @@ mod tests {
         ours.meta = meta_ct;
         let theirs = ours.clone();
         let mut merged = ours.clone();
-        // The merged vault recognizes only `pubkey`; age1stranger is gone.
+        // The merged vault recognizes only `pubkey`; the ghost member is gone.
         merged.recipients = vec![pubkey.clone()];
 
         // ENV_LOCK is held, so set + clear is safe; no need to read the prior
         // value (reading MURK_KEY outside env.rs trips the read-path invariant).
         unsafe { std::env::set_var("MURK_KEY", &secret) };
-        let out = regenerate_meta(&mut merged, &ours, &theirs);
+        let out = regenerate_meta(&mut merged, &ours, &theirs).unwrap();
         unsafe { std::env::remove_var("MURK_KEY") };
 
         assert!(
             out.is_some(),
             "regenerate_meta must succeed with MURK_KEY set"
         );
-        let meta = crate::decrypt_meta(&merged, &identity).expect("merged meta must decrypt");
+        let meta = crate::decrypt_meta(&merged, &identity)
+            .unwrap()
+            .expect("merged meta must decrypt");
         assert_eq!(
             meta.recipients.get(&pubkey).map(String::as_str),
             Some("alice")
@@ -1914,5 +1954,46 @@ mod tests {
             !meta.groups.contains_key("ghost"),
             "stale now-empty group must be pruned"
         );
+    }
+
+    #[test]
+    fn regenerate_meta_refuses_invalid_meta_instead_of_dropping_it() {
+        use crate::testutil::{ENV_LOCK, generate_keypair, make_recipient};
+
+        let _env = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (secret, pubkey) = generate_keypair();
+        let recipient = make_recipient(&pubkey);
+
+        // A hostile meta: a group whose name carries a terminal escape.
+        let hostile = crate::types::Meta {
+            groups: BTreeMap::from([("\u{1b}[31mprod".to_string(), vec![pubkey.clone()])]),
+            ..Default::default()
+        };
+        let mut ours = base_vault();
+        ours.recipients = vec![pubkey.clone()];
+        ours.meta = crate::encrypt_value(
+            &serde_json::to_vec(&hostile).unwrap(),
+            std::slice::from_ref(&recipient),
+        )
+        .unwrap();
+        let theirs = ours.clone();
+        let mut merged = ours.clone();
+
+        unsafe { std::env::set_var("MURK_KEY", &secret) };
+        let out = regenerate_meta(&mut merged, &ours, &theirs);
+        unsafe { std::env::remove_var("MURK_KEY") };
+
+        let err = out.expect_err("invalid meta must fail the merge, not be emptied");
+        assert!(
+            err.contains("ours: vault meta is invalid (meta.groups key: invalid group name"),
+            "{err:?}"
+        );
+        assert!(
+            !err.chars().any(char::is_control),
+            "raw control char in {err:?}"
+        );
+        assert_eq!(merged.meta, ours.meta, "meta must not be rewritten");
     }
 }

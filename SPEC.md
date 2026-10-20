@@ -124,7 +124,24 @@ A `.murk` file is a single JSON document. All fields except encrypted values and
 
 ### Version
 
-The `version` field uses semver. murk validates the major version on load — a vault with major version other than `2` is rejected. Minor version bumps (e.g. `2.1`) are accepted.
+The `version` field is `2.MINOR` or `2.MINOR.PATCH` (decimal, no leading zeros). Any other value, including another major version, is rejected on load. Minor version bumps (e.g. `2.1`) are accepted.
+
+### Load-time validation
+
+A `.murk` file arrives through git and is untrusted. Every reader (the working vault, `git show` revisions for `diff`, and all three merge-driver inputs) checks each field against an allowlist and refuses the whole vault on the first failure, naming the field. `murk` applies the same checks before it writes, so it never commits a vault it cannot load.
+
+- File size: at most 64 MiB, checked before parsing.
+- `version`: as above.
+- `created` and the schema `created`/`updated`/`expires_at`/`revoked_at`: RFC 3339 timestamps.
+- Key names in `schema`, `secrets`, and grant scopes: `[A-Za-z_][A-Za-z0-9_]*`.
+- `recipients`, `scoped` keys, and every pubkey in the meta: a public key that murk can encrypt to (age X25519, `ssh-ed25519`/`ssh-rsa`, or an age plugin recipient).
+- `grouped` keys and meta group names: 1–64 characters of `[A-Za-z0-9_-]`, and not a reserved tier alias (`everyone`, `all`, `shared`, `me`, `self`, `mine`). Meta grant names: the same character rule.
+- `rotation_interval_days`: at least 1.
+- Ciphertexts (`shared`, `scoped`/`grouped` values, `meta`, signer keys, signature): standard base64 with padding. `shared` and `meta` may be empty.
+- Free text (`vault_name`, `repo`, descriptions, examples, tags, `agent_allow_tags`, display names): no control characters other than tab, CR, and LF.
+- Meta `mac_key`: 64 hex characters. `github_pins`: GitHub usernames (1–39 of `[A-Za-z0-9-]`) mapped to `SHA256:` fingerprints.
+
+The MAC value is not interpreted here, and signature bytes are only checked as base64. The integrity checks below verify both, and a failed check stops the load.
 
 ### Recipients
 

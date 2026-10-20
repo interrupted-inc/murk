@@ -12,7 +12,7 @@ use std::fs;
 use tempfile::TempDir;
 
 mod common;
-use common::{init_vault, murk, murk_bin};
+use common::{FOREIGN_PK, init_vault, murk, murk_bin};
 
 // ── Malformed vault JSON ──
 
@@ -368,8 +368,8 @@ fn merge_driver_empty_files() {
 #[test]
 fn merge_driver_mismatched_versions() {
     let dir = TempDir::new().unwrap();
-    let v2 = r#"{"version":"2.0","created":"2026-01-01T00:00:00Z","vault_name":".murk","recipients":["age1a"],"schema":{},"secrets":{},"meta":""}"#;
-    let v99 = r#"{"version":"99.0","created":"2026-01-01T00:00:00Z","vault_name":".murk","recipients":["age1a"],"schema":{},"secrets":{},"meta":""}"#;
+    let v2 = r#"{"version":"2.0","created":"2026-01-01T00:00:00Z","vault_name":".murk","recipients":[],"schema":{},"secrets":{},"meta":""}"#;
+    let v99 = r#"{"version":"99.0","created":"2026-01-01T00:00:00Z","vault_name":".murk","recipients":[],"schema":{},"secrets":{},"meta":""}"#;
 
     fs::write(dir.path().join("base.murk"), v2).unwrap();
     fs::write(dir.path().join("ours.murk"), v2).unwrap();
@@ -704,15 +704,13 @@ fn tampered_recipients_fails_integrity() {
         .assert()
         .success();
 
-    // Add a fake recipient to the list.
+    // Add a recipient the vault was never encrypted to.
     let contents = fs::read_to_string(dir.path().join("test.murk")).unwrap();
     let mut val: serde_json::Value = serde_json::from_str(&contents).unwrap();
     val["recipients"]
         .as_array_mut()
         .unwrap()
-        .push(serde_json::json!(
-            "age1injected000000000000000000000000000000000000000000000000000"
-        ));
+        .push(serde_json::json!(FOREIGN_PK));
     fs::write(
         dir.path().join("test.murk"),
         serde_json::to_string_pretty(&val).unwrap(),

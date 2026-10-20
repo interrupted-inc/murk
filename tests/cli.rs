@@ -7,7 +7,7 @@ use assert_fs::TempDir;
 use predicates::prelude::*;
 
 mod common;
-use common::{MURK_CONTEXT_VARS, init_vault, murk, murk_bin, real_path};
+use common::{FOREIGN_PK, MURK_CONTEXT_VARS, init_vault, murk, murk_bin, real_path};
 
 // ── init ──
 
@@ -1932,6 +1932,45 @@ fn diff_shows_no_changes() {
 }
 
 #[test]
+fn diff_rejects_invalid_vault_in_git_history() {
+    let dir = TempDir::new().unwrap();
+    let (key, _pubkey) = init_vault(&dir);
+    let vault_path = dir.path().join("test.murk");
+    let good = fs::read_to_string(&vault_path).unwrap();
+
+    // Commit a hostile revision: a key name that would be a shell injection
+    // vector if exported.
+    let mut bad: serde_json::Value = serde_json::from_str(&good).unwrap();
+    bad["schema"]["X;rm -rf ~"] = serde_json::json!({"description": ""});
+    fs::write(&vault_path, bad.to_string()).unwrap();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .unwrap();
+    };
+    git(&["init"]);
+    git(&["add", "test.murk"]);
+    git(&["commit", "-m", "hostile"]);
+    fs::write(&vault_path, &good).unwrap();
+
+    murk(&dir, &key)
+        .args(["diff", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("parsing vault at HEAD").and(predicate::str::contains(
+                "schema: invalid key name X;rm -rf ~",
+            )),
+        );
+}
+
+#[test]
 fn diff_shows_added_key() {
     let dir = TempDir::new().unwrap();
     let (key, _pubkey) = init_vault(&dir);
@@ -2163,14 +2202,14 @@ fn merge_driver_clean_merge() {
   "version": "2.0",
   "created": "2026-01-01T00:00:00Z",
   "vault_name": ".murk",
-  "recipients": ["age1alice"],
+  "recipients": ["age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"],
   "schema": {
     "DB_URL": { "description": "database", "tags": [] }
   },
   "secrets": {
-    "DB_URL": { "shared": "base-cipher-db" }
+    "DB_URL": { "shared": "YmFzZS1kYg==" }
   },
-  "meta": "base-meta"
+  "meta": "YmFzZS1tZXRh"
 }"#;
 
     // Ours: adds API_KEY.
@@ -2178,16 +2217,16 @@ fn merge_driver_clean_merge() {
   "version": "2.0",
   "created": "2026-01-01T00:00:00Z",
   "vault_name": ".murk",
-  "recipients": ["age1alice"],
+  "recipients": ["age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"],
   "schema": {
     "API_KEY": { "description": "api key", "tags": [] },
     "DB_URL": { "description": "database", "tags": [] }
   },
   "secrets": {
-    "API_KEY": { "shared": "ours-cipher-api" },
-    "DB_URL": { "shared": "base-cipher-db" }
+    "API_KEY": { "shared": "b3Vycy1hcGk=" },
+    "DB_URL": { "shared": "YmFzZS1kYg==" }
   },
-  "meta": "ours-meta"
+  "meta": "b3Vycy1tZXRh"
 }"#;
 
     // Theirs: adds STRIPE_KEY.
@@ -2195,16 +2234,16 @@ fn merge_driver_clean_merge() {
   "version": "2.0",
   "created": "2026-01-01T00:00:00Z",
   "vault_name": ".murk",
-  "recipients": ["age1alice"],
+  "recipients": ["age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"],
   "schema": {
     "DB_URL": { "description": "database", "tags": [] },
     "STRIPE_KEY": { "description": "stripe", "tags": [] }
   },
   "secrets": {
-    "DB_URL": { "shared": "base-cipher-db" },
-    "STRIPE_KEY": { "shared": "theirs-cipher-stripe" }
+    "DB_URL": { "shared": "YmFzZS1kYg==" },
+    "STRIPE_KEY": { "shared": "dGhlaXJzLXN0cmlwZQ==" }
   },
-  "meta": "theirs-meta"
+  "meta": "dGhlaXJzLW1ldGE="
 }"#;
 
     let base_path = write_vault_json(dir.path(), "base.murk", base_json);
@@ -2233,14 +2272,14 @@ fn merge_driver_schema_only_merge_without_key() {
   "version": "2.0",
   "created": "2026-01-01T00:00:00Z",
   "vault_name": ".murk",
-  "recipients": ["age1alice"],
+  "recipients": ["age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"],
   "schema": {
     "DB_URL": { "description": "database", "tags": [] }
   },
   "secrets": {
-    "DB_URL": { "shared": "base-cipher-db" }
+    "DB_URL": { "shared": "YmFzZS1kYg==" }
   },
-  "meta": "base-meta"
+  "meta": "YmFzZS1tZXRh"
 }"#;
 
     // Ours: changes description only.
@@ -2248,14 +2287,14 @@ fn merge_driver_schema_only_merge_without_key() {
   "version": "2.0",
   "created": "2026-01-01T00:00:00Z",
   "vault_name": ".murk",
-  "recipients": ["age1alice"],
+  "recipients": ["age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"],
   "schema": {
     "DB_URL": { "description": "updated database desc", "tags": [] }
   },
   "secrets": {
-    "DB_URL": { "shared": "base-cipher-db" }
+    "DB_URL": { "shared": "YmFzZS1kYg==" }
   },
-  "meta": "ours-meta"
+  "meta": "b3Vycy1tZXRh"
 }"#;
 
     // Theirs: identical to base (no changes).
@@ -2286,19 +2325,19 @@ fn merge_driver_conflict_exit_code() {
   "version": "2.0",
   "created": "2026-01-01T00:00:00Z",
   "vault_name": ".murk",
-  "recipients": ["age1alice"],
+  "recipients": ["age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"],
   "schema": {
     "DB_URL": { "description": "database", "tags": [] }
   },
   "secrets": {
-    "DB_URL": { "shared": "base-cipher" }
+    "DB_URL": { "shared": "YmFzZQ==" }
   },
-  "meta": "base-meta"
+  "meta": "YmFzZS1tZXRh"
 }"#;
 
     // Both sides modify DB_URL.
-    let ours_json = base_json.replace("base-cipher", "ours-cipher");
-    let theirs_json = base_json.replace("base-cipher", "theirs-cipher");
+    let ours_json = base_json.replace("YmFzZQ==", "b3Vycw==");
+    let theirs_json = base_json.replace("YmFzZQ==", "dGhlaXJz");
 
     let base_path = write_vault_json(dir.path(), "base.murk", base_json);
     let ours_path = write_vault_json(dir.path(), "ours.murk", &ours_json);
@@ -2530,6 +2569,126 @@ fn old_vault_without_repo_parses() {
         .stdout(predicate::str::contains("codename"));
 }
 
+/// Every writer path must produce a vault that load-time validation accepts.
+/// Drives each CLI writer once so the resulting file carries every field shape
+/// murk writes, then reloads it through the validating readers.
+#[test]
+fn every_writer_path_round_trips_through_validation() {
+    const BOB_SSH: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHsKLqeplhpW+uObz5dvMgjz1OxfM/XXUB+VHtZ6isGN";
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    let run = |args: &[&str], stdin: &str| {
+        murk(&dir, &key)
+            .args(args)
+            .args(["--vault", "test.murk"])
+            .write_stdin(stdin)
+            .assert()
+            .success();
+    };
+
+    run(
+        &[
+            "add",
+            "DB_URL",
+            "--desc",
+            "primary db",
+            "--example",
+            "postgres://h/db",
+            "--tag",
+            "db",
+        ],
+        "pg://prod\n",
+    );
+    run(
+        &[
+            "describe",
+            "DB_URL",
+            "multi-line\ndescription\twith tab",
+            "--example",
+            "postgres://h/db",
+            "--tag",
+            "db",
+            "--tag",
+            "agents",
+            "--rotate-every",
+            "90d",
+            "--expires",
+            "2030-01-01",
+        ],
+        "",
+    );
+    run(
+        &["circle", "authorize", BOB_SSH, "--name", "Bob (laptop) ✓"],
+        "",
+    );
+    run(&["circle", "authorize", FOREIGN_PK, "--name", "carol"], "");
+    run(&["group", "create", "prod-team_1"], "");
+    run(&["group", "add", "prod-team_1", "--member", "carol"], "");
+    run(
+        &["add", "STRIPE_KEY", "--group", "prod-team_1"],
+        "sk_live\n",
+    );
+    run(&["add", "MY_TOKEN", "--group", "me"], "mine\n");
+    run(&["policy", "set", "--allow-tag", "agents"], "");
+    let agent_key = dir.path().join("agent.key");
+    run(
+        &[
+            "agent",
+            "grant",
+            "--name",
+            "codex-1",
+            "--only",
+            "DB_URL",
+            "--out",
+            agent_key.to_str().unwrap(),
+        ],
+        "",
+    );
+    // Deferred rotation leaves `revoked_at` markers in the schema.
+    run(&["circle", "revoke", "Bob (laptop) ✓"], "");
+    run(&["skeleton", "--output", "skeleton.murk"], "");
+
+    // The run produced every optional field shape, not just a minimal vault.
+    let raw = fs::read_to_string(dir.path().join("test.murk")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let db = &v["schema"]["DB_URL"];
+    for field in [
+        "example",
+        "tags",
+        "created",
+        "updated",
+        "rotation_interval_days",
+        "expires_at",
+        "revoked_at",
+    ] {
+        assert!(!db[field].is_null(), "schema.DB_URL.{field} missing: {db}");
+    }
+    assert!(v["policy"]["agent_allow_tags"].is_array());
+    assert!(v["secrets"]["STRIPE_KEY"]["grouped"]["prod-team_1"].is_string());
+    assert!(v["secrets"]["MY_TOKEN"]["scoped"].is_object());
+
+    // Header readers (no meta) and full readers (meta, MAC, signature).
+    murk(&dir, &key)
+        .args(["verify", "--vault", "test.murk"])
+        .assert()
+        .success();
+    murk(&dir, &key)
+        .args(["export", "--vault", "test.murk"])
+        .assert()
+        .success();
+    murk_bin(dir.path())
+        .current_dir(dir.path())
+        .args(["info", "--vault", "test.murk"])
+        .assert()
+        .success();
+    murk_bin(dir.path())
+        .current_dir(dir.path())
+        .args(["info", "--vault", "skeleton.murk"])
+        .assert()
+        .success();
+}
+
 // ── import ──
 
 #[test]
@@ -2633,9 +2792,7 @@ fn empty_vault_with_tampered_recipients_fails_integrity() {
     vault["recipients"]
         .as_array_mut()
         .unwrap()
-        .push(serde_json::Value::String(
-            "age1fakerecipient000000000000000000000000000000000000000000fake".into(),
-        ));
+        .push(serde_json::Value::String(FOREIGN_PK.into()));
     fs::write(&vault_path, serde_json::to_string_pretty(&vault).unwrap()).unwrap();
 
     murk(&dir, &key)
@@ -2680,9 +2837,7 @@ fn verify_fails_on_tampered_vault() {
     vault["recipients"]
         .as_array_mut()
         .unwrap()
-        .push(serde_json::Value::String(
-            "age1fake00000000000000000000000000000000000000000000000000000".into(),
-        ));
+        .push(serde_json::Value::String(FOREIGN_PK.into()));
     fs::write(&vault_path, serde_json::to_string_pretty(&vault).unwrap()).unwrap();
 
     murk(&dir, &key)
@@ -3961,9 +4116,7 @@ fn merge_driver_conflicts_on_one_sided_recipient_addition() {
     ours_vault["recipients"]
         .as_array_mut()
         .unwrap()
-        .push(serde_json::Value::String(
-            "age1newrecipient0000000000000000000000000000000000000000000new00".into(),
-        ));
+        .push(serde_json::Value::String(FOREIGN_PK.into()));
     let ours = serde_json::to_string_pretty(&ours_vault).unwrap();
 
     // "Theirs" is unchanged from base.

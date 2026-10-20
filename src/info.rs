@@ -71,7 +71,9 @@ pub fn vault_info(
     tags: &[String],
     secret_key: Option<&str>,
 ) -> Result<VaultInfo, String> {
-    let vault: types::Vault = serde_json::from_slice(raw_bytes).map_err(|e| e.to_string())?;
+    let contents =
+        std::str::from_utf8(raw_bytes).map_err(|e| format!("vault is not UTF-8: {e}"))?;
+    let vault = crate::vault::parse(contents).map_err(|e| e.to_string())?;
 
     let codename = codename::from_bytes(raw_bytes);
 
@@ -92,11 +94,12 @@ pub fn vault_info(
         identity.pubkey_string().ok()
     });
 
-    // Try to decrypt meta for recipient names.
-    let meta_data = secret_key.and_then(|sk| {
-        let identity = crate::crypto::parse_identity(sk).ok()?;
-        crate::decrypt_meta(&vault, &identity)
-    });
+    // Try to decrypt meta for recipient names. Unreadable meta falls back to
+    // pubkeys; meta that decrypts but fails validation fails the command.
+    let meta_data = match secret_key.and_then(|sk| crate::crypto::parse_identity(sk).ok()) {
+        Some(identity) => crate::decrypt_meta(&vault, &identity)?,
+        None => None,
+    };
 
     let entries = filtered
         .iter()
@@ -283,7 +286,7 @@ mod tests {
             created: "2026-01-01T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: "https://github.com/test/repo".into(),
-            recipients: vec!["age1test".into()],
+            recipients: vec![crate::testutil::AGE_PK.into()],
             schema,
             policy: None,
             secrets: BTreeMap::new(),
