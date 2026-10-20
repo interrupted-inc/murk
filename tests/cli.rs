@@ -2746,7 +2746,9 @@ fn doctor_flags_loose_key_file_inside_repo() {
         .args(["doctor", "--vault", "test.murk"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("murk.key is inside the working tree"))
+        .stderr(predicate::str::contains(
+            "murk.key is inside the working tree",
+        ))
         .stderr(predicate::str::contains(
             "murk.key is readable by others (mode 644)",
         ))
@@ -2767,7 +2769,9 @@ fn doctor_flags_owner_only_key_file_inside_repo() {
         .args(["doctor", "--vault", "test.murk"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("murk.key is inside the working tree"))
+        .stderr(predicate::str::contains(
+            "murk.key is inside the working tree",
+        ))
         .stderr(predicate::str::contains("readable by others").not());
 }
 
