@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Supervised child for `murk agent exec`: spawn the command with piped stdout
 //! and stderr, mask the injected secret values in both streams, and pass the
 //! child's exit status through.

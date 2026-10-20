@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! `murk verify`, `murk doctor`, git integration (`diff`, `merge-driver`,
 //! `setup-merge-driver`) and key recovery (`recover`, `restore`).
 

@@ -88,6 +88,8 @@ jobs:
         run: |
           node scripts/check-tape-typing.cjs --self-test
           node scripts/check-tape-typing.cjs
+      - name: Check every authored source file carries the SPDX header
+        run: node scripts/spdx-headers.cjs --check
 
   msrv:
     name: MSRV

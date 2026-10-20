@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: murk contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 # Offboard demo — Bob revokes Carol, rotates secrets, Carol loses access
 #
 # Shows: revoke, key rotation, git push/pull, and proof that

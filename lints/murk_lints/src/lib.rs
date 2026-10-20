@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 #![feature(rustc_private)]
 #![warn(unused_extern_crates)]
 

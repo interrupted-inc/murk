@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Short-lived agent grants: ephemeral, narrowly-scoped read credentials.
 //!
 //! A grant mints an ephemeral age identity, hands it to an agent, and gives it

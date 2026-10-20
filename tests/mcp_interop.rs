@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Real MCP-client interop test: drives `murk mcp` with the official rmcp
 //! client (not hand-crafted JSON-RPC) to prove a real client can connect,
 //! handshake, list tools, and call tools — with scope enforcement holding

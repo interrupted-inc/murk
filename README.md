@@ -50,7 +50,7 @@ murk is simple: one key on your machine, one encrypted file in your repo. See [T
 ## Install
 
 ```bash
-brew tap interrupted-sh/murk && brew install murk
+brew install interrupted-sh/tap/murk
 ```
 
 Or via Cargo (requires [Rust toolchain](https://rustup.rs)):

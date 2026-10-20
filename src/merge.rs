@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Three-way merge driver for `.murk` vault files.
 //!
 //! Operates at the Vault struct level: recipients as a set, schema and secrets

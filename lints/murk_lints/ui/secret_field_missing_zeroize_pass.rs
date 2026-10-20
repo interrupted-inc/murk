@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // aux-build:zeroize.rs
 
 // `secret_field_missing_zeroize` is a verified allowlist keyed on the real

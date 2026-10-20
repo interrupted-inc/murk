@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: murk contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 # Checks where install.sh puts the binary: DESTDIR, PREFIX and
 # MURK_INSTALL_DIR, against a local fake release served over file:// (no
 # network, no root). Run from the repository root: sh scripts/test-install.sh

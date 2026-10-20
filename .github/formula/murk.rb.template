@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: murk contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 class Murk < Formula
   desc "Encrypted secrets manager for developers"
   homepage "https://murk.interrupted.sh"

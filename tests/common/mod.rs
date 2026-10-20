@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Shared helpers for integration tests.
 //!
 //! Every murk invocation in the suite routes through [`murk_bin`], which forces

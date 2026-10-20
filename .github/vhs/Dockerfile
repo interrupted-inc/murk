@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: murk contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 # VHS recorder image for CI: upstream vhs plus the git and direnv binaries the
 # demo tapes call. Built in each vhs-record matrix job with a shared GitHub
 # Actions layer cache, so only the first run after an upstream change pays for

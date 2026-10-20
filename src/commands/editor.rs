@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! `murk edit`'s editor session: write the plaintext to a scratch file, run
 //! `$EDITOR` on it, read it back, and wipe the file on every way out.
 //!

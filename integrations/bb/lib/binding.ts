@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // The murk Node binding (@interrupted/murk-secrets) is a napi native module,
 // which esbuild cannot bundle — so it is loaded at runtime through
 // createRequire, resolved from the plugin's own node_modules. It stays in

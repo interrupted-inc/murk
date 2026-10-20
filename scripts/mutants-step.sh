@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: murk contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 # Run one cargo-mutants section and fail if its filters matched no mutants.
 #
 # cargo-mutants exits 0 when --file/--re (or examine_globs) match nothing, so a

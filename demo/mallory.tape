@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: murk contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 # Mallory demo — tampering with a .murk vault is detected
 # Mallory has her own key but isn't authorized on this vault
 

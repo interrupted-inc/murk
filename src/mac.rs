@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Vault MAC engine: the versioned keyed/unkeyed integrity tags and the
 //! version-gated verifier. Preserving these byte-for-byte is what keeps old
 //! vaults verifiable and blocks silent downgrade of a newer scheme.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Trust-on-first-use pinning of a vault's signer registry.
 //!
 //! The signer registry (`Meta::signers`, pubkey → Ed25519 verifying key) lives

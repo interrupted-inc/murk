@@ -11,7 +11,21 @@ install method fits your setup.
 ## Homebrew
 
 ```bash
-brew tap interrupted-sh/murk && brew install murk
+brew install interrupted-sh/tap/murk
+```
+
+Installing by the full name trusts only the murk formula, not every formula
+in the tap ([Homebrew tap trust](https://docs.brew.sh/Tap-Trust)).
+
+**Upgrading from the old tap name.** The tap used to be `interrupted-sh/murk`.
+You don't need to untap or reinstall: `brew update` follows the rename and
+moves your tap to `interrupted-sh/tap`. Trust doesn't follow a rename, so
+trust the formula under its new name once, then upgrade:
+
+```bash
+brew update
+brew trust --formula interrupted-sh/tap/murk
+brew upgrade murk
 ```
 
 ## Cargo

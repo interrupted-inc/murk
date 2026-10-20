@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Recipient management: authorize, revoke, and list vault recipients.
 
 use crate::{crypto, types};

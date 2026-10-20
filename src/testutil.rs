@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Shared test helpers for vault construction and key generation.
 
 use std::collections::{BTreeMap, HashMap};
