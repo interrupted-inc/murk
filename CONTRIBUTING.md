@@ -42,6 +42,45 @@ CI checks dependencies against the RustSec advisory database only on pushes to `
 
 If you find a security vulnerability, **do not open a public issue**. Use [GitHub's private vulnerability reporting](https://github.com/interrupted-sh/murk/security/advisories/new) instead.
 
+## Governance
+
+murk has one maintainer, [@iicky](https://github.com/iicky). The maintainer makes every final decision about the project. No other person holds a project role, so the bus factor is 1.
+
+### Roles and responsibilities
+
+**Maintainer ([@iicky](https://github.com/iicky)):**
+
+- Decides the project's scope and direction, including the [roadmap](ROADMAP.md).
+- Triages issues.
+- Reviews and merges pull requests. [`.github/CODEOWNERS`](.github/CODEOWNERS) assigns every file to the maintainer. Two kinds of automated dependency PR merge without a manual review once CI passes: Dependabot patch updates, and the lockfile-only advisory fixes described in [Security advisories](#security-advisories). The maintainer sets those rules.
+- Cuts releases (see [Releases](#releases)).
+- Handles private vulnerability reports as described in [SECURITY.md](SECURITY.md), and ships the fixes.
+- Enforces the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+**Contributors:** anyone who opens an issue or a pull request. Contributors follow the [pull request rules](#pull-requests), certify the [Developer Certificate of Origin](#developer-certificate-of-origin), and report vulnerabilities privately, not in public issues.
+
+### How decisions are made
+
+Decisions are made in the open, in GitHub issues and pull requests. Open an issue to discuss a significant change before you write the code. The maintainer makes the final decision on each issue and pull request, and records it there. To disagree with a decision, reply on the issue or pull request with your reasoning, or open a new issue. The maintainer can reopen an issue or change a decision. Security reports are the exception: they go through [private reporting](#security) until a fix ships.
+
+### Releases
+
+The maintainer cuts a release in three steps:
+
+1. Bump the version everywhere it appears with `scripts/bump-version.sh <x.y.z>`.
+2. Merge that change to `main` through a pull request.
+3. Push a signed `vX.Y.Z` tag.
+
+The tag starts [`.github/workflows/release.yaml`](.github/workflows/release.yaml). Its `preflight` job refuses to release unless the tagged commit is on `main`, reached `main` through a merged pull request, and `main`'s branch protection matches the release baseline. The workflow then builds, attests and publishes the release. The npm and PyPI packages are published from the same tag. [VERIFYING.md](VERIFYING.md) shows how to verify each release channel.
+
+### Repositories
+
+The project is made up of these three repositories, all maintained by the maintainer above:
+
+- [interrupted-sh/murk](https://github.com/interrupted-sh/murk) (this repository): the CLI, the Rust library, the Python and Node bindings, the bb plugin (`integrations/bb/`) and the docs site (`docs-site/`). Active, pre-1.0.
+- [interrupted-sh/murk-action](https://github.com/interrupted-sh/murk-action): the GitHub Action that decrypts murk secrets into a CI job's environment. Active, published on the [GitHub Marketplace](https://github.com/marketplace/actions/murk-action) as `interrupted-sh/murk-action@v1`.
+- [interrupted-sh/homebrew-murk](https://github.com/interrupted-sh/homebrew-murk): the Homebrew tap. Active. The `homebrew` job in [`.github/workflows/release.yaml`](.github/workflows/release.yaml) updates its formula automatically on each release.
+
 ## Developer Certificate of Origin
 
 By contributing, you certify that your contribution is your original work or you have the right to submit it under the project's license, per the [Developer Certificate of Origin](https://developercertificate.org/). This is asserted by the act of submitting a pull request.
