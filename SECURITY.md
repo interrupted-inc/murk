@@ -32,7 +32,7 @@ gh attestation verify murk-v*.tar.gz --owner interrupted-sh
 
 This covers murk 0.12.0 and later. Releases up to and including 0.11.0 were signed as `interrupted-inc/murk`, before the organization rename; [VERIFYING.md](VERIFYING.md) shows how to verify them.
 
-Release tags are signed with SSH. Verify a tag (replace `vX.Y.Z` with the release tag):
+Release tags are signed with SSH. Verify a tag (replace `vX.Y.Z` with the release tag) after adding the maintainer's signing key to your allowed signers, as described in [VERIFYING.md](VERIFYING.md#release-tag):
 
 ```bash
 git verify-tag vX.Y.Z

@@ -5,9 +5,37 @@ sidebar:
   order: 2
 ---
 
-Every murk release is built and published from this repository's GitHub Actions workflows, on GitHub-hosted runners. Most artifacts carry signed provenance you can verify against [Sigstore](https://www.sigstore.dev/). This page covers how, per distribution channel.
+Every murk release is built and published from this repository's GitHub Actions workflows, on GitHub-hosted runners. The source tag carries the maintainer's SSH signature, and each published package carries a signature you can check. This page shows how, per distribution channel.
 
 See [Install](/install/) to get murk in the first place, and the [threat model](/security/threat-model/)'s [supply chain](/security/threat-model/#supply-chain) section for how release verification fits into murk's broader security story.
+
+| Channel | What is signed | Signed by | Verify with |
+| --- | --- | --- | --- |
+| Source: git tag `vX.Y.Z` | The annotated tag (v0.3.1 and later) | Maintainer's SSH signing key | [`git verify-tag`](#release-tag) |
+| GitHub release archives and `SHA256SUMS` | Sigstore build provenance per file | `release.yaml` in `interrupted-sh/murk` | [`gh attestation verify`](#github-release-binaries) |
+| Homebrew tap | The formula pins the SHA-256 of the attested GitHub release archives | (inherits the GitHub release attestation) | `brew` checks the hash; [`gh attestation verify`](#github-release-binaries) on the archive |
+| crates.io: `murk-cli` | Sigstore build provenance for the exact `.crate` file (releases after 0.12.0) | `release.yaml` in `interrupted-sh/murk` | [`gh attestation verify`](#cratesio-murk-cli) on the `.crate` |
+| npm: `@interrupted/murk-secrets` | npm registry signatures and Sigstore provenance | `node.yaml` in `interrupted-sh/murk` | [`npm audit signatures`](#npm-interruptedmurk-secrets) |
+| PyPI: `murk-secrets` | PEP 740 Sigstore attestations per wheel and sdist | `python.yaml` in `interrupted-sh/murk` | [`pypi-attestations verify`](#pypi-murk-secrets) |
+
+The Sigstore signatures are keyless. Each signing key is ephemeral, and Fulcio certifies it for the workflow identity that ran (repository, workflow file, and tag). No long-lived private key exists, on a distribution site or anywhere else. The verifying tools fetch Sigstore's public trust root themselves, so the one input you supply is the expected identity: `--owner interrupted-sh`, or the repository URL.
+
+## Release tag
+
+Release tags from v0.3.1 onward are signed with the maintainer's SSH key. (Tags v0.2.0 through v0.3.0 are unsigned.)
+
+GitHub publishes the key as an SSH **signing** key at <https://api.github.com/users/iicky/ssh_signing_keys>. Do not use `https://github.com/iicky.keys`: it lists authentication keys, which do not sign tags. The signing key's fingerprint is `SHA256:rvLxyoK1U/TDmpbh8U76u1GglXPzqZPr5Jnn3ok6CGw`. The fingerprint on this page and the key from GitHub come from two different sources, so each one checks the other.
+
+Write the key to an allowed-signers file and verify the tag you build from. Replace `vX.Y.Z` with the release tag:
+
+```bash
+curl -fsSL https://api.github.com/users/iicky/ssh_signing_keys \
+  | jq -r '.[] | "5324300+iicky@users.noreply.github.com namespaces=\"git\" \(.key)"' \
+  > murk-allowed-signers
+git -c gpg.ssh.allowedSignersFile=murk-allowed-signers verify-tag vX.Y.Z
+```
+
+The output must contain `Good "git" signature` and the fingerprint above. To make the setting permanent, add the line to your own allowed-signers file and set `git config --global gpg.ssh.allowedSignersFile <path>`.
 
 ## GitHub release binaries
 
@@ -55,9 +83,31 @@ For murk-secrets 0.11.0 and earlier, pass `--repository https://github.com/inter
 
 ## crates.io (`murk-cli`)
 
-crates.io does not yet support artifact provenance or attestations, so there is nothing to attach at publish time. Trust here rests on two things:
+crates.io has no signing or attestation support of its own, so the release workflow signs the crate file itself. For each murk-cli release after 0.12.0, the workflow does the following:
 
-- the crate is published via crates.io **OIDC Trusted Publishing**, so no long-lived registry token exists to steal, and
-- the crate is published only from a version-tagged CI run. Release preflight requires that tag to sit on `main` and to have been merged through a reviewed pull request before anything publishes.
+1. It packages the crate with `cargo package --locked`.
+2. It publishes the crate through crates.io **OIDC Trusted Publishing**, so no long-lived registry token exists to steal. Release preflight first requires the tag to be on `main` and merged through a reviewed pull request.
+3. It confirms that the SHA-256 of the packaged file equals the checksum that the crates.io index records for that version. cargo rejects any download that does not match this checksum.
+4. It attests the file with `actions/attest-build-provenance` and attaches it to the [GitHub release](https://github.com/interrupted-sh/murk/releases) as `murk-cli-<version>.crate`.
 
-This is the one gap in murk's provenance story, and it is upstream: it closes when crates.io ships attestation support.
+The file that cargo downloads is therefore the attested file. To verify it:
+
+```bash
+# The file cargo downloads. A copy is also cached in
+# ~/.cargo/registry/cache/index.crates.io-*/ after a build or install.
+curl -fsSLO https://static.crates.io/crates/murk-cli/murk-cli-<version>.crate
+gh attestation verify murk-cli-<version>.crate --owner interrupted-sh
+
+# Optional: the checksum cargo enforces for that version must be the same
+curl -fsSL https://index.crates.io/mu/rk/murk-cli \
+  | jq -r 'select(.vers == "<version>") | .cksum'
+sha256sum murk-cli-<version>.crate
+```
+
+For murk-cli 0.12.0 and earlier there is no crate attestation. Instead, check the crate against the [signed tag](#release-tag). Crate packaging is deterministic, so a checkout of the tag gives back the same bytes:
+
+```bash
+git verify-tag vX.Y.Z && git checkout vX.Y.Z
+cargo package --locked --no-verify
+sha256sum target/package/murk-cli-X.Y.Z.crate   # must equal the index cksum above
+```
