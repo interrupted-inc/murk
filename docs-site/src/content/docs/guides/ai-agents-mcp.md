@@ -326,6 +326,8 @@ offers to add the path to `.gitignore`.
 servers untouched. Add `--rotate` to revoke the grant and rotate the keys it
 could read.
 
+![murk agent connect mints a scoped grant and writes the editor's MCP entry with a key-file path; a read outside the grant fails closed, and disconnect --rotate revokes and rotates](/demos/agent-connect.gif)
+
 The server speaks JSON-RPC over stdout and logs only to stderr, so point
 your MCP client at that command with `MURK_KEY_FILE` and `MURK_AGENT=1` in
 its environment. It exposes two always-on read tools bounded to the grant,

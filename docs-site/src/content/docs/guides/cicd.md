@@ -89,6 +89,8 @@ between the two fails loudly with `not a recipient`, never silently. If you
 miss the renewal, the job fails with `grant ci-deploy expired`; that's the
 intended fail-closed behavior.
 
+![A CI grant piped into the CI secret input (gh shimmed locally for the recording) exports only DEPLOY_TOKEN, fails loudly once expired, and comes back after --renew](/demos/ci-grant.gif)
+
 murk enforces the TTL at read time, so an expired grant fails closed. But age
 keys can't self-destruct and old `.murk` versions stay readable in git, so
 treat a CI grant the same way you'd treat any credential. Revoke it (`murk
