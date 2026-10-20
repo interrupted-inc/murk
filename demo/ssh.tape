@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: murk contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 # SSH demo — authorize a recipient from an SSH public key file
 
 Output demo/ssh.gif

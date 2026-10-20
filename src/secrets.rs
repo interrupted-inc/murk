@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Secret CRUD operations on the in-memory `Murk` state.
 
 use zeroize::Zeroizing;

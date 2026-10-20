@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Signal forwarding for a child murk waits on (`murk agent exec`'s masked
 //! command, `murk edit`'s editor).
 //!

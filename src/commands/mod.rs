@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Shared plumbing for the command handlers: process-exit helpers, TTY prompts,
 //! vault load/save wrappers, and the `Finding` reporting used by check commands.
 

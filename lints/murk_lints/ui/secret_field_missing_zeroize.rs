@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // `secret_field_missing_zeroize` is a verified allowlist keyed on the real
 // murk_cli type paths (see `SECRET_FIELDS` in src/lib.rs). Declare this
 // crate's own name as `murk_cli` so the fixture matches

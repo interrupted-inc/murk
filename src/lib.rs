@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Encrypted secrets manager for developers — one file, age encryption, git-friendly.
 //!
 //! This library provides the core functionality for murk: vault I/O, age encryption,
@@ -60,9 +63,9 @@ mod property_tests;
 pub use agent::{AgentPlan, AgentPlanKey, agent_plan, format_agent_plan_text};
 pub use env::{
     EnvrcStatus, KeySource, agent_key_file_path, agent_keys_dir, dotenv_has_murk_key,
-    env_permission_warning, home_short, key_file_path, parse_env, resolve_key,
-    resolve_key_for_vault, resolve_key_with_source, write_envrc, write_key_ref_to_dotenv,
-    write_key_to_dotenv, write_key_to_file,
+    env_permission_warning, home_short, key_file_path, locate_key, parse_env, resolve_key,
+    resolve_key_for_vault, resolve_key_with_source, secret_file_loose_mode, write_envrc,
+    write_key_ref_to_dotenv, write_key_to_dotenv, write_key_to_file,
 };
 pub use error::MurkError;
 pub use export::{

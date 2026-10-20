@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Canonical signed view of a vault plus sign/verify over it. Version-gated
 //! (`SIGNED_VIEW_VERSION`) so an older binary refuses a newer signature.
 

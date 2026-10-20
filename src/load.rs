@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Vault load path: decrypt the meta blob, verify its MAC and signature under
 //! the version-gating rules, and materialize the caller's view of the secrets.
 

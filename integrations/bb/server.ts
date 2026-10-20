@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // bb plugin: grant-scoped murk secrets for agent threads.
 //
 // Agents get two native tools — murk_plan (value-free schema) and murk_get

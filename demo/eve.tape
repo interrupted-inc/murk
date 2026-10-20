@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: murk contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 # Eve demo — what an unauthorized person sees
 # Eve has the repo (and .murk file) but no MURK_KEY
 

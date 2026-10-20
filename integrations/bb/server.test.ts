@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // Integration-style tests: this repo's murk CLI (npm test builds it and puts it
 // first on PATH), real murk Node binding, real temp vault, fake bb plugin
 // host. HOME is redirected to a temp dir so

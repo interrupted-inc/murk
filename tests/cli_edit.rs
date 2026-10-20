@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! `murk edit` writes decrypted secrets to a scratch file for `$EDITOR`. These
 //! tests pin the scratch dir (`XDG_RUNTIME_DIR` and `TMPDIR`) to a directory of
 //! its own and check it is empty afterwards on every way out of the command:

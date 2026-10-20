@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: murk contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 # Pre-commit hook: run the same lint checks as CI before each commit.
 # Install with `make hooks` (sets core.hooksPath to .githooks).
 #

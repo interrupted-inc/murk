@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Agent-oriented schema output for AI agent prompts.
 //!
 //! `murk agent plan` emits the vault schema (key names, descriptions, examples,

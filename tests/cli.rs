@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use std::fs;
 
 use assert_fs::TempDir;
@@ -2720,6 +2723,118 @@ fn doctor_flags_inline_murk_key_in_dotenv() {
         .failure()
         .stderr(predicate::str::contains("inline MURK_KEY in .env"))
         .stderr(predicate::str::contains("issue in repo"));
+}
+
+/// Write `key` to `path` with `mode` (Unix permission bits).
+#[cfg(unix)]
+fn write_key_file(path: &std::path::Path, key: &str, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::write(path, key).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+}
+
+// A key file murk refuses to load (group/world-readable) is still located, so
+// the inside-the-repo check fires and the loose mode is reported too.
+#[cfg(unix)]
+#[test]
+fn doctor_flags_loose_key_file_inside_repo() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    let key_path = dir.path().join("murk.key");
+    write_key_file(&key_path, &key, 0o644);
+
+    murk_bin(dir.path())
+        .current_dir(dir.path())
+        .env("MURK_KEY_FILE", &key_path)
+        .args(["doctor", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "murk.key is inside the working tree",
+        ))
+        .stderr(predicate::str::contains(
+            "murk.key is readable by others (mode 644)",
+        ))
+        .stderr(predicate::str::contains("chmod 600"));
+}
+
+#[cfg(unix)]
+#[test]
+fn doctor_flags_owner_only_key_file_inside_repo() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    let key_path = dir.path().join("murk.key");
+    write_key_file(&key_path, &key, 0o600);
+
+    murk_bin(dir.path())
+        .current_dir(dir.path())
+        .env("MURK_KEY_FILE", &key_path)
+        .args(["doctor", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "murk.key is inside the working tree",
+        ))
+        .stderr(predicate::str::contains("readable by others").not());
+}
+
+#[cfg(unix)]
+#[test]
+fn doctor_accepts_key_file_outside_repo() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    let elsewhere = TempDir::new().unwrap();
+    let key_path = elsewhere.path().join("murk.key");
+    write_key_file(&key_path, &key, 0o600);
+
+    murk_bin(dir.path())
+        .current_dir(dir.path())
+        .env("MURK_KEY_FILE", &key_path)
+        .args(["doctor", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("repo hygiene looks clean"));
+}
+
+// Both key variables set is an error for every command, so doctor reports it
+// with the fix instead of checking whichever one it might have picked.
+#[test]
+fn doctor_flags_both_key_variables_set() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    let elsewhere = TempDir::new().unwrap();
+    let key_path = elsewhere.path().join("murk.key");
+    fs::write(&key_path, &key).unwrap();
+
+    murk(&dir, &key)
+        .env("MURK_KEY_FILE", &key_path)
+        .args(["doctor", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "MURK_KEY and MURK_KEY_FILE are both set",
+        ))
+        .stderr(predicate::str::contains("unset one of them"));
+}
+
+// The auto-discovered key is looked up for the vault the user selected, not
+// `.murk`. HOME is the repo here, so the stored key sits inside the tree.
+#[test]
+fn doctor_checks_auto_discovered_key_for_selected_vault() {
+    let dir = TempDir::new().unwrap();
+    murk_bin(dir.path())
+        .current_dir(dir.path())
+        .args(["init", "--vault", "other.murk"])
+        .write_stdin("testuser\n")
+        .assert()
+        .success();
+
+    murk_bin(dir.path())
+        .current_dir(dir.path())
+        .args(["doctor", "--vault", "other.murk"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("is inside the working tree"));
 }
 
 #[test]

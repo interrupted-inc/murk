@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: murk contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 SHELL := /bin/bash
 MURK := $(CURDIR)/target/release/murk
 MUSL_TARGET := x86_64-unknown-linux-musl

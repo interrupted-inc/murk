@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Vault save path: re-encrypt only what changed, rebuild the meta blob, and
 //! re-MAC / re-sign it so the on-disk vault stays integrity-anchored.
 

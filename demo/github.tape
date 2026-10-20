@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: murk contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 # GitHub demo — onboard a teammate via GitHub SSH keys
 #
 # Shows: murk authorize github:username fetches SSH keys automatically,
