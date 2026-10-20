@@ -73,6 +73,14 @@ The maintainer cuts a release in three steps:
 
 The tag starts [`.github/workflows/release.yaml`](.github/workflows/release.yaml). Its `preflight` job refuses to release unless the tagged commit is on `main`, reached `main` through a merged pull request, and `main`'s branch protection matches the release baseline. The workflow then builds, attests and publishes the release. The npm and PyPI packages are published from the same tag. [VERIFYING.md](VERIFYING.md) shows how to verify each release channel.
 
+### Repositories
+
+The project is made up of these three repositories, all maintained by the maintainer above:
+
+- [interrupted-sh/murk](https://github.com/interrupted-sh/murk) (this repository): the CLI, the Rust library, the Python and Node bindings, the bb plugin (`integrations/bb/`) and the docs site (`docs-site/`). Active, pre-1.0.
+- [interrupted-sh/murk-action](https://github.com/interrupted-sh/murk-action): the GitHub Action that decrypts murk secrets into a CI job's environment. Active, published on the [GitHub Marketplace](https://github.com/marketplace/actions/murk-action) as `interrupted-sh/murk-action@v1`.
+- [interrupted-sh/homebrew-murk](https://github.com/interrupted-sh/homebrew-murk): the Homebrew tap. Active. The `homebrew` job in [`.github/workflows/release.yaml`](.github/workflows/release.yaml) updates its formula automatically on each release.
+
 ## Developer Certificate of Origin
 
 By contributing, you certify that your contribution is your original work or you have the right to submit it under the project's license, per the [Developer Certificate of Origin](https://developercertificate.org/). This is asserted by the act of submitting a pull request.
