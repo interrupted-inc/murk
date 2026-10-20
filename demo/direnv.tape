@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: murk contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 # Direnv integration — secrets automatically loaded in your shell
 
 Output demo/direnv.gif

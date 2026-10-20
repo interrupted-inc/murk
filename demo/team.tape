@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: murk contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 # Team demo — scoped overrides, onboarding a new member via git
 #
 # Shows: murk info, scoped secrets, authorize, git push/pull workflow,

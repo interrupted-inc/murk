@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Node.js/TypeScript bindings for murk via napi-rs.
 //!
 //! ```typescript

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use bech32::{Bech32, Hrp};
 use zeroize::Zeroizing;
 

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: murk contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 # One-command version bump across every place murk's version lives, so the
 # manual multi-file edit that let node/package-lock.json drift can't recur.
 #

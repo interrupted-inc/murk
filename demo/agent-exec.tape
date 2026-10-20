@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: murk contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 # Agent exec demo — run the tests with a secret, without handing over the key.
 # `murk agent exec` clears the environment, strips MURK_KEY, and injects only
 # the keys named with --only into the child process.

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: murk contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 # Fix RustSec advisories in Cargo.lock and fuzz/Cargo.lock with the smallest
 # updates that clear them, then verify the result.
 #

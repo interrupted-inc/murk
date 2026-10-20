@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Process hardening: best-effort defense-in-depth measures.
 
 /// Disable core dumps for this process.

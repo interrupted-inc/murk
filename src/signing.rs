@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Ed25519 signatures over the vault — integrity against an active attacker
 //! with write access to the repo.
 //!

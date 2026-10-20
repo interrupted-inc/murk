@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: murk contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 # Agent connect demo — the agent gets a scoped grant, never your key.
 # `murk agent connect` mints a grant that reads only the named secrets and
 # writes the editor's MCP entry pointing at the grant's key file (a path,

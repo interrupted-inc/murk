@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Computed codenames for vault files.
 //!
 //! Deterministically derives a memorable name (e.g. "breezy-mocha-goblin")

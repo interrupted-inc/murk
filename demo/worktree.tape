@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: murk contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 # Worktree demo — a fresh worktree needs no .env.
 # The vault is committed, so it arrives with the checkout. The key was never
 # in the repo: murk resolves it from a sibling checkout of the same repo,
