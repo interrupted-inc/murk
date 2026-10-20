@@ -106,11 +106,12 @@ fn circle_json_names_recipients_and_self_only_with_a_key() {
 
     // A HOME with no stored key, and cwd's .env is not a trusted key source.
     let keyless_home = TempDir::new().unwrap();
-    let without_key = stdout_json(
-        murk_bin(keyless_home.path())
-            .current_dir(dir.path())
-            .args(["circle", "--json", "--vault", "test.murk"]),
-    );
+    let without_key = stdout_json(murk_bin(keyless_home.path()).current_dir(dir.path()).args([
+        "circle",
+        "--json",
+        "--vault",
+        "test.murk",
+    ]));
     for pk in [&alice, &bob] {
         assert_eq!(
             entry(&without_key, pk),
@@ -201,7 +202,15 @@ fn group_membership_lifecycle() {
         .failure();
 
     murk(&dir, &alice_key)
-        .args(["group", "add", "prod", "--member", "bob", "--vault", "test.murk"])
+        .args([
+            "group",
+            "add",
+            "prod",
+            "--member",
+            "bob",
+            "--vault",
+            "test.murk",
+        ])
         .assert()
         .success()
         .stderr(predicate::str::contains("added bob to group prod"));
@@ -214,7 +223,15 @@ fn group_membership_lifecycle() {
     // Adding again changes nothing.
     let before = fs::read_to_string(dir.path().join("test.murk")).unwrap();
     murk(&dir, &alice_key)
-        .args(["group", "add", "prod", "--member", "bob", "--vault", "test.murk"])
+        .args([
+            "group",
+            "add",
+            "prod",
+            "--member",
+            "bob",
+            "--vault",
+            "test.murk",
+        ])
         .assert()
         .success()
         .stderr(predicate::str::contains("bob is already in group prod"));
@@ -235,11 +252,27 @@ fn group_membership_lifecycle() {
         .stderr(predicate::str::contains("* testuser").and(predicate::str::contains("  bob")));
 
     murk(&dir, &alice_key)
-        .args(["group", "rm", "prod", "--member", "bob", "--vault", "test.murk"])
+        .args([
+            "group",
+            "rm",
+            "prod",
+            "--member",
+            "bob",
+            "--vault",
+            "test.murk",
+        ])
         .assert()
         .success();
     murk(&dir, &alice_key)
-        .args(["group", "rm", "prod", "--member", "bob", "--vault", "test.murk"])
+        .args([
+            "group",
+            "rm",
+            "prod",
+            "--member",
+            "bob",
+            "--vault",
+            "test.murk",
+        ])
         .assert()
         .success()
         .stderr(predicate::str::contains("bob is not in group prod"));
@@ -249,7 +282,9 @@ fn group_membership_lifecycle() {
         .args(["group", "rm", "prod", "--vault", "test.murk"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("still has 1 secret(s) assigned (PROD_DB)"));
+        .stderr(predicate::str::contains(
+            "still has 1 secret(s) assigned (PROD_DB)",
+        ));
     murk(&dir, &alice_key)
         .args(["rm", "PROD_DB", "--vault", "test.murk"])
         .assert()
@@ -325,7 +360,9 @@ fn init_refuses_to_overwrite_dotenv_key_by_default() {
         .write_stdin("testuser\n\n")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Overwrite? [y/N]").and(predicate::str::contains("Aborted.")));
+        .stderr(
+            predicate::str::contains("Overwrite? [y/N]").and(predicate::str::contains("Aborted.")),
+        );
     assert_eq!(
         fs::read_to_string(&env_path).unwrap(),
         "MURK_KEY=AGE-SECRET-KEY-EXISTING\n"
@@ -347,9 +384,12 @@ fn ci_hint_fires_only_for_the_auto_discovered_personal_key() {
 
     let get = |configure: &dyn Fn(&mut assert_cmd::Command)| {
         let mut cmd = murk_bin(dir.path());
-        cmd.current_dir(dir.path())
-            .env("CI", "true")
-            .args(["get", "TOKEN", "--vault", "test.murk"]);
+        cmd.current_dir(dir.path()).env("CI", "true").args([
+            "get",
+            "TOKEN",
+            "--vault",
+            "test.murk",
+        ]);
         configure(&mut cmd);
         let out = cmd.assert().success().stdout("v\n");
         String::from_utf8(out.get_output().stderr.clone()).unwrap()
@@ -357,7 +397,8 @@ fn ci_hint_fires_only_for_the_auto_discovered_personal_key() {
 
     let auto = get(&|_| {});
     assert_eq!(
-        auto.matches("CI is decrypting with your personal key").count(),
+        auto.matches("CI is decrypting with your personal key")
+            .count(),
         1,
         "{auto}"
     );
@@ -441,11 +482,12 @@ fn signature_downgrade_warns_until_the_next_write() {
 fn signer_pinning_off_reports_what_it_cannot_check() {
     let (dir, key) = merged_unsigned_vault();
     let read = || {
-        stderr_of(
-            murk(&dir, &key)
-                .env("MURK_NO_SIGNER_PIN", "1")
-                .args(["get", "OURS", "--vault", "test.murk"]),
-        )
+        stderr_of(murk(&dir, &key).env("MURK_NO_SIGNER_PIN", "1").args([
+            "get",
+            "OURS",
+            "--vault",
+            "test.murk",
+        ]))
     };
 
     let unsigned = read();
@@ -501,7 +543,15 @@ fn rotate_list_reports_each_rotation_problem() {
 
     for name in ["STALE", "UNDATED"] {
         murk(&dir, &key)
-            .args(["describe", name, "d", "--rotate-every", "30d", "--vault", "test.murk"])
+            .args([
+                "describe",
+                name,
+                "d",
+                "--rotate-every",
+                "30d",
+                "--vault",
+                "test.murk",
+            ])
             .assert()
             .success();
     }
@@ -509,7 +559,15 @@ fn rotate_list_reports_each_rotation_problem() {
         .format("%Y-%m-%d")
         .to_string();
     murk(&dir, &key)
-        .args(["describe", "SOON", "d", "--expires", &soon, "--vault", "test.murk"])
+        .args([
+            "describe",
+            "SOON",
+            "d",
+            "--expires",
+            &soon,
+            "--vault",
+            "test.murk",
+        ])
         .assert()
         .success();
 
@@ -570,14 +628,27 @@ fn agent_exec_sh(script: &str) -> (TempDir, std::process::Command) {
         .env("XDG_RUNTIME_DIR", dir.path())
         .env("MURK_KEY", &key)
         .args([
-            "agent", "exec", "--only", "DB_URL", "--vault", "test.murk", "--", "sh", "-c", script,
+            "agent",
+            "exec",
+            "--only",
+            "DB_URL",
+            "--vault",
+            "test.murk",
+            "--",
+            "sh",
+            "-c",
+            script,
         ]);
     (dir, cmd)
 }
 
 /// Wait up to `secs` for `child`, killing it and failing on timeout.
 #[cfg(unix)]
-fn wait_bounded(child: &mut std::process::Child, secs: u64, what: &str) -> std::process::ExitStatus {
+fn wait_bounded(
+    child: &mut std::process::Child,
+    secs: u64,
+    what: &str,
+) -> std::process::ExitStatus {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
     loop {
         if let Some(status) = child.try_wait().unwrap() {
@@ -596,9 +667,8 @@ fn wait_bounded(child: &mut std::process::Child, secs: u64, what: &str) -> std::
 #[cfg(unix)]
 #[test]
 fn agent_exec_does_not_echo_a_childs_own_signal_back() {
-    let (_dir, mut cmd) = agent_exec_sh(
-        "trap 'echo echoed; exit 9' TERM; kill -TERM $PPID; sleep 0.5; echo done",
-    );
+    let (_dir, mut cmd) =
+        agent_exec_sh("trap 'echo echoed; exit 9' TERM; kill -TERM $PPID; sleep 0.5; echo done");
     let out = cmd.output().unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout), "done\n");
     assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
@@ -613,9 +683,8 @@ fn agent_exec_closes_childs_pipe_when_its_reader_goes_away() {
     use std::io::{BufRead, BufReader};
     use std::process::Stdio;
 
-    let (_dir, mut cmd) = agent_exec_sh(
-        "trap '' PIPE; echo ready; while echo line; do :; done; exit 3",
-    );
+    let (_dir, mut cmd) =
+        agent_exec_sh("trap '' PIPE; echo ready; while echo line; do :; done; exit 3");
     let mut murk_proc = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -625,6 +694,10 @@ fn agent_exec_closes_childs_pipe_when_its_reader_goes_away() {
     assert_eq!(lines.next().unwrap().unwrap(), "ready");
     drop(lines);
 
-    let status = wait_bounded(&mut murk_proc, 10, "child kept writing after the reader left");
+    let status = wait_bounded(
+        &mut murk_proc,
+        10,
+        "child kept writing after the reader left",
+    );
     assert_eq!(status.code(), Some(3), "{status:?}");
 }
