@@ -241,25 +241,52 @@ pub(crate) fn cmd_doctor(vault_path: &str) {
         });
     }
 
-    // ── Key file is inside the working tree ──
+    // ── Key file is inside the working tree / readable by others ──
     // `murk init` puts the key file under ~/.config/murk/keys by default,
     // which is outside any repo. But MURK_KEY_FILE can be set to anywhere,
     // and a user who put it next to the vault has just opted in to
-    // committing their private key. Fail loudly.
-    if let Ok((_, source)) = murk_cli::resolve_key_with_source(".murk")
-        && let murk_cli::KeySource::EnvFile(path) | murk_cli::KeySource::Auto(path) = source
-        && let Ok(abs) = std::fs::canonicalize(&path)
-        && let Ok(repo) = std::fs::canonicalize(&cwd)
-        && abs.starts_with(&repo)
-    {
-        findings.push(Finding {
-            category: "keyfile",
-            message: format!("key file {} is inside the working tree", abs.display()),
-            fix: Some(
-                "move it out of the repo (e.g. ~/.config/murk/keys/) and update MURK_KEY_FILE"
-                    .into(),
-            ),
-        });
+    // committing their private key. Fail loudly. Locate the key without
+    // reading it: a key file murk refuses to load (loose permissions) is
+    // exactly the one these checks must still see.
+    // Both key variables set is a resolution error (no key loads), so it is a
+    // finding of its own. Its message is a summary line followed by hint
+    // lines, the last of which is the fix.
+    let located = match murk_cli::locate_key(vault_path) {
+        Ok(source) => source,
+        Err(msg) => {
+            let mut lines = msg.lines();
+            findings.push(Finding {
+                category: "key",
+                message: lines.next().unwrap_or_default().to_string(),
+                fix: lines.last().map(str::to_string),
+            });
+            None
+        }
+    };
+    if let Some(murk_cli::KeySource::EnvFile(path) | murk_cli::KeySource::Auto(path)) = located {
+        if let Ok(abs) = std::fs::canonicalize(&path)
+            && let Ok(repo) = std::fs::canonicalize(&cwd)
+            && abs.starts_with(&repo)
+        {
+            findings.push(Finding {
+                category: "keyfile",
+                message: format!("key file {} is inside the working tree", abs.display()),
+                fix: Some(
+                    "move it out of the repo (e.g. ~/.config/murk/keys/) and update MURK_KEY_FILE"
+                        .into(),
+                ),
+            });
+        }
+        if let Some(mode) = murk_cli::secret_file_loose_mode(&path) {
+            findings.push(Finding {
+                category: "perms",
+                message: format!(
+                    "key file {} is readable by others (mode {mode:o})",
+                    path.display()
+                ),
+                fix: Some(format!("chmod 600 {}", path.display())),
+            });
+        }
     }
 
     // ── Rotation / expiry drift ──

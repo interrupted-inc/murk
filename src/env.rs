@@ -32,24 +32,33 @@ pub(crate) fn reject_symlink(path: &Path, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The mode bits (`& 0o777`) of the file at `path` if it is readable by group
+/// or others, else `None`. Always `None` on non-Unix platforms, where file
+/// modes are not enforced, and when the file cannot be stat'd.
+pub fn secret_file_loose_mode(path: &Path) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let mode = fs::metadata(path).ok()?.mode();
+        (mode & WORLD_READABLE_MASK != 0).then_some(mode & 0o777)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
 /// Read a file, rejecting symlinks and (on Unix) group/world-readable permissions.
 /// Returns the file contents as a string.
 fn read_secret_file(path: &Path, label: &str) -> Result<String, String> {
     reject_symlink(path, label)?;
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if let Ok(meta) = fs::metadata(path) {
-            let mode = meta.mode();
-            if mode & WORLD_READABLE_MASK != 0 {
-                return Err(format!(
-                    "{label} is readable by others (mode {:o}). Run: chmod 600 {}",
-                    mode & 0o777,
-                    path.display()
-                ));
-            }
-        }
+    if let Some(mode) = secret_file_loose_mode(path) {
+        return Err(format!(
+            "{label} is readable by others (mode {mode:o}). Run: chmod 600 {}",
+            path.display()
+        ));
     }
 
     fs::read_to_string(path).map_err(|e| format!("cannot read {label}: {e}"))
@@ -162,15 +171,7 @@ pub fn resolve_key_with_source(vault_path: &str) -> Result<(SecretString, KeySou
         }
         None => {}
     }
-    // Auto-discovery of the operator's stored key. Disabled in strict mode (an
-    // explicit MURK_STRICT, or an agent context via MURK_AGENT) so an agent never
-    // silently falls back to the operator's personal key in ~/.config/murk/keys —
-    // it must present an explicit MURK_KEY/MURK_KEY_FILE (its grant key) or fail
-    // closed. `murk agent exec` sets MURK_AGENT=1 and MURK_STRICT=1 for the child, so this holds
-    // without the agent having to opt in.
-    if !crate::hardening::strict_mode()
-        && let Some(path) = discover_key_file(vault_path)
-    {
+    if let Some(path) = auto_key_file(vault_path) {
         let contents = read_secret_file(&path, "key file")?;
         return Ok((SecretString::from(contents), KeySource::Auto(path)));
     }
@@ -186,6 +187,39 @@ pub fn resolve_key_with_source(vault_path: &str) -> Result<(SecretString, KeySou
         "a key in .env needs `direnv allow` — murk does not read .env itself",
     ]
     .join("\n"))
+}
+
+/// Where [`resolve_key_with_source`] would take the key from for `vault_path`,
+/// without reading it — `Ok(None)` when no source is configured, and the same
+/// error as the resolver when both key variables are set (see [`env_key`]). A
+/// file source is reported even when the file is missing, unreadable or has
+/// loose permissions, so callers can inspect its location (e.g. `murk doctor`'s
+/// inside-the-repo check) independently of whether the key itself would load.
+pub fn locate_key(vault_path: &str) -> Result<Option<KeySource>, String> {
+    match env_key()? {
+        Some(EnvKey::Inline(k)) => {
+            // Only the source matters here; wipe the key material on drop.
+            drop(Zeroizing::new(k));
+            Ok(Some(KeySource::EnvVar))
+        }
+        Some(EnvKey::File(path)) => Ok(Some(KeySource::EnvFile(path))),
+        None => Ok(auto_key_file(vault_path).map(KeySource::Auto)),
+    }
+}
+
+/// The operator's stored key file for `vault_path`, if auto-discovery is on.
+///
+/// Auto-discovery is disabled in strict mode (an explicit MURK_STRICT, or an
+/// agent context via MURK_AGENT) so an agent never silently falls back to the
+/// operator's personal key in ~/.config/murk/keys — it must present an explicit
+/// MURK_KEY/MURK_KEY_FILE (its grant key) or fail closed. `murk agent exec` sets
+/// MURK_AGENT=1 and MURK_STRICT=1 for the child, so this holds without the agent
+/// having to opt in.
+fn auto_key_file(vault_path: &str) -> Option<std::path::PathBuf> {
+    if crate::hardening::strict_mode() {
+        return None;
+    }
+    discover_key_file(vault_path)
 }
 
 /// Resolve the secret key for a specific vault.
