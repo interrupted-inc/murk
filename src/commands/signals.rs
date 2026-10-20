@@ -107,8 +107,7 @@ pub(crate) fn wait_exited(pid: u32) {
                 libc::WEXITED | libc::WNOWAIT,
             )
         };
-        if rc == 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
-        {
+        if rc == 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
             break;
         }
     }

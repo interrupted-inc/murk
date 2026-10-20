@@ -26,9 +26,9 @@
 //!
 //! The masking is an accident guard, not a boundary: see `murk_cli::mask`.
 
+use super::die;
 #[cfg(unix)]
 use super::signals;
-use super::die;
 use murk_cli::mask::Masker;
 use std::io::{self, Read, Write};
 use std::process::{self, Command, ExitStatus, Stdio};

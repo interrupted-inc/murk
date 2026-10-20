@@ -257,7 +257,9 @@ fn group_alive(pgid: libc::pid_t) -> bool {
 #[cfg(unix)]
 fn terminal() -> Option<libc::c_int> {
     // SAFETY: isatty only inspects the descriptor.
-    [0, 1, 2].into_iter().find(|&fd| unsafe { libc::isatty(fd) } == 1)
+    [0, 1, 2]
+        .into_iter()
+        .find(|&fd| unsafe { libc::isatty(fd) } == 1)
 }
 
 /// Whether murk's process group owns the terminal (murk is a foreground job).

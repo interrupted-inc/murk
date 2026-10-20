@@ -330,8 +330,15 @@ fn signal_waits_for_the_whole_editor_tree() {
         std::thread::sleep(Duration::from_millis(2500));
         let left: Vec<_> = fs::read_dir(&f.scratch).unwrap().collect();
         reap(&child);
-        assert_eq!(status.signal(), Some(SIGTERM), "group {to_group}: {status:?}");
-        assert!(left.is_empty(), "group {to_group}: plaintext came back: {left:?}");
+        assert_eq!(
+            status.signal(),
+            Some(SIGTERM),
+            "group {to_group}: {status:?}"
+        );
+        assert!(
+            left.is_empty(),
+            "group {to_group}: plaintext came back: {left:?}"
+        );
         f.assert_value(VALUE);
     }
 }
