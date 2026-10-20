@@ -99,7 +99,7 @@ The project is made up of these three repositories, all maintained by the mainta
 
 - [interrupted-sh/murk](https://github.com/interrupted-sh/murk) (this repository): the CLI, the Rust library, the Python and Node bindings, the bb plugin (`integrations/bb/`) and the docs site (`docs-site/`). Active, pre-1.0.
 - [interrupted-sh/murk-action](https://github.com/interrupted-sh/murk-action): the GitHub Action that decrypts murk secrets into a CI job's environment. Active, published on the [GitHub Marketplace](https://github.com/marketplace/actions/murk-action) as `interrupted-sh/murk-action@v1`.
-- [interrupted-sh/homebrew-murk](https://github.com/interrupted-sh/homebrew-murk): the Homebrew tap. Active. The `homebrew` job in [`.github/workflows/release.yaml`](.github/workflows/release.yaml) updates its formula automatically on each release.
+- [interrupted-sh/homebrew-tap](https://github.com/interrupted-sh/homebrew-tap): the Homebrew tap for interrupted.sh tools. Active. The `homebrew` job in [`.github/workflows/release.yaml`](.github/workflows/release.yaml) updates `Formula/murk.rb` on each release.
 
 ## Developer Certificate of Origin
 

@@ -5,7 +5,7 @@ You've been invited to a project that uses murk for secrets. Here's how to get s
 ## 1. Install murk
 
 ```bash
-brew tap interrupted-sh/murk && brew install murk
+brew install interrupted-sh/tap/murk
 ```
 
 Or: `cargo install murk-cli`, `pip install murk-secrets`, or download from [GitHub Releases](https://github.com/interrupted-sh/murk/releases).
