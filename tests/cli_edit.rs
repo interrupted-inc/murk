@@ -139,6 +139,20 @@ echo new-value > "$2""#,
         .stderr(predicate::str::contains("updated SECRET"));
     f.assert_no_leftover();
     f.assert_value("new-value");
+
+    // A leading variable assignment, which git also accepts.
+    let f = Fixture::new();
+    let editor = f.script(
+        "with-env.sh",
+        r#"[ "$MARK" = "1" ] || exit 3
+echo marked-value > "$1""#,
+    );
+    f.edit(&format!("MARK=1 {editor}"))
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("updated SECRET"));
+    f.assert_no_leftover();
+    f.assert_value("marked-value");
 }
 
 #[test]
@@ -289,6 +303,29 @@ fn interrupt_to_process_group_leaves_no_plaintext() {
     }
 }
 
+/// An editor that handles Ctrl-C (vim does) keeps running, and its save
+/// still counts, even where `sh` stays around as the editor's parent.
+#[test]
+fn interrupt_handled_by_the_editor_does_not_end_the_edit() {
+    let f = Fixture::new();
+    let ready = f.dir.path().join("ready");
+    let editor = f.script(
+        "handles-int.sh",
+        &format!(
+            r#"trap 'echo after-interrupt > "$1"; exit 0' INT
+touch '{ready}.tmp' && mv '{ready}.tmp' '{ready}'
+sleep 30 & wait"#,
+            ready = ready.display()
+        ),
+    );
+    let child = spawn_edit(&f, (editor, ready));
+    kill(&format!("-{}", child.id()), "INT");
+    let status = wait_and_reap(child);
+    assert!(status.success(), "{status:?}");
+    f.assert_no_leftover();
+    f.assert_value("after-interrupt");
+}
+
 #[test]
 fn terminate_to_process_group_leaves_no_plaintext() {
     let f = Fixture::new();
@@ -330,8 +367,9 @@ kill -TERM $PPID
 sleep 0.2
 echo new-value > "$1""#,
                     );
+                    // `exec`, so the editor's parent is murk itself.
                     for _ in 0..5 {
-                        f.edit(&editor).assert().success();
+                        f.edit(&format!("exec {editor}")).assert().success();
                     }
                     f.assert_no_leftover();
                     f.assert_value("new-value");

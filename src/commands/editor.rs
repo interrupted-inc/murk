@@ -7,7 +7,10 @@
 //! Nothing here exits the process, so the wipe always runs. On Unix:
 //!
 //! - **The editor runs through `sh`**, as with git, so `EDITOR` may carry
-//!   arguments (`code --wait`); `exec` keeps the common case to one process.
+//!   arguments (`code --wait`) and leading assignments (`FOO=bar vim`).
+//!   Some shells (dash) keep running while the editor does, so the shell
+//!   catches SIGINT and SIGQUIT: Ctrl-C in an editor that handles it must
+//!   not end the shell, which murk would take for the editor exiting.
 //! - **It leads a process group of its own**, which murk hands the terminal
 //!   while it runs, the way a shell runs a job. Keys like Ctrl-C reach the
 //!   editor only, and a signal sent to murk (`kill <pid>`) is forwarded to the
@@ -139,6 +142,13 @@ fn run_editor(editor: &str, path: &Path) -> Result<ExitStatus, EditAbort> {
 #[cfg(unix)]
 const GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Run after the editor in the shell wrapper: if a SIGINT or SIGQUIT killed
+/// the editor, the shell dies of it too, so murk sees how the editor ended.
+#[cfg(unix)]
+const REPLAY_INTERRUPT: &str = "s=$?
+case $s in 130|131) trap - INT QUIT; kill -$((s - 128)) $$;; esac
+exit $s";
+
 /// Run the editor in its own process group (see the module docs) and return
 /// once the leader and everything left in its group have exited.
 #[cfg(unix)]
@@ -150,7 +160,9 @@ fn run_editor(editor: &str, path: &Path) -> Result<ExitStatus, EditAbort> {
 
     let mut cmd = process::Command::new("sh");
     cmd.arg("-c")
-        .arg(format!("exec {editor} \"$@\""))
+        .arg(format!(
+            "trap : INT QUIT\n{editor} \"$@\"\n{REPLAY_INTERRUPT}"
+        ))
         .arg("sh")
         .arg(path);
     strip_key(&mut cmd);
