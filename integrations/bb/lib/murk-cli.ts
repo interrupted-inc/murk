@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // Wrappers around the murk CLI for the operations the Node binding does not
 // expose: minting and revoking agent grants, and the value-free schema
 // (`murk agent plan`). All of these run server-side against a server-local

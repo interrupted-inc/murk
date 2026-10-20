@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! In-process MCP (Model Context Protocol) stdio server — `murk mcp`.
 //!
 //! Serves murk secrets to AI-agent harnesses (omp, Claude Code, Cursor, ...)

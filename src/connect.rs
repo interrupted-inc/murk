@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Wiring `murk mcp` into AI-editor MCP client configs — the engine behind
 //! `murk agent connect` / `murk agent disconnect`.
 //!

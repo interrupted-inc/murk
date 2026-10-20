@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Adversarial test fixtures.
 //!
 //! These tests simulate hostile inputs and malicious repo conditions.

@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: murk contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 # Install murk — https://github.com/interrupted-sh/murk
 # Usage: curl -fsSL https://raw.githubusercontent.com/interrupted-sh/murk/main/install.sh | sh
 set -e

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use super::*;
 use colored::Colorize;
 use murk_cli::{SecretTier, is_valid_key_name, types, vault};

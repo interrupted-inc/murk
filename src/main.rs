@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // Command handlers thread many CLI flags straight into the library's
 // multi-field secret calls, which the library already allows crate-wide
 // (see lib.rs). Apply the same policy to the binary crate.

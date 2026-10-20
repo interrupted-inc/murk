@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // Integration-style tests: real murk CLI (on PATH), real murk Node binding,
 // real temp vault, fake bb plugin host. HOME is redirected to a temp dir so
 // murk's stored operator key never touches the developer's real key directory.

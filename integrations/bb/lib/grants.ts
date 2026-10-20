@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // Grant metadata lives in the plugin's SQLite database; identity key material
 // NEVER does — keys are 0600 files under the plugin data dir, and only their
 // paths are recorded here.

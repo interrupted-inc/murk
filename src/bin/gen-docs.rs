@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Dev-only tool: render generated documentation artifacts from the clap model
 //! (and a small doc-only registry) so the documented surface cannot drift from
 //! the binary.

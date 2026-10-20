@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: murk contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 # Shared setup functions for murk VHS demos and Makefile tests.
 # Source this file — do not execute it directly.
 
