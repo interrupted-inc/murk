@@ -65,7 +65,10 @@ fn rm_secret(dir: &Path, key: &str, name: &str) {
 /// Commit `test.murk` as it stands in `dir` (unsigned).
 fn commit_vault(dir: &Path) {
     git(dir, &["add", "test.murk"]);
-    git(dir, &["-c", "commit.gpgsign=false", "commit", "-q", "-m", "vault"]);
+    git(
+        dir,
+        &["-c", "commit.gpgsign=false", "commit", "-q", "-m", "vault"],
+    );
 }
 
 // ── verify ──
@@ -141,7 +144,8 @@ fn verify_names_ssh_signer_authorized_with_commented_pubkey() {
     write_key_file(&bob_key_file, SSH_ED25519_SK);
     let bob = || {
         let mut cmd = murk_bin(dir.path());
-        cmd.current_dir(dir.path()).env("MURK_KEY_FILE", &bob_key_file);
+        cmd.current_dir(dir.path())
+            .env("MURK_KEY_FILE", &bob_key_file);
         cmd
     };
     bob()
@@ -190,7 +194,10 @@ fn verify_checks_last_vault_commit_signature() {
     let allowed = allowed.to_str().unwrap();
     git(dir.path(), &["config", "gpg.format", "ssh"]);
     git(dir.path(), &["config", "user.signingkey", signing_key]);
-    git(dir.path(), &["config", "gpg.ssh.allowedSignersFile", allowed]);
+    git(
+        dir.path(),
+        &["config", "gpg.ssh.allowedSignersFile", allowed],
+    );
     add_secret(dir.path(), &key, "B", "two");
     git(dir.path(), &["add", "test.murk"]);
     git(dir.path(), &["commit", "-q", "-S", "-m", "signed"]);
@@ -206,7 +213,11 @@ fn verify_checks_last_vault_commit_signature() {
     fs::write(&revoked, &pubkey).unwrap();
     git(
         dir.path(),
-        &["config", "gpg.ssh.revocationFile", revoked.to_str().unwrap()],
+        &[
+            "config",
+            "gpg.ssh.revocationFile",
+            revoked.to_str().unwrap(),
+        ],
     );
     murk(&dir, &key)
         .args(["verify", "--vault", "test.murk"])
@@ -456,8 +467,14 @@ fn setup_merge_driver_appends_to_existing_gitattributes() {
         .stderr(predicate::str::contains("appended to .gitattributes"));
 
     let attrs = fs::read_to_string(dir.path().join(".gitattributes")).unwrap();
-    assert!(attrs.contains("*.png binary"), "existing rule lost:\n{attrs}");
-    assert!(attrs.contains("*.murk merge=murk"), "entry missing:\n{attrs}");
+    assert!(
+        attrs.contains("*.png binary"),
+        "existing rule lost:\n{attrs}"
+    );
+    assert!(
+        attrs.contains("*.murk merge=murk"),
+        "entry missing:\n{attrs}"
+    );
 }
 
 // ── recover / restore ──
