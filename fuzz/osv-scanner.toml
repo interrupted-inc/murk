@@ -1,0 +1,14 @@
+# The fuzz workspace locks the same murk dependency tree as the root, so it
+# carries the same ignores; see ../osv-scanner.toml and ../deny.toml.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2023-0071"
+reason = """
+rsa Marvin Attack timing sidechannel; no fixed rsa release exists. Same
+dependency and reasoning as the root workspace (../deny.toml)."""
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0374"
+reason = """
+basic-toml is unmaintained; compile-time only inside age's i18n proc macros.
+Same dependency and reasoning as the root workspace (../deny.toml)."""

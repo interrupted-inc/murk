@@ -1,0 +1,19 @@
+# OSV-Scanner reads this file only for lockfiles in this directory, and
+# OpenSSF Scorecard's Vulnerabilities check honors it. fuzz/ and
+# lints/murk_lints/ have their own copies. Keep the ignores in step with
+# deny.toml and the cargo audit flags in .github/workflows/ci.yaml.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2023-0071"
+reason = """
+rsa Marvin Attack timing sidechannel; no fixed rsa release exists. Reachable
+through ssh-rsa recipients, but exploiting it needs many timed decryption
+queries against a server, and murk is a local CLI. Prefer ed25519 keys.
+Revisit when the rsa crate ships a fix."""
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0374"
+reason = """
+basic-toml is unmaintained, with no replacement release. Not shipped: it runs
+only at compile time inside age's i18n-embed proc macros, which parse age's own
+bundled i18n.toml and never murk input. Drop once age moves off i18n-config."""
