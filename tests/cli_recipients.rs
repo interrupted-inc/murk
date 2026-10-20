@@ -531,7 +531,7 @@ fn set_schema_field(vault: &Path, key: &str, field: &str, value: Option<&str>) {
 fn rotate_list_reports_each_rotation_problem() {
     let dir = TempDir::new().unwrap();
     let (key, _) = init_vault(&dir);
-    for name in ["STALE", "UNDATED", "SOON", "GARBLED"] {
+    for name in ["STALE", "UNDATED", "SOON"] {
         murk(&dir, &key)
             .args(["add", name, "--vault", "test.murk"])
             .write_stdin("v\n")
@@ -574,11 +574,11 @@ fn rotate_list_reports_each_rotation_problem() {
         .assert()
         .success();
 
-    // Time passing, an older vault, and a hand edit gone wrong.
+    // Time passing, and an older vault. (A garbled timestamp is refused when
+    // the vault loads, so rotate --list never sees one.)
     let vault = dir.path().join("test.murk");
     set_schema_field(&vault, "STALE", "updated", Some("2020-01-01T00:00:00Z"));
     set_schema_field(&vault, "UNDATED", "updated", None);
-    set_schema_field(&vault, "GARBLED", "expires_at", Some("next tuesday"));
 
     let out = murk_bin(dir.path())
         .current_dir(dir.path())
@@ -586,7 +586,7 @@ fn rotate_list_reports_each_rotation_problem() {
         .assert()
         .code(1);
     let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
-    assert!(stderr.contains("4 issues in rotation"), "{stderr}");
+    assert!(stderr.contains("3 issues in rotation"), "{stderr}");
     assert!(
         stderr.contains("STALE is ")
             && stderr.contains("d overdue for rotation (30d interval, last changed 2020-01-01)")
@@ -601,10 +601,6 @@ fn rotate_list_reports_each_rotation_problem() {
     assert!(
         stderr.contains(&format!("SOON expires in 2d ({soon})"))
             || stderr.contains(&format!("SOON expires in 3d ({soon})")),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains("GARBLED has an unparseable expires_at timestamp (next tuesday)"),
         "{stderr}"
     );
 }
