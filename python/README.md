@@ -12,7 +12,7 @@ You need the [murk CLI](https://github.com/interrupted-sh/murk) to create and ma
 
 ```bash
 # Install the CLI first
-brew tap interrupted-sh/murk && brew install murk
+brew install interrupted-sh/tap/murk
 
 # Initialize a vault and add secrets
 murk init
