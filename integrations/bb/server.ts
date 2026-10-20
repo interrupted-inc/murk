@@ -367,14 +367,13 @@ export default async function plugin(bb: BbPluginApi) {
   // MURK_KEY_FILE gets a path that can never exist rather than "": some
   // providers (omp) refill an empty variable from dotenv files in the launch
   // dir and the home dir, where `murk init` leaves a MURK_KEY_FILE pointer at
-  // the operator key, and murk honours an explicit key file even in an agent
-  // context. MURK_KEY stays "" (murk skips an empty one): it outranks
-  // MURK_KEY_FILE, so any other value would break a grant key handed to a
-  // child through MURK_KEY_FILE alone, such as a `murk agent connect` MCP
-  // entry. A guardrail, not a sandbox: the agent runs as the operator's user.
+  // the operator key. MURK_KEY is blanked, which masks an inherited one; if a
+  // dotenv file refills it with a legacy inline key, murk refuses MURK_KEY and
+  // MURK_KEY_FILE set together, so that fails closed too. A child handed a
+  // grant through MURK_KEY_FILE alone (a `murk agent connect` MCP entry) still
+  // works. A guardrail, not a sandbox: the agent runs as the operator's user.
   const agentContextEnv = [
     { name: "MURK_AGENT", value: "1", reason: "Run murk as an agent context: no fallback to the operator's stored key" },
-    { name: "MURK_STRICT", value: "1", reason: "Keep murk releases that predate MURK_AGENT strict too" },
     { name: "MURK_KEY", value: "", reason: "Blank any operator key inherited from the host environment" },
     {
       name: "MURK_KEY_FILE",
@@ -641,8 +640,9 @@ export default async function plugin(bb: BbPluginApi) {
   // already knows the primary host (bb binds bb.sdk before loading plugins).
   void primaryHostId();
 
-  // Start every provider as a murk agent context (see coverProviders).
-  void coverProviders();
+  // Start every provider as a murk agent context (see coverProviders). Awaited
+  // so no thread launches before the contributions exist.
+  await coverProviders();
 
   bb.log.info("murk plugin loaded");
 }

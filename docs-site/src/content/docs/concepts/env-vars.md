@@ -15,7 +15,7 @@ murk is configured almost entirely through environment variables, so it composes
 | `MURK_KEY_FILE` | Path to a file holding your private key: a raw age key, an SSH PEM key, or an age plugin identity file (with a `# Recipient:` or `# public key:` header). `murk init` writes this to `.env` for direnv to pick up. |
 | `MURK_VAULT` | Vault filename, defaulting to `.murk`. Equivalent to passing `--vault` on every command. |
 
-murk resolves your identity in order: an explicit `MURK_KEY`, then `MURK_KEY_FILE`, then an automatic lookup at `~/.config/murk/keys/<vault-hash>` (the file `murk init` writes). That last, automatic step is disabled whenever strict mode is active (see below), so an agent context always needs an explicit key of its own.
+murk resolves your identity from `MURK_KEY` or `MURK_KEY_FILE`, then from an automatic lookup at `~/.config/murk/keys/<vault-hash>` (the file `murk init` writes). Set one of the two variables, not both: murk refuses to run when both are non-empty rather than guess which key you meant, and an empty value counts as unset. The automatic step is disabled whenever strict mode is active (see below), so an agent context always needs an explicit key of its own.
 
 `.env` itself is a write-only convenience: `murk init` populates it with a `MURK_KEY_FILE` reference so direnv (or `source .env`) can export it, but murk never reads `.env` directly at runtime. Reading it at runtime would let a vault copied into another repo silently borrow whatever key that directory's `.env` happened to reference. murk avoids that by trusting only the process environment and the vault-keyed automatic lookup.
 

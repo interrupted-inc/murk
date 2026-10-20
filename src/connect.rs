@@ -7,8 +7,10 @@
 //! reserialize the whole document: we surgically upsert (or remove) only the
 //! `murk` entry, leaving every other server, key, and comment byte-for-byte
 //! intact. The only thing written into a config is a `MURK_KEY_FILE` *path* plus
-//! `MURK_AGENT=1` — never inline key material — so even a committed config leaks
-//! nothing but a machine-local path.
+//! `MURK_AGENT=1` and an empty `MURK_KEY` — never inline key material — so even a
+//! committed config leaks nothing but a machine-local path. The empty `MURK_KEY`
+//! masks one the client may pass down from its own environment: murk refuses
+//! both variables set, and an empty one counts as unset.
 
 use crate::error::MurkError;
 use std::path::{Path, PathBuf};
@@ -46,6 +48,7 @@ fn render_value(spec: &ServerSpec, member_indent: &str, unit: &str) -> String {
     let _ = writeln!(out, "{i1}\"args\": [{}],", args.join(", "));
     let _ = writeln!(out, "{i1}\"env\": {{");
     let _ = writeln!(out, "{i2}\"MURK_KEY_FILE\": {},", quote(&spec.key_file));
+    let _ = writeln!(out, "{i2}\"MURK_KEY\": \"\",");
     let _ = writeln!(out, "{i2}\"MURK_AGENT\": \"1\"");
     let _ = writeln!(out, "{i1}}}");
     let _ = write!(out, "{member_indent}}}");
@@ -730,6 +733,7 @@ fn render_toml_member(prefix: &str, server: &str, spec: &ServerSpec) -> String {
     let _ = writeln!(out);
     let _ = writeln!(out, "[{prefix}.{server}.env]");
     let _ = writeln!(out, "MURK_KEY_FILE = {}", quote(&spec.key_file));
+    let _ = writeln!(out, "MURK_KEY = {}", quote(""));
     let _ = writeln!(out, "MURK_AGENT = {}", quote("1"));
     out
 }
@@ -861,6 +865,9 @@ mod tests {
             v["mcpServers"]["murk"]["env"]["MURK_KEY_FILE"],
             "/home/alice/.config/murk/agent-keys/abc-cursor"
         );
+        // Masks a MURK_KEY the client passes down, which murk would otherwise
+        // refuse alongside the grant's MURK_KEY_FILE.
+        assert_eq!(v["mcpServers"]["murk"]["env"]["MURK_KEY"], "");
     }
 
     #[test]
@@ -1055,6 +1062,7 @@ mod tests {
              \n\
              [mcp_servers.murk.env]\n\
              MURK_KEY_FILE = \"/home/alice/.config/murk/agent-keys/abc-codex\"\n\
+             MURK_KEY = \"\"\n\
              MURK_AGENT = \"1\"\n"
         );
     }

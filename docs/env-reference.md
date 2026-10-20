@@ -8,7 +8,7 @@ The environment variables murk reads, and the CLI flags they mirror where one ex
 
 | Variable | Description |
 | --- | --- |
-| `MURK_KEY` | Your raw age private key (`AGE-SECRET-KEY-1…`), inline. Rejected for hardware-plugin identity strings (`AGE-PLUGIN-…`) — use `MURK_KEY_FILE` for those. |
+| `MURK_KEY` | Your raw age private key (`AGE-SECRET-KEY-1…`), inline. Rejected for hardware-plugin identity strings (`AGE-PLUGIN-…`) — use `MURK_KEY_FILE` for those. Set this or `MURK_KEY_FILE`, not both: murk refuses both non-empty, and an empty value counts as unset. |
 | `MURK_KEY_FILE` | Path to a private-key file: a raw age key, an SSH PEM key, or an age plugin identity file. `murk init` writes this reference into `.env`. |
 | `MURK_VAULT` | Vault filename, defaulting to `.murk`. Equivalent to passing `--vault` on every command (the one variable in the clap model). |
 

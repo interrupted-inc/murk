@@ -1,5 +1,6 @@
-// Integration-style tests: real murk CLI (on PATH), real murk Node binding,
-// real temp vault, fake bb plugin host. HOME is redirected to a temp dir so
+// Integration-style tests: this repo's murk CLI (npm test builds it and puts it
+// first on PATH), real murk Node binding, real temp vault, fake bb plugin
+// host. HOME is redirected to a temp dir so
 // murk's stored operator key never touches the developer's real key directory.
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -194,9 +195,15 @@ describe("agent context env", () => {
     }
 
     // omp fills every unset or empty variable from dotenv files, where
-    // `murk init` leaves a MURK_KEY_FILE pointer at the operator key.
-    const dotenvRefill = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
-      env.MURK_KEY_FILE ? env : { ...env, MURK_KEY_FILE: operatorKeyFile };
+    // `murk init` leaves a MURK_KEY_FILE pointer at the operator key and an
+    // older murk left the key inline in MURK_KEY.
+    const dotenvRefill = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
+      const filled = { ...env };
+      for (const [name, value] of Object.entries({ MURK_KEY_FILE: operatorKeyFile, MURK_KEY: operatorKey })) {
+        if (!filled[name]) filled[name] = value;
+      }
+      return filled;
+    };
 
     for (const { id } of providerCatalog) {
       const agentEnv = await contributedEnv(id);
@@ -222,6 +229,31 @@ describe("agent context env", () => {
     });
     expect(errors).toEqual([]);
     expect(await contributedEnv("acp-late")).toMatchObject({ MURK_AGENT: "1" });
+  });
+
+  it("contributes before load resolves, even when the catalog answers late", async () => {
+    const slow = createFakePluginHost({
+      pluginId: "murk",
+      dataDir: path.join(tmpRoot, "bb-data-slow"),
+      agentSkillIds: ["murk"],
+      sdk: {
+        system: { config: async () => ({ primaryHostId: LOCAL_HOST }) },
+        providers: {
+          // Answers after other load work has had several turns to finish.
+          catalog: async () => {
+            for (let turn = 0; turn < 20; turn++) await Promise.resolve();
+            return [{ id: "acp-slow" }];
+          },
+        },
+      },
+    });
+    try {
+      await plugin(slow.bb);
+      const entries = await slow.harness.behavior.resolveProviderEnv("acp-slow", envContext);
+      expect(entries.map(({ name }) => name)).toContain("MURK_AGENT");
+    } finally {
+      await slow.harness.lifecycle.dispose();
+    }
   });
 });
 
