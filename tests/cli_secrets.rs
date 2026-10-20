@@ -84,7 +84,13 @@ fn group_and_scoped_together_is_refused_before_writing() {
 
     murk(&dir, &key)
         .args([
-            "add", "TOKEN", "--group", "prod", "--scoped", "--vault", "test.murk",
+            "add",
+            "TOKEN",
+            "--group",
+            "prod",
+            "--scoped",
+            "--vault",
+            "test.murk",
         ])
         .write_stdin("v\n")
         .assert()
@@ -154,10 +160,19 @@ fn import_into_group_is_readable_only_by_members() {
     fs::write(dir.path().join("in.env"), "DB=prod_db\n").unwrap();
 
     murk(&dir, &alice)
-        .args(["import", "in.env", "--group", "prod", "--vault", "test.murk"])
+        .args([
+            "import",
+            "in.env",
+            "--group",
+            "prod",
+            "--vault",
+            "test.murk",
+        ])
         .assert()
         .success()
-        .stderr(predicate::str::contains("imported 1 secret into group prod"));
+        .stderr(predicate::str::contains(
+            "imported 1 secret into group prod",
+        ));
 
     get_ok(&dir, &alice, "DB", "prod_db");
     get_fails(&dir, &carol, "DB", "prod_db");
@@ -165,7 +180,14 @@ fn import_into_group_is_readable_only_by_members() {
     // An unknown group is refused and nothing is imported.
     fs::write(dir.path().join("more.env"), "OTHER=x\n").unwrap();
     murk(&dir, &alice)
-        .args(["import", "more.env", "--group", "nope", "--vault", "test.murk"])
+        .args([
+            "import",
+            "more.env",
+            "--group",
+            "nope",
+            "--vault",
+            "test.murk",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("nope"));
@@ -302,7 +324,9 @@ fn rotate_list_reports_expired_keys() {
         .stdout(
             predicate::str::contains(r#""reason": "expired""#)
                 .and(predicate::str::contains(r#""key": "TOKEN""#))
-                .and(predicate::str::contains(r#""expired_at": "2020-01-01T23:59:59Z""#)),
+                .and(predicate::str::contains(
+                    r#""expired_at": "2020-01-01T23:59:59Z""#,
+                )),
         );
 }
 
@@ -354,7 +378,9 @@ fn export_json_emits_plaintext_map_and_respects_self_scope() {
         .assert()
         .success()
         .stdout(predicate::str::contains("nope").not())
-        .stderr(predicate::str::contains("withholding 1 key(s) not allowed by policy: FORBIDDEN"));
+        .stderr(predicate::str::contains(
+            "withholding 1 key(s) not allowed by policy: FORBIDDEN",
+        ));
 
     // Nothing to withhold: no warning.
     murk(&dir, &key)
@@ -407,7 +433,10 @@ fn edit_single_key_scoped_overrides_without_touching_shared() {
 
     // The editor was handed the override, not the shared value.
     let seen = fs::read_to_string(&log).unwrap();
-    assert!(seen.contains("# Editing TOKEN (me)") && seen.ends_with("mine"), "{seen:?}");
+    assert!(
+        seen.contains("# Editing TOKEN (me)") && seen.ends_with("mine"),
+        "{seen:?}"
+    );
     get_ok(&dir, &alice, "TOKEN", "mine2");
     get_ok(&dir, &carol, "TOKEN", "shared");
 }
