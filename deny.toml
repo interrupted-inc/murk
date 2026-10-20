@@ -1,5 +1,8 @@
 [advisories]
 yanked = "warn"
+# Keep these ignores in step with osv-scanner.toml (root and fuzz/) and the
+# cargo audit flags in .github/workflows/ci.yaml. Scorecard's Vulnerabilities
+# check reads only the OSV config.
 ignore = [
     # rsa timing sidechannel (Marvin Attack) — no fix available upstream.
     # Reachable: murk accepts ssh-rsa recipients via `circle authorize`, `ssh:`,
