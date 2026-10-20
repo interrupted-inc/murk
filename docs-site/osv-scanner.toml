@@ -1,0 +1,11 @@
+[[IgnoredVulns]]
+id = "GHSA-rj75-hqrm-r3gf"
+ignoreUntil = 2026-12-31
+reason = """
+Fixed in the lockfile: postcss-selector-parser 6.1.5 carries the backported
+fix (release notes name this advisory), and @expressive-code/core pins
+postcss-nested ^6, so 7.1.6 is not reachable without a semver-major override.
+The advisory still lists only < 7.1.6 until github/advisory-database#10457
+lands. Build-time only: it parses expressive-code's own theme CSS, nothing
+user-supplied and nothing shipped to browsers. Remove this entry once the
+advisory range is corrected."""
