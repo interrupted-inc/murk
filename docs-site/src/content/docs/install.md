@@ -63,9 +63,10 @@ before the organization rename; see
 command that verifies them.
 
 npm, PyPI, and crates.io releases each have their own verification path (npm
-provenance, PEP 740 attestations, and signed release tags respectively). See
-[Verifying releases](/security/verifying/) for the full walkthrough across
-every distribution channel.
+provenance, PEP 740 attestations, and an attested `.crate` respectively), and
+release tags are SSH-signed. See [Verifying releases](/security/verifying/)
+for the full walkthrough across every distribution channel, including where to
+get the tag-signing key.
 
 ## Next steps
 

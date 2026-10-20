@@ -168,7 +168,7 @@ murk includes a git merge driver (`murk merge-driver`) that performs three-way m
 
 ## Supply chain
 
-Release binaries are built in GitHub Actions, checksummed (`SHA256SUMS`), and signed with Sigstore build provenance attestation ([SLSA Level 2](https://slsa.dev)). The npm and PyPI packages carry their own provenance. crates.io has no attestation support yet. `install.sh` downloads the archive and the checksums file, then verifies before extracting: it never executes downloaded code before verification. See [Verifying releases](/security/verifying/) for the full per-channel verification story.
+Release binaries are built in GitHub Actions, checksummed (`SHA256SUMS`), and signed with Sigstore build provenance attestation ([SLSA Level 2](https://slsa.dev)). The npm and PyPI packages carry their own provenance. The crates.io `.crate` is attested by the release workflow (releases after 0.12.0) and attached to the GitHub release. Earlier crates can be reproduced from the signed tag. `install.sh` downloads the archive and the checksums file, then verifies before extracting: it never executes downloaded code before verification. See [Verifying releases](/security/verifying/) for the full per-channel verification story.
 
 murk depends on [age](https://age-encryption.org/) (via the `age` crate) for all cryptography, plus standard Rust crates for CLI, serialization, and I/O. `cargo deny` checks for known advisories and license compliance in CI, and all CI actions are pinned to full SHA commit hashes. `Cargo.lock` is committed and used for reproducible builds (`--locked` in release workflows).
 
