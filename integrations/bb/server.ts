@@ -356,6 +356,53 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+  // ---- agent context for every provider ------------------------------------
+  // murk_get is the sanctioned path to secrets, but an agent's shell can still
+  // run `murk` itself. Outside an agent context murk falls back to the
+  // operator's stored key (~/.config/murk/keys, sibling git worktrees
+  // included), and an inherited MURK_KEY / MURK_KEY_FILE is the operator's
+  // identity outright. Every provider process therefore starts as an agent
+  // context with no usable key, so a direct `murk` call fails closed.
+  //
+  // MURK_KEY_FILE gets a path that can never exist rather than "": some
+  // providers (omp) refill an empty variable from dotenv files in the launch
+  // dir and the home dir, where `murk init` leaves a MURK_KEY_FILE pointer at
+  // the operator key. MURK_KEY is blanked, which masks an inherited one; if a
+  // dotenv file refills it with a legacy inline key, murk refuses MURK_KEY and
+  // MURK_KEY_FILE set together, so that fails closed too. A child handed a
+  // grant through MURK_KEY_FILE alone (a `murk agent connect` MCP entry) still
+  // works. A guardrail, not a sandbox: the agent runs as the operator's user.
+  const agentContextEnv = [
+    { name: "MURK_AGENT", value: "1", reason: "Run murk as an agent context: no fallback to the operator's stored key" },
+    { name: "MURK_KEY", value: "", reason: "Blank any operator key inherited from the host environment" },
+    {
+      name: "MURK_KEY_FILE",
+      value: "/dev/null/none",
+      reason: "Shadow any operator key file from the host environment or a dotenv file; this path can never exist",
+    },
+  ];
+  const coveredProviders = new Set<string>();
+
+  // Env contributions are keyed by exact provider id, so cover every provider
+  // in the catalog: at load, and again whenever a thread is created, which
+  // picks up providers registered after this plugin (boot order, a new custom
+  // ACP agent).
+  async function coverProviders(): Promise<void> {
+    let ids: string[];
+    try {
+      ids = (await bb.sdk.providers.catalog()).map((provider) => provider.id);
+    } catch (error) {
+      bb.log.warn(`could not list providers for murk agent context: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    for (const id of ids) {
+      if (coveredProviders.has(id)) continue;
+      coveredProviders.add(id);
+      bb.providers.experimental_contributeEnv(id, () => agentContextEnv);
+    }
+  }
+  bb.events.on("thread.created", () => coverProviders());
+
   // ---- delivered-file cleanup ----------------------------------------------
   bb.events.on("thread.idle", async ({ thread }) => {
     const deliveries = store.deliveriesFor(thread.id);
@@ -592,6 +639,10 @@ export default async function plugin(bb: BbPluginApi) {
   // Warm the local-host gate so the first thread resolution after load
   // already knows the primary host (bb binds bb.sdk before loading plugins).
   void primaryHostId();
+
+  // Start every provider as a murk agent context (see coverProviders). Awaited
+  // so no thread launches before the contributions exist.
+  await coverProviders();
 
   bb.log.info("murk plugin loaded");
 }

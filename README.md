@@ -418,7 +418,7 @@ If the plugin binary isn't on `$PATH`, murk fails with `age-plugin-yubikey unava
 
 **No BIP39 recovery for hardware identities.** The whole point of hardware-backed keys is that the raw key bytes never leave the device, so there are no bytes to encode as a recovery phrase. Instead, enroll a second hardware device at setup and add both pubkeys as recipients (`murk circle authorize <backup-pubkey>`) — if you lose one, the backup still decrypts.
 
-**`MURK_KEY` vs `MURK_KEY_FILE`.** Setting `MURK_KEY` to a raw `AGE-SECRET-KEY-1...` string in `.env` works, but the key is then plaintext on disk. Prefer `MURK_KEY_FILE` pointing at either a file under `~/.config/murk/keys/` (convenience) or a hardware-backed plugin identity file (strongly recommended for production).
+**`MURK_KEY` vs `MURK_KEY_FILE`.** Setting `MURK_KEY` to a raw `AGE-SECRET-KEY-1...` string in `.env` works, but the key is then plaintext on disk. Prefer `MURK_KEY_FILE` pointing at either a file under `~/.config/murk/keys/` (convenience) or a hardware-backed plugin identity file (strongly recommended for production). Set one, not both: murk refuses to run when both are non-empty, and treats an empty value as unset.
 
 ## License
 

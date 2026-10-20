@@ -303,8 +303,9 @@ murk agent connect cursor --only STRIPE_SECRET_KEY
 ```
 
 `connect` mints one scoped grant for the vault and writes each editor's
-project-local config, pointing at `murk mcp` with `MURK_KEY_FILE` and
-`MURK_AGENT=1`:
+project-local config, pointing at `murk mcp` with `MURK_KEY_FILE`,
+`MURK_AGENT=1`, and an empty `MURK_KEY` (murk refuses to run with both key
+variables set, so the entry masks one the editor passes down from your shell):
 
 | Editor | Config file | Format |
 | --- | --- | --- |
@@ -368,8 +369,8 @@ treat it like `murk agent exec`: a safe default, not a sandbox, with
 OS-level isolation the real boundary (see
 [Scoped agent grants](#scoped-agent-grants), above).
 For an editor murk doesn't wire automatically yet, add the same `murk mcp`
-entry (with `MURK_KEY_FILE` and `MURK_AGENT=1`) to that harness's MCP config
-by hand.
+entry (with `MURK_KEY_FILE`, `MURK_AGENT=1`, and an empty `MURK_KEY`) to that
+harness's MCP config by hand.
 
 ## Check the code an agent wrote
 

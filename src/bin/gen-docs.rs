@@ -69,7 +69,7 @@ const ENV_GROUPS: &[(&str, &[EnvVar])] = &[
         &[
             EnvVar {
                 name: "MURK_KEY",
-                summary: "Your raw age private key (`AGE-SECRET-KEY-1…`), inline. Rejected for hardware-plugin identity strings (`AGE-PLUGIN-…`) — use `MURK_KEY_FILE` for those.",
+                summary: "Your raw age private key (`AGE-SECRET-KEY-1…`), inline. Rejected for hardware-plugin identity strings (`AGE-PLUGIN-…`) — use `MURK_KEY_FILE` for those. Set this or `MURK_KEY_FILE`, not both: murk refuses both non-empty, and an empty value counts as unset.",
             },
             EnvVar {
                 name: "MURK_KEY_FILE",

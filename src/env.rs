@@ -74,10 +74,8 @@ const SECRET_FILE_MODE: u32 = 0o600;
 const WORLD_READABLE_MASK: u32 = 0o077;
 
 /// Resolve the secret key, checking in order:
-/// 1. `MURK_KEY` env var (explicit key)
-/// 2. `MURK_KEY_FILE` env var (path to key file)
-/// 3. `~/.config/murk/keys/<vault-hash>` (automatic lookup for default vault)
-/// 4. `.env` file in cwd (backward compat)
+/// 1. `MURK_KEY` or `MURK_KEY_FILE` env var (never both — see [`env_key`])
+/// 2. `~/.config/murk/keys/<vault-hash>` (automatic lookup for default vault)
 ///
 /// Returns the key wrapped in `SecretString` so it is zeroized on drop.
 pub fn resolve_key() -> Result<SecretString, String> {
@@ -106,12 +104,45 @@ impl KeySource {
     }
 }
 
+/// A key the environment names directly.
+enum EnvKey {
+    /// Inline key material from `MURK_KEY`.
+    Inline(String),
+    /// A key file path from `MURK_KEY_FILE`.
+    File(std::path::PathBuf),
+}
+
+/// Read `MURK_KEY` / `MURK_KEY_FILE`, treating an empty value as unset.
+///
+/// Setting both is an error rather than a precedence rule: a key that arrives
+/// from somewhere unexpected (a dotenv file a tool loads, an inherited shell
+/// variable) must not silently outrank or be outranked by the one the caller
+/// meant. Callers that hand a child a key in one variable blank the other.
+///
+/// This is the single place that reads the key environment variables — see
+/// `tests/invariants.rs`.
+fn env_key() -> Result<Option<EnvKey>, String> {
+    let key = env::var(ENV_MURK_KEY).ok().filter(|v| !v.is_empty());
+    let file = env::var(ENV_MURK_KEY_FILE).ok().filter(|v| !v.is_empty());
+    match (key, file) {
+        (Some(_), Some(_)) => Err([
+            "MURK_KEY and MURK_KEY_FILE are both set",
+            "murk will not pick one: they may name different keys",
+            "unset one of them (`unset MURK_KEY` or `unset MURK_KEY_FILE`)",
+        ]
+        .join("\n")),
+        (Some(k), None) => Ok(Some(EnvKey::Inline(k))),
+        (None, Some(path)) => Ok(Some(EnvKey::File(path.into()))),
+        (None, None) => Ok(None),
+    }
+}
+
 /// Resolve the secret key and report where it came from.
 ///
 /// Checks, in order:
-/// 1. `MURK_KEY` env var (explicit key)
-/// 2. `MURK_KEY_FILE` env var (path to a key file)
-/// 3. `~/.config/murk/keys/<hash-of-vault-path>`, for this checkout or a
+/// 1. `MURK_KEY` env var (explicit key) or `MURK_KEY_FILE` env var (path to a
+///    key file); setting both is an error (see [`env_key`])
+/// 2. `~/.config/murk/keys/<hash-of-vault-path>`, for this checkout or a
 ///    sibling git worktree of it (automatic lookup — see [`discover_key_file`])
 ///
 /// `.env` is **not** consulted at runtime. It is a write-only convenience that
@@ -120,19 +151,16 @@ impl KeySource {
 /// whichever key happened to be referenced in the current working directory's
 /// `.env` — a confused-deputy path that defeats per-vault key isolation.
 pub fn resolve_key_with_source(vault_path: &str) -> Result<(SecretString, KeySource), String> {
-    if let Some(k) = env::var(ENV_MURK_KEY).ok().filter(|k| !k.is_empty()) {
-        return Ok((SecretString::from(k), KeySource::EnvVar));
-    }
-    // File paths return full contents (not trimmed) so that plugin identity
-    // files — which contain a `# public key: age1...` header above an
-    // `AGE-PLUGIN-...-1...` pointer — round-trip intact through parse_identity.
-    if let Ok(path) = env::var(ENV_MURK_KEY_FILE) {
-        let p = std::path::Path::new(&path);
-        let contents = read_secret_file(p, "MURK_KEY_FILE")?;
-        return Ok((
-            SecretString::from(contents),
-            KeySource::EnvFile(p.to_path_buf()),
-        ));
+    match env_key()? {
+        Some(EnvKey::Inline(k)) => return Ok((SecretString::from(k), KeySource::EnvVar)),
+        // File paths return full contents (not trimmed) so that plugin identity
+        // files — which contain a `# public key: age1...` header above an
+        // `AGE-PLUGIN-...-1...` pointer — round-trip intact through parse_identity.
+        Some(EnvKey::File(path)) => {
+            let contents = read_secret_file(&path, "MURK_KEY_FILE")?;
+            return Ok((SecretString::from(contents), KeySource::EnvFile(path)));
+        }
+        None => {}
     }
     // Auto-discovery of the operator's stored key. Disabled in strict mode (an
     // explicit MURK_STRICT, or an agent context via MURK_AGENT) so an agent never
@@ -172,23 +200,20 @@ pub fn resolve_key_for_vault(vault_path: &str) -> Result<SecretString, String> {
 /// already-present identity instead of generating a new one, which is why it must
 /// ignore the stored key it would otherwise be about to create.
 ///
-/// Returns `Ok(None)` when neither variable is set. The value comes back in a
-/// `SecretString` (zeroized on drop) and is trimmed — init later writes it back
-/// as a single-line key file; the runtime path deliberately does not trim,
-/// to keep plugin identity files intact.
-///
-/// This is the single place, alongside [`resolve_key_with_source`], that reads
-/// the key environment variables — see `tests/invariants.rs`.
+/// Returns `Ok(None)` when neither variable is set, and an error when both are
+/// (see [`env_key`]). The value comes back in a `SecretString` (zeroized on
+/// drop) and is trimmed — init later writes it back as a single-line key file;
+/// the runtime path deliberately does not trim, to keep plugin identity files
+/// intact.
 pub fn key_from_env_only() -> Result<Option<SecretString>, String> {
-    if let Some(k) = env::var(ENV_MURK_KEY).ok().filter(|k| !k.is_empty()) {
-        return Ok(Some(SecretString::from(k)));
+    match env_key()? {
+        Some(EnvKey::Inline(k)) => Ok(Some(SecretString::from(k))),
+        Some(EnvKey::File(path)) => {
+            let key = read_secret_file(&path, "MURK_KEY_FILE")?.trim().to_string();
+            Ok(Some(SecretString::from(key)))
+        }
+        None => Ok(None),
     }
-    if let Ok(path) = env::var(ENV_MURK_KEY_FILE) {
-        let p = std::path::Path::new(&path);
-        let key = read_secret_file(p, "MURK_KEY_FILE")?.trim().to_string();
-        return Ok(Some(SecretString::from(key)));
-    }
-    Ok(None)
 }
 
 /// Parse a .env file into key-value pairs.
@@ -804,24 +829,23 @@ mod tests {
     }
 
     #[test]
-    fn resolve_key_murk_key_takes_priority_over_file() {
-        let (_env, _cwd, tmp, prev) = resolve_key_sandbox("priority");
-        let direct_key = "AGE-SECRET-KEY-1DIRECT";
-        let file_key = "AGE-SECRET-KEY-1FILE";
+    fn murk_key_and_key_file_together_are_rejected() {
+        let (_env, _cwd, tmp, prev) = resolve_key_sandbox("both");
+        let path = std::env::temp_dir().join("murk_test_key_both");
+        std::fs::write(&path, "AGE-SECRET-KEY-1FILE\n").unwrap();
 
-        let path = std::env::temp_dir().join("murk_test_key_priority");
-        std::fs::write(&path, format!("{file_key}\n")).unwrap();
-
-        unsafe { env::set_var("MURK_KEY", direct_key) };
+        unsafe { env::set_var("MURK_KEY", "AGE-SECRET-KEY-1DIRECT") };
         unsafe { env::set_var("MURK_KEY_FILE", path.to_str().unwrap()) };
-        let result = resolve_key();
+        let resolved = resolve_key();
+        let env_only = key_from_env_only();
         unsafe { env::remove_var("MURK_KEY") };
         unsafe { env::remove_var("MURK_KEY_FILE") };
         std::fs::remove_file(&path).ok();
         resolve_key_sandbox_teardown(&tmp, &prev);
 
-        let secret = result.unwrap();
-        assert_eq!(secret.expose_secret(), direct_key);
+        // Neither the runtime path nor init's env-only read picks a winner.
+        assert!(resolved.unwrap_err().contains("both set"));
+        assert!(env_only.err().unwrap().contains("both set"));
     }
 
     #[cfg(unix)]
