@@ -424,24 +424,20 @@ fn merge_driver_lists_every_conflict() {
   "version": "2.0",
   "created": "2026-01-01T00:00:00Z",
   "vault_name": ".murk",
-  "recipients": ["age1alice"],
+  "recipients": ["age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"],
   "schema": {
     "DB_URL": { "description": "database", "tags": [] },
     "API_KEY": { "description": "api", "tags": [] }
   },
   "secrets": {
-    "DB_URL": { "shared": "base-db" },
-    "API_KEY": { "shared": "base-api" }
+    "DB_URL": { "shared": "BASEdb==" },
+    "API_KEY": { "shared": "BASEapi=" }
   },
-  "meta": "base-meta"
+  "meta": "BASEmeta"
 }"#;
     fs::write(dir.path().join("base.murk"), base).unwrap();
-    fs::write(dir.path().join("ours.murk"), base.replace("base-", "ours-")).unwrap();
-    fs::write(
-        dir.path().join("theirs.murk"),
-        base.replace("base-", "theirs-"),
-    )
-    .unwrap();
+    fs::write(dir.path().join("ours.murk"), base.replace("BASE", "OURS")).unwrap();
+    fs::write(dir.path().join("theirs.murk"), base.replace("BASE", "THRS")).unwrap();
 
     murk_bin(dir.path())
         .current_dir(dir.path())

@@ -91,7 +91,7 @@ pub fn check_init_status(vault: &types::Vault, secret_key: &str) -> Result<InitS
     let authorized = vault.recipients.contains(&pubkey);
 
     let display_name = if authorized {
-        crate::decrypt_meta(vault, &identity)
+        crate::decrypt_meta(vault, &identity)?
             .and_then(|meta| meta.recipients.get(&pubkey).cloned())
             .filter(|name| !name.is_empty())
     } else {
@@ -158,6 +158,8 @@ pub fn create_vault(
         signers: BTreeMap::new(),
         sig: None,
     };
+    crate::validate::meta(&meta)
+        .map_err(|e| MurkError::Secret(format!("refusing to write invalid vault meta: {e}")))?;
     let meta_json =
         serde_json::to_vec(&meta).map_err(|e| MurkError::Secret(format!("meta serialize: {e}")))?;
     vault.meta = encrypt_value(&meta_json, &[recipient])?;
