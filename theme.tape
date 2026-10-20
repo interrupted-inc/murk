@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: murk contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 # Shared theme for all murk VHS demos.
 # Source this at the top of every tape.
 

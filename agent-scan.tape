@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: murk contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 # Agent scan demo — catch secrets an AI agent hardcoded into your code.
 # `murk scan` flags vault values that leaked into files in the working tree.
 
