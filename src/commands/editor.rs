@@ -122,17 +122,11 @@ pub(crate) fn edit_in_scratch_file(
         .map_err(|e| Failed(format!("reading tempfile: {e}")))
 }
 
-/// The editor must not see the key.
-fn strip_key(cmd: &mut process::Command) {
-    cmd.env_remove("MURK_KEY");
-    cmd.env_remove("MURK_KEY_FILE");
-}
-
 #[cfg(not(unix))]
 fn run_editor(editor: &str, path: &Path) -> Result<ExitStatus, EditAbort> {
     let mut cmd = process::Command::new(editor);
     cmd.arg(path);
-    strip_key(&mut cmd);
+    murk_cli::strip_key_env(&mut cmd); // the editor must not see the key
     cmd.status()
         .map_err(|e| Failed(format!("launching {editor}: {e}")))
 }
@@ -165,7 +159,7 @@ fn run_editor(editor: &str, path: &Path) -> Result<ExitStatus, EditAbort> {
         ))
         .arg("sh")
         .arg(path);
-    strip_key(&mut cmd);
+    murk_cli::strip_key_env(&mut cmd); // the editor must not see the key
     // SAFETY: the hook runs between fork and exec and makes only
     // async-signal-safe calls (setpgid, getpid, pthread_sigmask, tcsetpgrp).
     unsafe {

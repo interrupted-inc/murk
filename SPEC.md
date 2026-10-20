@@ -307,7 +307,7 @@ Replaces a secret value. Prompts for the new value interactively, or generates a
 
 `murk rotate --all` rotates every secret in the vault, prompting for each in sequence. `--generate` is not allowed with `--all` — external credentials (database passwords, API keys from third-party services) require manual rotation at the source.
 
-`murk rotate --list` reports the keys that need rotating — the same overdue/expiry/post-revoke signals `doctor` evaluates, scoped to rotation. It reads only the plaintext schema, so it works without a key. Human output exits 1 when anything needs rotating (usable as a script gate); `--list --json` emits a `reason`-tagged array (`overdue`, `no_baseline`, `expired`, `expiring_soon`, `revoke_pending`, `bad_timestamp`) and always exits 0.
+`murk rotate --list` reports the keys that need rotating — the same overdue/expiry/post-revoke signals `doctor` evaluates, scoped to rotation. It reads only the plaintext schema, so it works without a key. Human output exits 1 when anything needs rotating (usable as a script gate); `--list --json` emits a `reason`-tagged array (`overdue`, `no_baseline`, `expired`, `expiring_soon`, `revoke_pending`) and always exits 0.
 
 ---
 

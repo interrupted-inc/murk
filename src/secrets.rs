@@ -312,19 +312,15 @@ pub enum RotationIssue {
     /// rotated since — the revoked recipient can still decrypt the live value
     /// from git history. Driven by the `revoked_at` marker's presence.
     RevokePending { key: String, since: String },
-    /// A stored timestamp could not be parsed as RFC-3339.
-    BadTimestamp {
-        key: String,
-        field: &'static str,
-        value: String,
-    },
 }
 
 /// Evaluate per-key rotation hygiene against `now`.
 ///
 /// Reads only the plaintext schema, so it runs without decrypting the vault.
 /// `now` is injected (rather than read from the clock) to keep this pure and
-/// deterministically testable.
+/// deterministically testable. Expects a vault that passed validation (every
+/// vault read goes through [`crate::vault::parse`]), so its timestamps are
+/// RFC-3339; one that somehow is not is skipped rather than guessed at.
 pub fn rotation_health(
     vault: &types::Vault,
     now: chrono::DateTime<chrono::Utc>,
@@ -336,8 +332,8 @@ pub fn rotation_health(
         // Soft rotation interval, anchored on the last value change (`updated`).
         if let Some(days) = entry.rotation_interval_days {
             match &entry.updated {
-                Some(ts) => match parse_ts(ts) {
-                    Some(updated) => {
+                Some(ts) => {
+                    if let Some(updated) = parse_ts(ts) {
                         let due = updated + Duration::days(i64::from(days));
                         if now > due {
                             issues.push(RotationIssue::Overdue {
@@ -348,12 +344,7 @@ pub fn rotation_health(
                             });
                         }
                     }
-                    None => issues.push(RotationIssue::BadTimestamp {
-                        key: key.clone(),
-                        field: "updated",
-                        value: ts.clone(),
-                    }),
-                },
+                }
                 None => issues.push(RotationIssue::NoBaseline {
                     key: key.clone(),
                     interval_days: days,
@@ -376,12 +367,7 @@ pub fn rotation_health(
                         days_left: (expiry - now).num_days(),
                     });
                 }
-                Some(_) => {}
-                None => issues.push(RotationIssue::BadTimestamp {
-                    key: key.clone(),
-                    field: "expires_at",
-                    value: ts.clone(),
-                }),
+                _ => {}
             }
         }
 
@@ -1038,21 +1024,6 @@ mod tests {
         // Far out: silent.
         let issues = rotation_health(&soon, ts("2025-06-01T00:00:00Z"));
         assert!(issues.is_empty(), "{issues:?}");
-    }
-
-    #[test]
-    fn rotation_health_flags_bad_timestamp() {
-        let vault = vault_with(types::SchemaEntry {
-            expires_at: Some("not-a-date".into()),
-            ..Default::default()
-        });
-        assert!(matches!(
-            &rotation_health(&vault, ts("2026-01-01T00:00:00Z"))[0],
-            RotationIssue::BadTimestamp {
-                field: "expires_at",
-                ..
-            }
-        ));
     }
 
     #[test]

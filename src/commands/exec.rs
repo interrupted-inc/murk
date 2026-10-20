@@ -92,8 +92,7 @@ pub(crate) fn cmd_exec(
                 cmd.env("MURK_STRICT", "1");
             }
         } else {
-            cmd.env_remove("MURK_KEY");
-            cmd.env_remove("MURK_KEY_FILE");
+            murk_cli::strip_key_env(cmd);
         }
         // `secrets` holds the decrypted values in `Zeroizing` and is wiped when
         // it drops. Handing them to the child's environment necessarily copies

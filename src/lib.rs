@@ -65,15 +65,17 @@ pub use agent::{AgentPlan, AgentPlanKey, agent_plan, format_agent_plan_text};
 pub use env::{
     EnvrcStatus, KeySource, agent_key_file_path, agent_keys_dir, dotenv_has_murk_key,
     env_permission_warning, home_short, key_file_path, locate_key, parse_env, resolve_key,
-    resolve_key_for_vault, resolve_key_with_source, secret_file_loose_mode, write_envrc,
-    write_key_ref_to_dotenv, write_key_to_dotenv, write_key_to_file,
+    resolve_key_for_vault, resolve_key_with_source, secret_file_loose_mode, strip_key_env,
+    write_envrc, write_key_ref_to_dotenv, write_key_to_dotenv, write_key_to_file,
 };
 pub use error::MurkError;
 pub use export::{
     DiffEntry, DiffKind, decrypt_vault_values, diff_secrets, export_secrets,
     parse_and_decrypt_values, resolve_secrets,
 };
-pub use git::{CommitSignature, MergeDriverSetupStep, last_commit_signature, setup_merge_driver};
+pub use git::{
+    CommitSignature, MergeDriverSetupStep, git_command, last_commit_signature, setup_merge_driver,
+};
 pub use github::{GitHubError, fetch_keys};
 pub use grants::{create_grant, parse_ttl, remove_grant, validate_grant_name};
 pub use groups::{

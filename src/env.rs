@@ -77,6 +77,15 @@ pub const ENV_MURK_VAULT: &str = "MURK_VAULT";
 /// Keys to skip when importing from a .env file.
 const IMPORT_SKIP: &[&str] = &[ENV_MURK_KEY, ENV_MURK_KEY_FILE, ENV_MURK_VAULT];
 
+/// Remove the key variables from a child's environment. murk's subprocesses —
+/// the editor, the `exec` child, `git` — go through this, so the key never
+/// leaks into a program (or its hooks, filters, and helpers) that has no use
+/// for it.
+pub fn strip_key_env(cmd: &mut std::process::Command) {
+    cmd.env_remove(ENV_MURK_KEY);
+    cmd.env_remove(ENV_MURK_KEY_FILE);
+}
+
 /// File mode for `.env`: owner read/write only.
 #[cfg(unix)]
 const SECRET_FILE_MODE: u32 = 0o600;

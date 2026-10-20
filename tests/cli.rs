@@ -2038,6 +2038,53 @@ fn diff_no_git_vault_shows_all_added() {
         .stdout(predicate::str::contains("FRESH"));
 }
 
+/// git runs hooks, filters and helpers with its own environment, so murk must
+/// not hand it the key. A stand-in `git` first on `PATH` records what it sees.
+#[cfg(unix)]
+#[test]
+fn git_does_not_inherit_the_key() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new().unwrap();
+    let (key, _pubkey) = init_vault(&dir);
+    let bin = dir.path().join("fake-bin");
+    fs::create_dir(&bin).unwrap();
+    let seen = dir.path().join("git-env");
+    let git = bin.join("git");
+    fs::write(
+        &git,
+        format!("#!/bin/sh\nenv > '{}'\nexit 1\n", seen.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&git, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+
+    // Key passed inline.
+    murk(&dir, &key)
+        .args(["diff", "--vault", "test.murk"])
+        .env("PATH", &path)
+        .assert()
+        .success();
+    let env = fs::read_to_string(&seen).unwrap();
+    assert!(!env.contains(&key), "git saw MURK_KEY's value");
+    assert!(!env.contains("MURK_KEY"), "git env: {env}");
+
+    // Key passed by file.
+    fs::remove_file(&seen).unwrap();
+    let key_file = dir.path().join("key");
+    fs::write(&key_file, &key).unwrap();
+    fs::set_permissions(&key_file, fs::Permissions::from_mode(0o600)).unwrap();
+    murk(&dir, &key)
+        .args(["diff", "--vault", "test.murk"])
+        .env_remove("MURK_KEY")
+        .env("MURK_KEY_FILE", &key_file)
+        .env("PATH", &path)
+        .assert()
+        .success();
+    let env = fs::read_to_string(&seen).unwrap();
+    assert!(!env.contains("MURK_KEY_FILE"), "git env: {env}");
+}
+
 // ── worktree key discovery ──
 
 /// Run git in `dir` with a fixed identity, asserting it succeeded.

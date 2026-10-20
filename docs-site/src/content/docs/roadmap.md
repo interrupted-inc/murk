@@ -24,11 +24,15 @@ adds is validation and stability guarantees. It ships when all of these hold:
   ships with a documented, tested migration.
 - **External security review**: an independent review of the age recipient
   management and grant-scope enforcement, with findings published and addressed.
+  Planned; not yet started.
 - **Continuous fuzzing**: OSS-Fuzz onboarding, beyond the current nightly
-  in-repo fuzz run.
+  in-repo fuzz run. Planned.
 - **SLSA Build L3 provenance**: up from the current attested (L2) releases.
-- **Soak**: several months of 0.9.x in real use with no vault-format change and
-  no critical security fix.
+  Today every GitHub release archive carries Sigstore build provenance, and the
+  crates.io package is attested for releases after 0.12.0 (see
+  [verifying releases](/security/verifying/)).
+- **Soak**: several months of the current 0.x line in real use with no
+  vault-format change and no critical security fix.
 - **Migration & policy docs**: an upgrade guide, an MSRV policy, and a
   deprecation policy.
 
