@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Output masking: replace injected secret values in a child's captured output
 //! with a `***KEY***` placeholder.
 //!

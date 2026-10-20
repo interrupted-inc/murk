@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Agent access policy: machine-enforceable guardrails embedded in the vault
 //! header. Policy is NOT access control — every recipient can read every shared
 //! secret by design. Its value is constraining what the murk binary will expose

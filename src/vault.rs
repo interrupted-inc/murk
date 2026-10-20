@@ -1,10 +1,14 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
 
 use crate::types::Vault;
+use crate::validate::MAX_VAULT_BYTES;
 
 /// Errors that can occur during vault file operations.
 #[derive(Debug)]
@@ -33,25 +37,28 @@ impl From<std::io::Error> for VaultError {
 
 /// Parse vault from a JSON string.
 ///
-/// Rejects vaults with an unrecognized major version to prevent
-/// silently misinterpreting a newer format.
+/// Every vault loader goes through here, so this is where untrusted input is
+/// checked: oversized input is refused before deserializing, and every field
+/// of the result must pass the allowlists in [`crate::validate`] (including
+/// the version, so a newer major format is never silently misinterpreted).
 pub fn parse(contents: &str) -> Result<Vault, VaultError> {
+    if contents.len() > MAX_VAULT_BYTES {
+        return Err(oversized());
+    }
     let vault: Vault = serde_json::from_str(contents).map_err(|e| {
         VaultError::Parse(format!(
             "invalid vault JSON: {e}. Vault may be corrupted — restore from git"
         ))
     })?;
-
-    // Accept any 2.x version (same major).
-    let major = vault.version.split('.').next().unwrap_or("");
-    if major != "2" {
-        return Err(VaultError::Parse(format!(
-            "unsupported vault version: {}. This build of murk supports version 2.x",
-            vault.version
-        )));
-    }
-
+    crate::validate::vault(&vault).map_err(VaultError::Parse)?;
     Ok(vault)
+}
+
+fn oversized() -> VaultError {
+    VaultError::Parse(format!(
+        "vault file size exceeds the {} MiB limit",
+        MAX_VAULT_BYTES / (1024 * 1024)
+    ))
 }
 
 /// Read a .murk vault file.
@@ -79,7 +86,15 @@ pub fn read_with_raw(path: &Path) -> Result<(Vault, Vec<u8>), VaultError> {
             ),
         )));
     }
-    let contents = fs::read_to_string(path)?;
+    let file = File::open(path)?;
+    if file.metadata()?.len() > MAX_VAULT_BYTES as u64 {
+        return Err(oversized());
+    }
+    // Bounded read: a file that grows after the size check still cannot make
+    // us buffer more than one byte past the limit (which `parse` then rejects).
+    let mut contents = String::new();
+    file.take(MAX_VAULT_BYTES as u64 + 1)
+        .read_to_string(&mut contents)?;
     let vault = parse(&contents)?;
     Ok((vault, contents.into_bytes()))
 }
@@ -147,11 +162,19 @@ pub fn lock(vault_path: &Path) -> Result<VaultLock, VaultError> {
 
 /// Write a vault to a .murk file as pretty-printed JSON.
 ///
+/// Refuses a vault that [`parse`] would reject, so murk never commits a file
+/// it (or another recipient) cannot load back.
+///
 /// Uses write-to-tempfile + rename for atomic writes — if the process is
 /// killed mid-write, the original file remains intact.
 pub fn write(path: &Path, vault: &Vault) -> Result<(), VaultError> {
+    crate::validate::vault(vault)
+        .map_err(|e| VaultError::Parse(format!("refusing to write invalid vault: {e}")))?;
     let json = serde_json::to_string_pretty(vault)
         .map_err(|e| VaultError::Parse(format!("failed to serialize vault: {e}")))?;
+    if json.len() + 1 > MAX_VAULT_BYTES {
+        return Err(oversized());
+    }
 
     // Write to a sibling temp file, fsync, then atomically rename.
     let dir = path.parent().unwrap_or(Path::new("."));
@@ -204,11 +227,11 @@ mod tests {
             created: "2026-02-27T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
-            recipients: vec!["age1test".into()],
+            recipients: vec![crate::testutil::AGE_PK.into()],
             schema,
             policy: None,
             secrets: BTreeMap::new(),
-            meta: "encrypted-meta".into(),
+            meta: "ZW5jcnlwdGVkLW1ldGE=".into(),
         }
     }
 
@@ -222,7 +245,7 @@ mod tests {
         vault.secrets.insert(
             "DATABASE_URL".into(),
             SecretEntry {
-                shared: "encrypted-value".into(),
+                shared: "ZW5jcnlwdGVk".into(),
                 private: BTreeMap::new(),
                 grouped: std::collections::BTreeMap::default(),
             },
@@ -232,7 +255,7 @@ mod tests {
         let read_vault = read(&path).unwrap();
 
         assert_eq!(read_vault.version, VAULT_VERSION);
-        assert_eq!(read_vault.recipients[0], "age1test");
+        assert_eq!(read_vault.recipients[0], crate::testutil::AGE_PK);
         assert!(read_vault.schema.contains_key("DATABASE_URL"));
         assert!(read_vault.secrets.contains_key("DATABASE_URL"));
 
@@ -319,12 +342,217 @@ mod tests {
     }
 
     #[test]
-    fn parse_accepts_minor_version_bump() {
+    fn parse_accepts_supported_2x_versions() {
+        for v in ["2.0", "2.1", "2.10", "2.1.3"] {
+            let mut vault = test_vault();
+            vault.version = v.into();
+            let json = serde_json::to_string(&vault).unwrap();
+            assert!(parse(&json).is_ok(), "version {v} must load");
+        }
+    }
+
+    /// `test_vault()` with every optional field populated, as JSON.
+    fn full_vault_json() -> serde_json::Value {
         let mut vault = test_vault();
-        vault.version = "2.1".into();
-        let json = serde_json::to_string(&vault).unwrap();
-        let result = parse(&json);
-        assert!(result.is_ok());
+        let entry = vault.schema.get_mut("DATABASE_URL").unwrap();
+        entry.tags = vec!["db".into()];
+        entry.created = Some("2026-02-27T00:00:00Z".into());
+        entry.updated = Some("2026-02-27T00:00:00Z".into());
+        entry.expires_at = Some("2026-09-01T23:59:59Z".into());
+        entry.revoked_at = Some("2026-03-01T00:00:00Z".into());
+        entry.rotation_interval_days = Some(90);
+        vault.policy = Some(crate::types::Policy {
+            agent_allow_tags: vec!["db".into()],
+        });
+        vault.secrets.insert(
+            "DATABASE_URL".into(),
+            SecretEntry {
+                shared: String::new(),
+                private: BTreeMap::from([(crate::testutil::SSH_ED25519_PK.into(), "Ym9i".into())]),
+                grouped: BTreeMap::from([("prod".into(), "cHJvZA==".into())]),
+            },
+        );
+        serde_json::to_value(&vault).unwrap()
+    }
+
+    #[test]
+    fn parse_accepts_fully_populated_vault() {
+        parse(&full_vault_json().to_string()).unwrap();
+    }
+
+    #[test]
+    fn parse_rejects_invalid_fields_naming_them() {
+        type Mutate = fn(&mut serde_json::Value);
+        let cases: &[(&str, Mutate)] = &[
+            ("unsupported vault version: 2.", |v| {
+                v["version"] = "2.".into();
+            }),
+            ("unsupported vault version: 2", |v| {
+                v["version"] = "2".into();
+            }),
+            ("unsupported vault version: 2.x", |v| {
+                v["version"] = "2.x".into();
+            }),
+            ("unsupported vault version: 2.01", |v| {
+                v["version"] = "2.01".into();
+            }),
+            ("unsupported vault version: 20.0", |v| {
+                v["version"] = "20.0".into();
+            }),
+            ("unsupported vault version: 2.0-beta", |v| {
+                v["version"] = "2.0-beta".into();
+            }),
+            ("created: not an RFC 3339 timestamp", |v| {
+                v["created"] = "yesterday".into();
+            }),
+            ("schema.DATABASE_URL.expires_at: not an RFC 3339", |v| {
+                v["schema"]["DATABASE_URL"]["expires_at"] = "2026-13-01T00:00:00Z".into();
+            }),
+            ("schema.DATABASE_URL.revoked_at: not an RFC 3339", |v| {
+                v["schema"]["DATABASE_URL"]["revoked_at"] = "".into();
+            }),
+            ("schema.DATABASE_URL.rotation_interval_days", |v| {
+                v["schema"]["DATABASE_URL"]["rotation_interval_days"] = 0.into();
+            }),
+            ("schema: invalid key name BAD-NAME", |v| {
+                v["schema"]["BAD-NAME"] = serde_json::json!({"description": ""});
+            }),
+            ("secrets: invalid key name 1BAD", |v| {
+                v["secrets"]["1BAD"] = serde_json::json!({"shared": ""});
+            }),
+            ("schema: invalid key name $(rm -rf ~)", |v| {
+                v["schema"]["$(rm -rf ~)"] = serde_json::json!({"description": ""});
+            }),
+            (
+                "recipients[1]: not a valid age, SSH, or plugin public key",
+                |v| {
+                    v["recipients"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push("age1bogus".into());
+                },
+            ),
+            ("secrets.DATABASE_URL.scoped key: not a valid", |v| {
+                v["secrets"]["DATABASE_URL"]["scoped"]["../../etc"] = "Ym9i".into();
+            }),
+            ("secrets.DATABASE_URL.grouped key", |v| {
+                v["secrets"]["DATABASE_URL"]["grouped"]["no spaces"] = "cHJvZA==".into();
+            }),
+            ("secrets.DATABASE_URL.grouped key", |v| {
+                v["secrets"]["DATABASE_URL"]["grouped"]["me"] = "cHJvZA==".into();
+            }),
+            ("secrets.DATABASE_URL.shared: not valid base64", |v| {
+                v["secrets"]["DATABASE_URL"]["shared"] = "not base64!".into();
+            }),
+            ("meta: not valid base64", |v| v["meta"] = "abc".into()),
+            (
+                "schema.DATABASE_URL.description: contains control characters",
+                |v| {
+                    v["schema"]["DATABASE_URL"]["description"] = "\u{1b}]52;c;aGk=\u{7}".into();
+                },
+            ),
+            (
+                "schema.DATABASE_URL.tags[1]: contains control characters",
+                |v| {
+                    v["schema"]["DATABASE_URL"]["tags"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push("\u{1b}[2J".into());
+                },
+            ),
+            (
+                "policy.agent_allow_tags[0]: contains control characters",
+                |v| {
+                    v["policy"]["agent_allow_tags"][0] = "db\u{0}".into();
+                },
+            ),
+            ("vault_name: contains control characters", |v| {
+                v["vault_name"] = "\u{9b}31m".into();
+            }),
+        ];
+        for (expected, mutate) in cases {
+            let mut v = full_vault_json();
+            mutate(&mut v);
+            let err = parse(&v.to_string())
+                .expect_err(&format!("expected rejection: {expected}"))
+                .to_string();
+            assert!(err.contains(expected), "want {expected:?}, got {err:?}");
+        }
+    }
+
+    #[test]
+    fn parse_errors_never_echo_raw_control_characters() {
+        const ESC: &str = "\u{1b}]0;pwned\u{7}\u{1b}[2J";
+        type Mutate = fn(&mut serde_json::Value);
+        let cases: &[(&str, Mutate)] = &[
+            (
+                "secrets.DATABASE_URL.grouped key: invalid group name",
+                |v| {
+                    v["secrets"]["DATABASE_URL"]["grouped"][ESC] = "cHJvZA==".into();
+                },
+            ),
+            ("secrets.DATABASE_URL.scoped key", |v| {
+                v["secrets"]["DATABASE_URL"]["scoped"][ESC] = "Ym9i".into();
+            }),
+            ("schema: invalid key name", |v| {
+                v["schema"][ESC] = serde_json::json!({"description": ""});
+            }),
+            ("secrets: invalid key name", |v| {
+                v["secrets"][ESC] = serde_json::json!({"shared": ""});
+            }),
+            ("recipients[0]", |v| v["recipients"][0] = ESC.into()),
+            ("unsupported vault version", |v| v["version"] = ESC.into()),
+            ("created: not an RFC 3339", |v| v["created"] = ESC.into()),
+        ];
+        for (field, mutate) in cases {
+            let mut v = full_vault_json();
+            mutate(&mut v);
+            let err = parse(&v.to_string())
+                .expect_err(&format!("expected rejection: {field}"))
+                .to_string();
+            assert!(err.contains(field), "want {field:?}, got {err:?}");
+            assert!(
+                !err.chars().any(char::is_control),
+                "raw control char in {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_rejects_oversized_input() {
+        let big = " ".repeat(crate::validate::MAX_VAULT_BYTES + 1);
+        let err = parse(&big).unwrap_err().to_string();
+        assert!(err.contains("vault file size exceeds"), "{err}");
+    }
+
+    #[test]
+    fn read_rejects_oversized_file_without_reading_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("big.murk");
+        // Sparse: the size check must fire on metadata, not after buffering.
+        File::create(&path)
+            .unwrap()
+            .set_len(crate::validate::MAX_VAULT_BYTES as u64 + 1)
+            .unwrap();
+        let err = read(&path).unwrap_err().to_string();
+        assert!(err.contains("vault file size exceeds"), "{err}");
+    }
+
+    #[test]
+    fn write_refuses_vault_that_would_not_load() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("test.murk");
+        let mut vault = test_vault();
+        vault.schema.insert(
+            "BAD-NAME".into(),
+            SchemaEntry {
+                description: String::new(),
+                ..Default::default()
+            },
+        );
+        let err = write(&path, &vault).unwrap_err().to_string();
+        assert!(err.contains("schema: invalid key name BAD-NAME"), "{err}");
+        assert!(!path.exists(), "invalid vault must not reach disk");
     }
 
     #[test]
@@ -369,12 +597,12 @@ mod tests {
 
         let mut vault = test_vault();
         let mut private = BTreeMap::new();
-        private.insert("age1bob".into(), "encrypted-for-bob".into());
+        private.insert(crate::testutil::SSH_ED25519_PK.into(), "Ym9i".into());
 
         vault.secrets.insert(
             "DATABASE_URL".into(),
             SecretEntry {
-                shared: "encrypted-value".into(),
+                shared: "ZW5jcnlwdGVk".into(),
                 private,
                 grouped: std::collections::BTreeMap::default(),
             },
@@ -384,7 +612,7 @@ mod tests {
         let read_vault = read(&path).unwrap();
 
         let entry = &read_vault.secrets["DATABASE_URL"];
-        assert_eq!(entry.private["age1bob"], "encrypted-for-bob");
+        assert_eq!(entry.private[crate::testutil::SSH_ED25519_PK], "Ym9i");
 
         fs::remove_dir_all(&dir).unwrap();
     }

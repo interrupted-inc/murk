@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use super::*;
 use age::secrecy::ExposeSecret;
 use colored::Colorize;
@@ -104,8 +107,9 @@ mod restore_check {
             Some(true)
         );
         // Valid-but-wrong phrase case: derived identity is absent from recipients.
+        let (_, _, other) = murk_cli::recovery::generate().unwrap();
         assert_eq!(
-            restored_key_is_recipient(&secret, &vault_json(&["age1notyou"])),
+            restored_key_is_recipient(&secret, &vault_json(&[other.as_str()])),
             Some(false)
         );
         // Unparseable vault must not raise a false alarm.

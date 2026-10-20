@@ -11,7 +11,21 @@ install method fits your setup.
 ## Homebrew
 
 ```bash
-brew tap interrupted-sh/murk && brew install murk
+brew install interrupted-sh/tap/murk
+```
+
+Installing by the full name trusts only the murk formula, not every formula
+in the tap ([Homebrew tap trust](https://docs.brew.sh/Tap-Trust)).
+
+**Upgrading from the old tap name.** The tap used to be `interrupted-sh/murk`.
+You don't need to untap or reinstall: `brew update` follows the rename and
+moves your tap to `interrupted-sh/tap`. Trust doesn't follow a rename, so
+trust the formula under its new name once, then upgrade:
+
+```bash
+brew update
+brew trust --formula interrupted-sh/tap/murk
+brew upgrade murk
 ```
 
 ## Cargo
@@ -28,6 +42,23 @@ Downloads a pre-built binary for your platform:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/interrupted-sh/murk/main/install.sh | sh
+```
+
+It installs to `/usr/local/bin/murk` by default, using `sudo` only when that
+directory is not writable. The location follows the standard conventions:
+
+- `PREFIX` sets the installation prefix; the binary goes to `$PREFIX/bin`
+  (default `/usr/local`).
+- `DESTDIR` is prepended to the final path for staged installs, as with
+  `make install`: `DESTDIR=/tmp/stage PREFIX=/usr` writes
+  `/tmp/stage/usr/bin/murk`.
+- `MURK_INSTALL_DIR` names the exact bin directory and takes precedence over
+  `PREFIX`. `DESTDIR` still applies on top of it.
+
+Set the variables for `sh`, not `curl`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/interrupted-sh/murk/main/install.sh | PREFIX="$HOME/.local" sh
 ```
 
 ## GitHub Releases
@@ -63,9 +94,10 @@ before the organization rename; see
 command that verifies them.
 
 npm, PyPI, and crates.io releases each have their own verification path (npm
-provenance, PEP 740 attestations, and signed release tags respectively). See
-[Verifying releases](/security/verifying/) for the full walkthrough across
-every distribution channel.
+provenance, PEP 740 attestations, and an attested `.crate` respectively), and
+release tags are SSH-signed. See [Verifying releases](/security/verifying/)
+for the full walkthrough across every distribution channel, including where to
+get the tag-signing key.
 
 ## Next steps
 

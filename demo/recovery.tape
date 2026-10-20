@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: murk contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 # Recovery demo — back up and restore a key from BIP39 phrase
 
 Output demo/recovery.gif

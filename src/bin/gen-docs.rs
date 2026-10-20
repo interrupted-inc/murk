@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Dev-only tool: render generated documentation artifacts from the clap model
 //! (and a small doc-only registry) so the documented surface cannot drift from
 //! the binary.
@@ -69,7 +72,7 @@ const ENV_GROUPS: &[(&str, &[EnvVar])] = &[
         &[
             EnvVar {
                 name: "MURK_KEY",
-                summary: "Your raw age private key (`AGE-SECRET-KEY-1…`), inline. Rejected for hardware-plugin identity strings (`AGE-PLUGIN-…`) — use `MURK_KEY_FILE` for those.",
+                summary: "Your raw age private key (`AGE-SECRET-KEY-1…`), inline. Rejected for hardware-plugin identity strings (`AGE-PLUGIN-…`) — use `MURK_KEY_FILE` for those. Set this or `MURK_KEY_FILE`, not both: murk refuses both non-empty, and an empty value counts as unset.",
             },
             EnvVar {
                 name: "MURK_KEY_FILE",
@@ -111,7 +114,7 @@ const ENV_GROUPS: &[(&str, &[EnvVar])] = &[
             },
             EnvVar {
                 name: "EDITOR, VISUAL",
-                summary: "Editor launched by `murk edit`, checking `EDITOR` then `VISUAL`, falling back to `vi`.",
+                summary: "Editor launched by `murk edit`, checking `EDITOR` then `VISUAL`, falling back to `vi`. On Unix it runs through `sh`, as with git, so it may include arguments (`code --wait`). `MURK_KEY` and `MURK_KEY_FILE` are removed from its environment.",
             },
             EnvVar {
                 name: "XDG_RUNTIME_DIR",

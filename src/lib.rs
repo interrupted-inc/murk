@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Encrypted secrets manager for developers — one file, age encryption, git-friendly.
 //!
 //! This library provides the core functionality for murk: vault I/O, age encryption,
@@ -42,6 +45,7 @@ pub mod scan;
 pub(crate) mod secrets;
 pub mod signing;
 pub mod types;
+pub(crate) mod validate;
 pub mod vault;
 
 #[cfg(feature = "python")]
@@ -60,9 +64,9 @@ mod property_tests;
 pub use agent::{AgentPlan, AgentPlanKey, agent_plan, format_agent_plan_text};
 pub use env::{
     EnvrcStatus, KeySource, agent_key_file_path, agent_keys_dir, dotenv_has_murk_key,
-    env_permission_warning, home_short, key_file_path, parse_env, resolve_key,
-    resolve_key_for_vault, resolve_key_with_source, write_envrc, write_key_ref_to_dotenv,
-    write_key_to_dotenv, write_key_to_file,
+    env_permission_warning, home_short, key_file_path, locate_key, parse_env, resolve_key,
+    resolve_key_for_vault, resolve_key_with_source, secret_file_loose_mode, write_envrc,
+    write_key_ref_to_dotenv, write_key_to_dotenv, write_key_to_file,
 };
 pub use error::MurkError;
 pub use export::{
@@ -121,13 +125,27 @@ use zeroize::Zeroizing;
 // Re-export polymorphic types for consumers.
 pub use crypto::{MurkIdentity, MurkRecipient};
 
-/// Decrypt the meta blob from a vault, returning the deserialized Meta if possible.
-pub fn decrypt_meta(vault: &types::Vault, identity: &crypto::MurkIdentity) -> Option<types::Meta> {
+/// Decrypt and validate the meta blob of a vault.
+///
+/// `Ok(None)` when there is no meta or `identity` cannot decrypt it (not a
+/// recipient) — callers fall back to showing pubkeys. A meta that decrypts but
+/// is corrupt or fails [`validate::meta`] is an `Err`, never a silent `None`:
+/// treating it as absent would drop groups, grants, and GitHub pins.
+pub fn decrypt_meta(
+    vault: &types::Vault,
+    identity: &crypto::MurkIdentity,
+) -> Result<Option<types::Meta>, String> {
     if vault.meta.is_empty() {
-        return None;
+        return Ok(None);
     }
-    let plaintext = decrypt_value(&vault.meta, identity).ok()?;
-    serde_json::from_slice(&plaintext).ok()
+    let Ok(plaintext) = decrypt_value(&vault.meta, identity) else {
+        return Ok(None);
+    };
+    let meta: types::Meta = serde_json::from_slice(&plaintext)
+        .map_err(|_| "vault meta is corrupt — vault may have been tampered with".to_string())?;
+    validate::meta(&meta)
+        .map_err(|e| format!("vault meta is invalid ({e}) — vault may have been tampered with"))?;
+    Ok(Some(meta))
 }
 
 /// Parse a list of pubkey strings into recipients (age or SSH).

@@ -73,13 +73,17 @@ inside `murk exec`, `murk agent exec`, or any other secret-injecting wrapper.
 To check that a variable is set, test it without printing it:
 `test -n "$KEY" && echo set`.
 
-Do not use `murk agent exec` in a bb thread. It needs a key handed to it in
-`MURK_KEY` or `MURK_KEY_FILE`, and a bb thread holds none: grants live only as
-0600 identity files under the plugin's data dir. Without one it fails closed
-and refuses to fall back to the user's personal key in `~/.config/murk/keys`.
-Its `--allow-operator-key` flag overrides that refusal and decrypts with the
-user's own key: never pass it, and never point `MURK_KEY_FILE` at anything
-under `~/.config/murk`. That is the user's decision, not yours. `agent exec`
-also masks injected values in its output, but masking is an accident guard,
-not permission to print: an encoded or partial value gets through. Use the
+Do not read secrets by running `murk` yourself, `murk agent exec` included. Every
+thread starts as a murk agent context: `MURK_AGENT=1`, `MURK_KEY` blank, and
+`MURK_KEY_FILE` set to a path that cannot exist. Grants live only as 0600
+identity files under the plugin's data dir, so a thread holds no key, and murk
+in an agent context never falls back to the user's personal key in
+`~/.config/murk/keys`. Any `murk` command that needs a key fails closed with
+`cannot read MURK_KEY_FILE`, or with `MURK_KEY and MURK_KEY_FILE are both set`
+if something filled in `MURK_KEY`. `--allow-operator-key` does not change that:
+it only applies outside an agent context. That is by design. Do not unset or
+change those variables, and never point `MURK_KEY_FILE` at anything under
+`~/.config/murk`; that is the user's decision, not yours. `agent exec` also
+masks injected values in its output, but masking is an accident guard, not
+permission to print: an encoded or partial value gets through. Use the
 delivered dotenv file instead.

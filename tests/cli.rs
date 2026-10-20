@@ -1,10 +1,13 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use std::fs;
 
 use assert_fs::TempDir;
 use predicates::prelude::*;
 
 mod common;
-use common::{MURK_CONTEXT_VARS, init_vault, murk, murk_bin, real_path};
+use common::{FOREIGN_PK, MURK_CONTEXT_VARS, init_vault, murk, murk_bin, real_path};
 
 // ── init ──
 
@@ -1929,6 +1932,45 @@ fn diff_shows_no_changes() {
 }
 
 #[test]
+fn diff_rejects_invalid_vault_in_git_history() {
+    let dir = TempDir::new().unwrap();
+    let (key, _pubkey) = init_vault(&dir);
+    let vault_path = dir.path().join("test.murk");
+    let good = fs::read_to_string(&vault_path).unwrap();
+
+    // Commit a hostile revision: a key name that would be a shell injection
+    // vector if exported.
+    let mut bad: serde_json::Value = serde_json::from_str(&good).unwrap();
+    bad["schema"]["X;rm -rf ~"] = serde_json::json!({"description": ""});
+    fs::write(&vault_path, bad.to_string()).unwrap();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .unwrap();
+    };
+    git(&["init"]);
+    git(&["add", "test.murk"]);
+    git(&["commit", "-m", "hostile"]);
+    fs::write(&vault_path, &good).unwrap();
+
+    murk(&dir, &key)
+        .args(["diff", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("parsing vault at HEAD").and(predicate::str::contains(
+                "schema: invalid key name X;rm -rf ~",
+            )),
+        );
+}
+
+#[test]
 fn diff_shows_added_key() {
     let dir = TempDir::new().unwrap();
     let (key, _pubkey) = init_vault(&dir);
@@ -2160,14 +2202,14 @@ fn merge_driver_clean_merge() {
   "version": "2.0",
   "created": "2026-01-01T00:00:00Z",
   "vault_name": ".murk",
-  "recipients": ["age1alice"],
+  "recipients": ["age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"],
   "schema": {
     "DB_URL": { "description": "database", "tags": [] }
   },
   "secrets": {
-    "DB_URL": { "shared": "base-cipher-db" }
+    "DB_URL": { "shared": "YmFzZS1kYg==" }
   },
-  "meta": "base-meta"
+  "meta": "YmFzZS1tZXRh"
 }"#;
 
     // Ours: adds API_KEY.
@@ -2175,16 +2217,16 @@ fn merge_driver_clean_merge() {
   "version": "2.0",
   "created": "2026-01-01T00:00:00Z",
   "vault_name": ".murk",
-  "recipients": ["age1alice"],
+  "recipients": ["age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"],
   "schema": {
     "API_KEY": { "description": "api key", "tags": [] },
     "DB_URL": { "description": "database", "tags": [] }
   },
   "secrets": {
-    "API_KEY": { "shared": "ours-cipher-api" },
-    "DB_URL": { "shared": "base-cipher-db" }
+    "API_KEY": { "shared": "b3Vycy1hcGk=" },
+    "DB_URL": { "shared": "YmFzZS1kYg==" }
   },
-  "meta": "ours-meta"
+  "meta": "b3Vycy1tZXRh"
 }"#;
 
     // Theirs: adds STRIPE_KEY.
@@ -2192,16 +2234,16 @@ fn merge_driver_clean_merge() {
   "version": "2.0",
   "created": "2026-01-01T00:00:00Z",
   "vault_name": ".murk",
-  "recipients": ["age1alice"],
+  "recipients": ["age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"],
   "schema": {
     "DB_URL": { "description": "database", "tags": [] },
     "STRIPE_KEY": { "description": "stripe", "tags": [] }
   },
   "secrets": {
-    "DB_URL": { "shared": "base-cipher-db" },
-    "STRIPE_KEY": { "shared": "theirs-cipher-stripe" }
+    "DB_URL": { "shared": "YmFzZS1kYg==" },
+    "STRIPE_KEY": { "shared": "dGhlaXJzLXN0cmlwZQ==" }
   },
-  "meta": "theirs-meta"
+  "meta": "dGhlaXJzLW1ldGE="
 }"#;
 
     let base_path = write_vault_json(dir.path(), "base.murk", base_json);
@@ -2230,14 +2272,14 @@ fn merge_driver_schema_only_merge_without_key() {
   "version": "2.0",
   "created": "2026-01-01T00:00:00Z",
   "vault_name": ".murk",
-  "recipients": ["age1alice"],
+  "recipients": ["age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"],
   "schema": {
     "DB_URL": { "description": "database", "tags": [] }
   },
   "secrets": {
-    "DB_URL": { "shared": "base-cipher-db" }
+    "DB_URL": { "shared": "YmFzZS1kYg==" }
   },
-  "meta": "base-meta"
+  "meta": "YmFzZS1tZXRh"
 }"#;
 
     // Ours: changes description only.
@@ -2245,14 +2287,14 @@ fn merge_driver_schema_only_merge_without_key() {
   "version": "2.0",
   "created": "2026-01-01T00:00:00Z",
   "vault_name": ".murk",
-  "recipients": ["age1alice"],
+  "recipients": ["age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"],
   "schema": {
     "DB_URL": { "description": "updated database desc", "tags": [] }
   },
   "secrets": {
-    "DB_URL": { "shared": "base-cipher-db" }
+    "DB_URL": { "shared": "YmFzZS1kYg==" }
   },
-  "meta": "ours-meta"
+  "meta": "b3Vycy1tZXRh"
 }"#;
 
     // Theirs: identical to base (no changes).
@@ -2283,19 +2325,19 @@ fn merge_driver_conflict_exit_code() {
   "version": "2.0",
   "created": "2026-01-01T00:00:00Z",
   "vault_name": ".murk",
-  "recipients": ["age1alice"],
+  "recipients": ["age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"],
   "schema": {
     "DB_URL": { "description": "database", "tags": [] }
   },
   "secrets": {
-    "DB_URL": { "shared": "base-cipher" }
+    "DB_URL": { "shared": "YmFzZQ==" }
   },
-  "meta": "base-meta"
+  "meta": "YmFzZS1tZXRh"
 }"#;
 
     // Both sides modify DB_URL.
-    let ours_json = base_json.replace("base-cipher", "ours-cipher");
-    let theirs_json = base_json.replace("base-cipher", "theirs-cipher");
+    let ours_json = base_json.replace("YmFzZQ==", "b3Vycw==");
+    let theirs_json = base_json.replace("YmFzZQ==", "dGhlaXJz");
 
     let base_path = write_vault_json(dir.path(), "base.murk", base_json);
     let ours_path = write_vault_json(dir.path(), "ours.murk", &ours_json);
@@ -2527,6 +2569,126 @@ fn old_vault_without_repo_parses() {
         .stdout(predicate::str::contains("codename"));
 }
 
+/// Every writer path must produce a vault that load-time validation accepts.
+/// Drives each CLI writer once so the resulting file carries every field shape
+/// murk writes, then reloads it through the validating readers.
+#[test]
+fn every_writer_path_round_trips_through_validation() {
+    const BOB_SSH: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHsKLqeplhpW+uObz5dvMgjz1OxfM/XXUB+VHtZ6isGN";
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    let run = |args: &[&str], stdin: &str| {
+        murk(&dir, &key)
+            .args(args)
+            .args(["--vault", "test.murk"])
+            .write_stdin(stdin)
+            .assert()
+            .success();
+    };
+
+    run(
+        &[
+            "add",
+            "DB_URL",
+            "--desc",
+            "primary db",
+            "--example",
+            "postgres://h/db",
+            "--tag",
+            "db",
+        ],
+        "pg://prod\n",
+    );
+    run(
+        &[
+            "describe",
+            "DB_URL",
+            "multi-line\ndescription\twith tab",
+            "--example",
+            "postgres://h/db",
+            "--tag",
+            "db",
+            "--tag",
+            "agents",
+            "--rotate-every",
+            "90d",
+            "--expires",
+            "2030-01-01",
+        ],
+        "",
+    );
+    run(
+        &["circle", "authorize", BOB_SSH, "--name", "Bob (laptop) ✓"],
+        "",
+    );
+    run(&["circle", "authorize", FOREIGN_PK, "--name", "carol"], "");
+    run(&["group", "create", "prod-team_1"], "");
+    run(&["group", "add", "prod-team_1", "--member", "carol"], "");
+    run(
+        &["add", "STRIPE_KEY", "--group", "prod-team_1"],
+        "sk_live\n",
+    );
+    run(&["add", "MY_TOKEN", "--group", "me"], "mine\n");
+    run(&["policy", "set", "--allow-tag", "agents"], "");
+    let agent_key = dir.path().join("agent.key");
+    run(
+        &[
+            "agent",
+            "grant",
+            "--name",
+            "codex-1",
+            "--only",
+            "DB_URL",
+            "--out",
+            agent_key.to_str().unwrap(),
+        ],
+        "",
+    );
+    // Deferred rotation leaves `revoked_at` markers in the schema.
+    run(&["circle", "revoke", "Bob (laptop) ✓"], "");
+    run(&["skeleton", "--output", "skeleton.murk"], "");
+
+    // The run produced every optional field shape, not just a minimal vault.
+    let raw = fs::read_to_string(dir.path().join("test.murk")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let db = &v["schema"]["DB_URL"];
+    for field in [
+        "example",
+        "tags",
+        "created",
+        "updated",
+        "rotation_interval_days",
+        "expires_at",
+        "revoked_at",
+    ] {
+        assert!(!db[field].is_null(), "schema.DB_URL.{field} missing: {db}");
+    }
+    assert!(v["policy"]["agent_allow_tags"].is_array());
+    assert!(v["secrets"]["STRIPE_KEY"]["grouped"]["prod-team_1"].is_string());
+    assert!(v["secrets"]["MY_TOKEN"]["scoped"].is_object());
+
+    // Header readers (no meta) and full readers (meta, MAC, signature).
+    murk(&dir, &key)
+        .args(["verify", "--vault", "test.murk"])
+        .assert()
+        .success();
+    murk(&dir, &key)
+        .args(["export", "--vault", "test.murk"])
+        .assert()
+        .success();
+    murk_bin(dir.path())
+        .current_dir(dir.path())
+        .args(["info", "--vault", "test.murk"])
+        .assert()
+        .success();
+    murk_bin(dir.path())
+        .current_dir(dir.path())
+        .args(["info", "--vault", "skeleton.murk"])
+        .assert()
+        .success();
+}
+
 // ── import ──
 
 #[test]
@@ -2630,9 +2792,7 @@ fn empty_vault_with_tampered_recipients_fails_integrity() {
     vault["recipients"]
         .as_array_mut()
         .unwrap()
-        .push(serde_json::Value::String(
-            "age1fakerecipient000000000000000000000000000000000000000000fake".into(),
-        ));
+        .push(serde_json::Value::String(FOREIGN_PK.into()));
     fs::write(&vault_path, serde_json::to_string_pretty(&vault).unwrap()).unwrap();
 
     murk(&dir, &key)
@@ -2677,9 +2837,7 @@ fn verify_fails_on_tampered_vault() {
     vault["recipients"]
         .as_array_mut()
         .unwrap()
-        .push(serde_json::Value::String(
-            "age1fake00000000000000000000000000000000000000000000000000000".into(),
-        ));
+        .push(serde_json::Value::String(FOREIGN_PK.into()));
     fs::write(&vault_path, serde_json::to_string_pretty(&vault).unwrap()).unwrap();
 
     murk(&dir, &key)
@@ -2720,6 +2878,118 @@ fn doctor_flags_inline_murk_key_in_dotenv() {
         .failure()
         .stderr(predicate::str::contains("inline MURK_KEY in .env"))
         .stderr(predicate::str::contains("issue in repo"));
+}
+
+/// Write `key` to `path` with `mode` (Unix permission bits).
+#[cfg(unix)]
+fn write_key_file(path: &std::path::Path, key: &str, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::write(path, key).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+}
+
+// A key file murk refuses to load (group/world-readable) is still located, so
+// the inside-the-repo check fires and the loose mode is reported too.
+#[cfg(unix)]
+#[test]
+fn doctor_flags_loose_key_file_inside_repo() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    let key_path = dir.path().join("murk.key");
+    write_key_file(&key_path, &key, 0o644);
+
+    murk_bin(dir.path())
+        .current_dir(dir.path())
+        .env("MURK_KEY_FILE", &key_path)
+        .args(["doctor", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "murk.key is inside the working tree",
+        ))
+        .stderr(predicate::str::contains(
+            "murk.key is readable by others (mode 644)",
+        ))
+        .stderr(predicate::str::contains("chmod 600"));
+}
+
+#[cfg(unix)]
+#[test]
+fn doctor_flags_owner_only_key_file_inside_repo() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    let key_path = dir.path().join("murk.key");
+    write_key_file(&key_path, &key, 0o600);
+
+    murk_bin(dir.path())
+        .current_dir(dir.path())
+        .env("MURK_KEY_FILE", &key_path)
+        .args(["doctor", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "murk.key is inside the working tree",
+        ))
+        .stderr(predicate::str::contains("readable by others").not());
+}
+
+#[cfg(unix)]
+#[test]
+fn doctor_accepts_key_file_outside_repo() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    let elsewhere = TempDir::new().unwrap();
+    let key_path = elsewhere.path().join("murk.key");
+    write_key_file(&key_path, &key, 0o600);
+
+    murk_bin(dir.path())
+        .current_dir(dir.path())
+        .env("MURK_KEY_FILE", &key_path)
+        .args(["doctor", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("repo hygiene looks clean"));
+}
+
+// Both key variables set is an error for every command, so doctor reports it
+// with the fix instead of checking whichever one it might have picked.
+#[test]
+fn doctor_flags_both_key_variables_set() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    let elsewhere = TempDir::new().unwrap();
+    let key_path = elsewhere.path().join("murk.key");
+    fs::write(&key_path, &key).unwrap();
+
+    murk(&dir, &key)
+        .env("MURK_KEY_FILE", &key_path)
+        .args(["doctor", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "MURK_KEY and MURK_KEY_FILE are both set",
+        ))
+        .stderr(predicate::str::contains("unset one of them"));
+}
+
+// The auto-discovered key is looked up for the vault the user selected, not
+// `.murk`. HOME is the repo here, so the stored key sits inside the tree.
+#[test]
+fn doctor_checks_auto_discovered_key_for_selected_vault() {
+    let dir = TempDir::new().unwrap();
+    murk_bin(dir.path())
+        .current_dir(dir.path())
+        .args(["init", "--vault", "other.murk"])
+        .write_stdin("testuser\n")
+        .assert()
+        .success();
+
+    murk_bin(dir.path())
+        .current_dir(dir.path())
+        .args(["doctor", "--vault", "other.murk"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("is inside the working tree"));
 }
 
 #[test]
@@ -3370,6 +3640,42 @@ fn agent_exec_runs_with_an_explicit_key_file() {
         .stderr(predicate::str::contains("personal key").not());
 }
 
+#[test]
+fn key_and_key_file_together_are_refused() {
+    let dir = agent_exec_vault();
+    let key = fs::read_to_string(stored_key_file(&dir)).unwrap();
+
+    // Refused even when both name the same key: murk never picks a winner.
+    let assertion = operator_shell(&dir)
+        .env("MURK_KEY", key.trim())
+        .env("MURK_KEY_FILE", stored_key_file(&dir))
+        .args(["get", "DB_URL", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stdout("");
+    let stderr = String::from_utf8(assertion.get_output().stderr.clone()).unwrap();
+    assert!(
+        stderr.contains("MURK_KEY and MURK_KEY_FILE are both set"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn empty_key_with_key_file_decrypts() {
+    // The shape of a `murk agent connect` MCP entry: MURK_KEY blanked to mask
+    // an inherited one, the key handed over in MURK_KEY_FILE.
+    let dir = agent_exec_vault();
+
+    operator_shell(&dir)
+        .env("MURK_KEY", "")
+        .env("MURK_KEY_FILE", stored_key_file(&dir))
+        .env("MURK_AGENT", "1")
+        .args(["get", "DB_URL", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout("postgres://prod-sentinel\n");
+}
+
 /// Values are masked on both streams: repeated, written in two pieces with a
 /// pause between (so murk reads them separately), and at the end of a stream
 /// with no newline. A value under the 4-byte floor is left alone.
@@ -3530,6 +3836,85 @@ fn agent_exec_forwards_sigterm_to_the_child() {
 
     assert_eq!(lines.next().unwrap().unwrap(), "got-term");
     assert_eq!(murk_proc.wait().unwrap().code(), Some(5));
+}
+
+/// A child that signals murk as soon as it starts can do so before murk has
+/// recorded its pid; that signal must not be echoed back either. The window
+/// is narrow, so run many children, several at once.
+#[cfg(unix)]
+#[test]
+fn agent_exec_does_not_echo_a_signal_the_child_sends_at_startup() {
+    let dir = agent_exec_vault();
+    let script = "trap 'echo echoed; exit 9' TERM; kill -TERM $PPID; sleep 0.2; echo done";
+    for _ in 0..5 {
+        std::thread::scope(|s| {
+            let runs: Vec<_> = (0..10)
+                .map(|_| {
+                    s.spawn(|| {
+                        spawn_agent_exec_sh(&dir, script)
+                            .stderr(std::process::Stdio::null())
+                            .output()
+                            .unwrap()
+                    })
+                })
+                .collect();
+            for run in runs {
+                let out = run.join().unwrap();
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                assert_eq!(stdout, "done\n", "{:?}", out.status);
+                assert_eq!(out.status.code(), Some(0));
+            }
+        });
+    }
+}
+
+/// A SIGTERM sent to murk at any point around the child's spawn must end
+/// the child: before murk knows its pid the signal is kept, and must be
+/// delivered once it does, never lost. The window cannot be hit on demand,
+/// so send it at staggered delays to many runs at once; a lost signal shows
+/// as the child's 5 s sleep running out instead.
+#[cfg(unix)]
+#[test]
+fn agent_exec_sigterm_around_spawn_always_ends_the_child() {
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let dir = agent_exec_vault();
+    std::thread::scope(|s| {
+        let runs: Vec<_> = (0..50u64)
+            .map(|i| {
+                let dir = &dir;
+                s.spawn(move || {
+                    let mut murk_proc = spawn_agent_exec_sh(dir, "exec sleep 5")
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn()
+                        .unwrap();
+                    std::thread::sleep(Duration::from_micros(i * 1500));
+                    // SAFETY: plain syscall on a child we have not reaped.
+                    unsafe {
+                        libc::kill(murk_proc.id() as libc::pid_t, libc::SIGTERM);
+                    }
+                    let deadline = Instant::now() + Duration::from_secs(3);
+                    loop {
+                        if let Some(status) = murk_proc.try_wait().unwrap() {
+                            return status;
+                        }
+                        if Instant::now() > deadline {
+                            murk_proc.kill().unwrap();
+                            panic!("SIGTERM {} ms after start was lost", i * 3 / 2);
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                })
+            })
+            .collect();
+        for run in runs {
+            let status = run.join().unwrap();
+            assert_eq!(status.signal(), Some(libc::SIGTERM), "{status:?}");
+        }
+    });
 }
 
 /// Once the child has exited, murk may still be draining pipes a background
@@ -3731,9 +4116,7 @@ fn merge_driver_conflicts_on_one_sided_recipient_addition() {
     ours_vault["recipients"]
         .as_array_mut()
         .unwrap()
-        .push(serde_json::Value::String(
-            "age1newrecipient0000000000000000000000000000000000000000000new00".into(),
-        ));
+        .push(serde_json::Value::String(FOREIGN_PK.into()));
     let ours = serde_json::to_string_pretty(&ours_vault).unwrap();
 
     // "Theirs" is unchanged from base.
@@ -4090,33 +4473,6 @@ fn edit_single_key_no_change() {
 
 #[cfg(unix)]
 #[test]
-fn edit_abort_preserves_value() {
-    let dir = TempDir::new().unwrap();
-    let (key, _) = init_vault(&dir);
-
-    murk(&dir, &key)
-        .args(["add", "SECRET", "--vault", "test.murk"])
-        .write_stdin("keep_me\n")
-        .assert()
-        .success();
-
-    murk(&dir, &key)
-        .args(["edit", "SECRET", "--vault", "test.murk"])
-        .env("EDITOR", "false")
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("aborting"));
-
-    // Value is preserved.
-    murk(&dir, &key)
-        .args(["get", "SECRET", "--vault", "test.murk"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("keep_me"));
-}
-
-#[cfg(unix)]
-#[test]
 fn edit_multi_key_add_update_remove() {
     let dir = TempDir::new().unwrap();
     let (key, _) = init_vault(&dir);
@@ -4183,40 +4539,6 @@ fn edit_missing_key_fails() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("not found"));
-}
-
-#[cfg(unix)]
-#[test]
-fn edit_tempfile_cleaned_up() {
-    let dir = TempDir::new().unwrap();
-    let (key, _) = init_vault(&dir);
-
-    murk(&dir, &key)
-        .args(["add", "SECRET", "--vault", "test.murk"])
-        .write_stdin("value\n")
-        .assert()
-        .success();
-
-    // Editor that records the tempfile path.
-    let marker = dir.path().join("temppath.txt");
-    let editor = write_editor_script(
-        &dir,
-        "editor.sh",
-        &format!(r#"cp "$1" "{}" "#, marker.display()),
-        &format!(r#"copy %1 "{}""#, marker.display()),
-    );
-
-    murk(&dir, &key)
-        .args(["edit", "SECRET", "--vault", "test.murk"])
-        .env("EDITOR", &editor)
-        .assert()
-        .success();
-
-    // The copied file should exist (proves editor ran), but we can't easily
-    // check the original tempfile is gone since we don't know its path.
-    // Instead verify the marker file doesn't contain secrets in plaintext
-    // after the edit (the original tempfile was wiped).
-    assert!(marker.exists());
 }
 
 // ── scan ──

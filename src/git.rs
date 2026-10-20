@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Git integration helpers (merge driver setup, worktree layout).
 
 use std::fs;

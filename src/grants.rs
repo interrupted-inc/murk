@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Short-lived agent grants: ephemeral, narrowly-scoped read credentials.
 //!
 //! A grant mints an ephemeral age identity, hands it to an agent, and gives it
@@ -36,7 +39,8 @@ pub(crate) fn validate_short_name(name: &str, noun: &str) -> Result<(), String> 
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
     {
         return Err(format!(
-            "invalid {noun} name \"{name}\" — use letters, digits, dashes, underscores"
+            "invalid {noun} name \"{}\" — use letters, digits, dashes, underscores",
+            crate::validate::show(name)
         ));
     }
     Ok(())
@@ -199,6 +203,23 @@ mod tests {
         // Boundary: 64 chars is the max accepted; 65 is rejected.
         assert!(validate_grant_name(&"x".repeat(64)).is_ok());
         assert!(validate_grant_name(&"x".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn name_errors_escape_control_characters() {
+        // Group names reach this validator from CLI args and from vaults.
+        for err in [
+            validate_grant_name("\u{1b}[31mx").unwrap_err().to_string(),
+            crate::groups::validate_group_name("\u{1b}[31mx")
+                .unwrap_err()
+                .to_string(),
+        ] {
+            assert!(err.contains("\\u{1b}[31mx"), "{err:?}");
+            assert!(
+                !err.chars().any(char::is_control),
+                "raw control char in {err:?}"
+            );
+        }
     }
 
     #[test]

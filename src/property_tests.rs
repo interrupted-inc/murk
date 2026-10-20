@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Property-based invariant tests for murk's core security guarantees.
 //!
 //! The fuzz targets (`fuzz/`) assert only panic-freedom. These assert the

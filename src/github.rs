@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! GitHub SSH key fetching for `murk authorize github:username`.
 
 use std::fmt::Write;
@@ -28,6 +31,15 @@ impl std::fmt::Display for GitHubError {
     }
 }
 
+/// GitHub usernames: alphanumeric + hyphens, 1-39 chars (no path traversal).
+pub fn is_valid_username(username: &str) -> bool {
+    !username.is_empty()
+        && username.len() <= 39
+        && username
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
 /// Fetch all SSH public keys for a GitHub user.
 ///
 /// Hits `https://github.com/{username}.keys` (no auth needed) and parses
@@ -37,13 +49,7 @@ impl std::fmt::Display for GitHubError {
 /// Filters to supported types only (ed25519 and rsa). Unsupported key
 /// types (ecdsa, sk-ssh-*) are silently skipped.
 pub fn fetch_keys(username: &str) -> Result<Vec<(MurkRecipient, String)>, GitHubError> {
-    // GitHub usernames: alphanumeric + hyphens, 1-39 chars, no path traversal.
-    if username.is_empty()
-        || username.len() > 39
-        || !username
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-')
-    {
+    if !is_valid_username(username) {
         return Err(GitHubError::Fetch(format!(
             "invalid GitHub username: {username}"
         )));

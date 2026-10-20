@@ -107,5 +107,7 @@ against a grant scoped to only the secrets you name.
 
 **Boundary line** (include wherever the claim appears): This reduces where
 secrets are exposed; it doesn't prevent a commanded process from printing one.
-A grant's TTL is a reminder to revoke, not an expiry. It's least-privilege, not
-a sandbox.
+A grant's TTL is enforced at read time — murk refuses an expired grant at
+every entry point. The key itself can't expire and still reads old vault
+versions with raw age, so revoke and rotate to close it. It's least-privilege,
+not a sandbox.

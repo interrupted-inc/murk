@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Recipient management: authorize, revoke, and list vault recipients.
 
 use crate::{crypto, types};
@@ -16,16 +19,27 @@ pub struct RecipientEntry {
 /// List all recipients in the vault with optional name resolution.
 ///
 /// If `secret_key` is provided, decrypts meta to resolve display names
-/// and marks which recipient corresponds to the caller's key.
-pub fn list_recipients(vault: &types::Vault, secret_key: Option<&str>) -> Vec<RecipientEntry> {
-    let meta_data = secret_key.filter(|k| !k.is_empty()).and_then(|sk| {
-        let identity = crypto::parse_identity(sk).ok()?;
-        let my_pubkey = identity.pubkey_string().ok()?;
-        let meta = crate::decrypt_meta(vault, &identity)?;
-        Some((meta, my_pubkey))
-    });
+/// and marks which recipient corresponds to the caller's key. Fails if the
+/// meta decrypts but is invalid (see [`crate::decrypt_meta`]).
+pub fn list_recipients(
+    vault: &types::Vault,
+    secret_key: Option<&str>,
+) -> Result<Vec<RecipientEntry>, String> {
+    let identity = secret_key
+        .filter(|k| !k.is_empty())
+        .and_then(|sk| crypto::parse_identity(sk).ok());
+    let meta_data = match identity {
+        Some(identity) => match (
+            crate::decrypt_meta(vault, &identity)?,
+            identity.pubkey_string(),
+        ) {
+            (Some(meta), Ok(my_pubkey)) => Some((meta, my_pubkey)),
+            _ => None,
+        },
+        None => None,
+    };
 
-    vault
+    Ok(vault
         .recipients
         .iter()
         .map(|pk| {
@@ -42,7 +56,7 @@ pub fn list_recipients(vault: &types::Vault, secret_key: Option<&str>) -> Vec<Re
                 is_self,
             }
         })
-        .collect()
+        .collect())
 }
 
 /// Add a recipient to the vault. Returns an error if the pubkey is invalid or already present.
@@ -538,7 +552,7 @@ mod tests {
         vault.recipients = vec![pubkey.clone(), pk2.clone()];
         vault.meta = meta_enc;
 
-        let entries = list_recipients(&vault, Some(&secret));
+        let entries = list_recipients(&vault, Some(&secret)).unwrap();
         assert_eq!(entries.len(), 2);
         let me = entries.iter().find(|e| e.pubkey == pubkey).unwrap();
         assert!(me.is_self);
@@ -554,7 +568,7 @@ mod tests {
         let mut vault = empty_vault();
         vault.recipients = vec![pubkey.clone()];
 
-        let entries = list_recipients(&vault, None);
+        let entries = list_recipients(&vault, None).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].pubkey, pubkey);
         assert!(entries[0].display_name.is_none());
@@ -581,7 +595,7 @@ mod tests {
         vault.recipients = vec![pubkey.clone()];
         vault.meta = meta_enc;
 
-        let entries = list_recipients(&vault, Some(&wrong_secret));
+        let entries = list_recipients(&vault, Some(&wrong_secret)).unwrap();
         assert_eq!(entries.len(), 1);
         assert!(entries[0].display_name.is_none());
         assert!(!entries[0].is_self);
@@ -590,7 +604,7 @@ mod tests {
     #[test]
     fn list_recipients_empty_vault() {
         let vault = empty_vault();
-        let entries = list_recipients(&vault, None);
+        let entries = list_recipients(&vault, None).unwrap();
         assert!(entries.is_empty());
     }
 

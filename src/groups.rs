@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Named recipient groups: the access-segmentation primitive.
 //!
 //! A group is a named subset of the vault's recipients. Secrets assigned to a

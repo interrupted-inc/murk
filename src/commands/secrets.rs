@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use super::*;
 use colored::Colorize;
 use murk_cli::{SecretTier, is_valid_key_name, types, vault};
@@ -828,52 +831,17 @@ pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vau
         std::process::exit(1);
     }
 
-    let mut tmp = tempfile::Builder::new()
-        .prefix("murk-edit-")
-        .suffix(".env")
-        .tempfile_in(&dir)
-        .unwrap_or_else(|e| die(&format_args!("creating tempfile: {e}"), 1));
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = tmp
-            .as_file()
-            .set_permissions(std::fs::Permissions::from_mode(0o600));
-    }
-
-    use std::io::Write;
-    tmp.write_all(buffer.as_bytes())
-        .unwrap_or_else(|e| die(&format_args!("writing tempfile: {e}"), 1));
-    tmp.flush()
-        .unwrap_or_else(|e| die(&format_args!("flushing tempfile: {e}"), 1));
-
-    // Open $EDITOR.
-    let editor = std::env::var("EDITOR")
-        .or_else(|_| std::env::var("VISUAL"))
-        .unwrap_or_else(|_| "vi".into());
-
-    let path = tmp.path().to_path_buf();
-    let status = std::process::Command::new(&editor)
-        .arg(&path)
-        .status()
-        .unwrap_or_else(|e| die(&format_args!("launching {editor}: {e}"), 1));
-
-    if !status.success() {
-        // Securely wipe tempfile before exiting.
-        overwrite_and_remove(&path);
-        die(&"editor exited with error — aborting", 1);
-    }
-
-    // Read back the edited content. Wrap in Zeroizing so the plaintext
-    // buffer is wiped as soon as parsing finishes.
-    let edited = zeroize::Zeroizing::new(
-        std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| die(&format_args!("reading tempfile: {e}"), 1)),
-    );
-
-    // Securely wipe the tempfile (overwrite with zeros before unlinking).
-    overwrite_and_remove(&path);
+    use super::editor::{EditAbort, edit_in_scratch_file};
+    let edited = match edit_in_scratch_file(&dir, &buffer) {
+        Ok(text) => text,
+        Err(EditAbort::Failed(msg)) => die(&msg, 1),
+        #[cfg(unix)]
+        Err(EditAbort::Signaled(sig)) => {
+            // The editor was killed: die from the same signal, as git does.
+            super::signals::raise_default(sig);
+            process::exit(128 + sig);
+        }
+    };
 
     // Parse and apply changes.
     if single_key {

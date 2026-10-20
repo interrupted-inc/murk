@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Source-level invariants that generic lints (clippy, fmt, cargo-deny) can't
 //! express. These scan the crate source as text — cheap, deterministic, and they
 //! fail fast when an agent or human violates a secret-handling rule that code

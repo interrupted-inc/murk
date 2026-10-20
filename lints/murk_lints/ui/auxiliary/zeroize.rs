@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Minimal stand-in for the real `zeroize` crate, compiled as an auxiliary
 //! crate so ui test fixtures can exercise a real external `zeroize::Zeroizing`
 //! `DefId` (matching what `SECRET_FIELDS`/`ZEROIZING_PATH` in the lint check

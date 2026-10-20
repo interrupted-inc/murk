@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Vault save path: re-encrypt only what changed, rebuild the meta blob, and
 //! re-MAC / re-sign it so the on-disk vault stays integrity-anchored.
 
@@ -260,6 +263,8 @@ pub fn save_vault(
     vault.secrets = new_secrets;
 
     let meta = build_meta(vault_path, vault, current);
+    crate::validate::meta(&meta)
+        .map_err(|e| MurkError::Secret(format!("refusing to write invalid vault meta: {e}")))?;
     let meta_json =
         serde_json::to_vec(&meta).map_err(|e| MurkError::Secret(format!("meta serialize: {e}")))?;
     vault.meta = encrypt_value(&meta_json, &recipients)?;

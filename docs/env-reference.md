@@ -8,7 +8,7 @@ The environment variables murk reads, and the CLI flags they mirror where one ex
 
 | Variable | Description |
 | --- | --- |
-| `MURK_KEY` | Your raw age private key (`AGE-SECRET-KEY-1…`), inline. Rejected for hardware-plugin identity strings (`AGE-PLUGIN-…`) — use `MURK_KEY_FILE` for those. |
+| `MURK_KEY` | Your raw age private key (`AGE-SECRET-KEY-1…`), inline. Rejected for hardware-plugin identity strings (`AGE-PLUGIN-…`) — use `MURK_KEY_FILE` for those. Set this or `MURK_KEY_FILE`, not both: murk refuses both non-empty, and an empty value counts as unset. |
 | `MURK_KEY_FILE` | Path to a private-key file: a raw age key, an SSH PEM key, or an age plugin identity file. `murk init` writes this reference into `.env`. |
 | `MURK_VAULT` | Vault filename, defaulting to `.murk`. Equivalent to passing `--vault` on every command (the one variable in the clap model). |
 
@@ -26,6 +26,6 @@ The environment variables murk reads, and the CLI flags they mirror where one ex
 | Variable | Description |
 | --- | --- |
 | `CI` | Truthy prints a nudge toward the scoped-agent path when a pipeline decrypts with a personal key. Advisory only. |
-| `EDITOR, VISUAL` | Editor launched by `murk edit`, checking `EDITOR` then `VISUAL`, falling back to `vi`. |
+| `EDITOR, VISUAL` | Editor launched by `murk edit`, checking `EDITOR` then `VISUAL`, falling back to `vi`. On Unix it runs through `sh`, as with git, so it may include arguments (`code --wait`). `MURK_KEY` and `MURK_KEY_FILE` are removed from its environment. |
 | `XDG_RUNTIME_DIR` | Preferred (typically tmpfs) scratch location for `murk edit`'s temporary file, over `/tmp`. |
 | `HOME (USERPROFILE on Windows)` | Base directory for murk state: `~/.config/murk/keys`, `agent-keys`, and `signer-pins`. |

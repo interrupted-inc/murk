@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use super::*;
 use age::secrecy::ExposeSecret;
 use colored::Colorize;
@@ -70,7 +73,7 @@ pub(crate) fn cmd_authorize(
         // TOFU: check fetched keys against pinned fingerprints. Pin checking
         // runs over the full key set (including ssh-rsa) so rotation of an
         // rsa key is still detected even though we refuse to authorize it.
-        let pinned = murk_cli::decrypt_meta(&vault, &identity)
+        let pinned = try_or_die(murk_cli::decrypt_meta(&vault, &identity))
             .and_then(|m| {
                 let pins = m.github_pins.get(username)?.clone();
                 Some(pins)
@@ -527,7 +530,7 @@ pub(crate) fn cmd_recipients(json: bool, vault_path: &str) {
     let secret_key = murk_cli::resolve_key_for_vault(vault_path)
         .ok()
         .map(|s| s.expose_secret().to_string());
-    let entries = murk_cli::list_recipients(&vault, secret_key.as_deref());
+    let entries = try_or_die(murk_cli::list_recipients(&vault, secret_key.as_deref()));
 
     if json {
         let list: Vec<serde_json::Value> = entries

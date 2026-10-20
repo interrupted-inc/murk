@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: murk contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 # Agent demo — give an AI agent the schema, then one key, never yours.
 # `murk agent plan` emits the vault schema with no values and no key. A grant
 # mints an ephemeral identity that can decrypt exactly the keys you name, so
