@@ -116,4 +116,4 @@ SPDX-FileCopyrightText: murk contributors
 SPDX-License-Identifier: MIT OR Apache-2.0
 ```
 
-Run `node scripts/spdx-headers.cjs` to add the header to new files. CI runs it with `--check` and fails if a source file lacks the header. Generated files, the lint UI fixtures and non-code files carry no header; the script lists the exclusions.
+Run `node scripts/spdx-headers.cjs` to add the header to new files. CI runs it with `--check` and fails if a source file lacks the header. Generated files and non-code files carry no header; the script lists the exclusions. The lint UI fixtures in `lints/murk_lints/ui/` carry the header too, so their `.stderr` expectations count it in their line numbers.

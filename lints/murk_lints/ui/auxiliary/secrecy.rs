@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Minimal stand-in for the real `secrecy` crate (what `age::secrecy`
 //! re-exports), compiled as an auxiliary crate so ui test fixtures can
 //! exercise a real `secrecy::SecretBox` `DefId` — the type

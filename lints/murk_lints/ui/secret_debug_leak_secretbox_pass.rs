@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // aux-build:secrecy.rs
 
 // Regression test: `secrecy::SecretBox` (what `age::secrecy::SecretString`

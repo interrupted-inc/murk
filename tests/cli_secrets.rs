@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: murk contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! CLI coverage for the secret commands: tier routing (`me` / named group) on
 //! add/import/generate/edit, rotate and listing modes, and JSON output.
 

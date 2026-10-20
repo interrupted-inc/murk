@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: murk contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 # CI grant demo — CI gets its own scoped key, which expires loudly.
 # `murk agent grant --out -` streams a grant key straight into the Actions
 # secret store; murk-action then runs `murk export` with it and sees only the
