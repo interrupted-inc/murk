@@ -63,10 +63,10 @@ mod property_tests;
 // Re-exports: keep the flat murk_cli::foo() API for main.rs
 pub use agent::{AgentPlan, AgentPlanKey, agent_plan, format_agent_plan_text};
 pub use env::{
-    EnvrcStatus, KeySource, agent_key_file_path, agent_keys_dir, dotenv_has_murk_key,
-    env_permission_warning, home_short, key_file_path, locate_key, parse_env, resolve_key,
-    resolve_key_for_vault, resolve_key_with_source, secret_file_loose_mode, strip_key_env,
-    write_envrc, write_key_ref_to_dotenv, write_key_to_dotenv, write_key_to_file,
+    EnvrcStatus, KeySource, agent_key_file_path, agent_keys_dir, create_key_file,
+    dotenv_has_murk_key, env_permission_warning, home_short, key_file_path, locate_key, parse_env,
+    resolve_key, resolve_key_for_vault, resolve_key_with_source, secret_file_loose_mode,
+    strip_key_env, write_envrc, write_key_ref_to_dotenv, write_key_to_dotenv, write_key_to_file,
 };
 pub use error::MurkError;
 pub use export::{
@@ -83,7 +83,10 @@ pub use groups::{
     validate_group_name,
 };
 pub use info::{InfoEntry, VaultInfo, format_info_lines, lifecycle_segment, vault_info};
-pub use init::{DiscoveredKey, InitStatus, check_init_status, create_vault, discover_existing_key};
+pub use init::{
+    DiscoveredKey, InitStatus, check_init_status, create_vault, discover_existing_key,
+    discover_stored_key,
+};
 pub use merge::{MergeDriverOutput, run_merge_driver};
 pub use policy::{check_agent_keys, enforce_agent_policy, is_agent_identity, is_agent_key_allowed};
 pub use recipients::{

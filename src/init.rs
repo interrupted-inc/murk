@@ -40,11 +40,26 @@ fn sanitize_remote_url(url: &str) -> String {
     }
 }
 
-/// A key discovered from the environment or .env file.
+/// A key `murk init` found in the environment or in `~/.config/murk/keys`.
 #[derive(Debug)]
 pub struct DiscoveredKey {
     pub secret_key: SecretString,
     pub pubkey: String,
+    /// Where the key came from: `MURK_KEY`, `MURK_KEY_FILE`, or a stored key.
+    pub source: crate::env::KeySource,
+}
+
+impl DiscoveredKey {
+    fn new(secret_key: SecretString, source: crate::env::KeySource) -> Result<Self, String> {
+        let identity = crypto::parse_identity(secret_key.expose_secret())
+            .map_err(|e| format!("{}: {e}", source.describe()))?;
+        let pubkey = identity.pubkey_string().map_err(|e| e.to_string())?;
+        Ok(Self {
+            secret_key,
+            pubkey,
+            source,
+        })
+    }
 }
 
 /// Try to find an existing age key from the environment.
@@ -56,20 +71,49 @@ pub struct DiscoveredKey {
 pub fn discover_existing_key() -> Result<Option<DiscoveredKey>, String> {
     // The env vars are read in one place (the env module) so the auth read path
     // stays auditable — see tests/invariants.rs.
-    let raw = crate::env::key_from_env_only()?;
+    crate::env::key_from_env_only()?
+        .map(|(key, source)| DiscoveredKey::new(key, source))
+        .transpose()
+}
 
-    match raw {
-        Some(key) => {
-            let identity =
-                crypto::parse_identity(key.expose_secret()).map_err(|e| e.to_string())?;
-            let pubkey = identity.pubkey_string().map_err(|e| e.to_string())?;
-            Ok(Some(DiscoveredKey {
-                secret_key: key,
-                pubkey,
-            }))
-        }
-        None => Ok(None),
+/// Find the key already stored for this vault in `~/.config/murk/keys`, for
+/// `murk init` to reuse instead of generating a new one.
+///
+/// Generating a key writes `keys/<vault-hash>`, so without this check `init`
+/// would silently replace an identity the operator still needs whenever the
+/// environment did not name it (a fresh clone, a new worktree, a deleted
+/// `.env`). For an existing vault it looks where the runtime would (this
+/// checkout, then sibling worktrees — see [`crate::env::discover_key_file`]);
+/// for a new vault (`include_siblings == false`) only at this checkout's own
+/// key file, the one generation would overwrite.
+///
+/// Strict and agent mode never auto-use a stored key, so there a stored key
+/// is an error rather than a reuse: init neither adopts nor replaces it.
+pub fn discover_stored_key(
+    vault_path: &str,
+    include_siblings: bool,
+) -> Result<Option<DiscoveredKey>, String> {
+    let path = if include_siblings {
+        crate::env::discover_key_file(vault_path)
+    } else {
+        Some(crate::env::key_file_path(vault_path)?).filter(|p| p.exists())
+    };
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    if crate::hardening::strict_mode() {
+        return Err([
+            format!(
+                "a key for this vault is already stored at {}",
+                path.display()
+            ),
+            "strict mode (MURK_STRICT or MURK_AGENT) neither uses nor replaces stored keys".into(),
+            format!("to use it, set MURK_KEY_FILE={}", path.display()),
+        ]
+        .join("\n"));
     }
+    let secret_key = crate::env::read_stored_key(&path)?;
+    DiscoveredKey::new(secret_key, crate::env::KeySource::Auto(path)).map(Some)
 }
 
 /// Status of an existing vault relative to a given key.
