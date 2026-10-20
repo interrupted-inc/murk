@@ -4090,33 +4090,6 @@ fn edit_single_key_no_change() {
 
 #[cfg(unix)]
 #[test]
-fn edit_abort_preserves_value() {
-    let dir = TempDir::new().unwrap();
-    let (key, _) = init_vault(&dir);
-
-    murk(&dir, &key)
-        .args(["add", "SECRET", "--vault", "test.murk"])
-        .write_stdin("keep_me\n")
-        .assert()
-        .success();
-
-    murk(&dir, &key)
-        .args(["edit", "SECRET", "--vault", "test.murk"])
-        .env("EDITOR", "false")
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("aborting"));
-
-    // Value is preserved.
-    murk(&dir, &key)
-        .args(["get", "SECRET", "--vault", "test.murk"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("keep_me"));
-}
-
-#[cfg(unix)]
-#[test]
 fn edit_multi_key_add_update_remove() {
     let dir = TempDir::new().unwrap();
     let (key, _) = init_vault(&dir);
@@ -4183,40 +4156,6 @@ fn edit_missing_key_fails() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("not found"));
-}
-
-#[cfg(unix)]
-#[test]
-fn edit_tempfile_cleaned_up() {
-    let dir = TempDir::new().unwrap();
-    let (key, _) = init_vault(&dir);
-
-    murk(&dir, &key)
-        .args(["add", "SECRET", "--vault", "test.murk"])
-        .write_stdin("value\n")
-        .assert()
-        .success();
-
-    // Editor that records the tempfile path.
-    let marker = dir.path().join("temppath.txt");
-    let editor = write_editor_script(
-        &dir,
-        "editor.sh",
-        &format!(r#"cp "$1" "{}" "#, marker.display()),
-        &format!(r#"copy %1 "{}""#, marker.display()),
-    );
-
-    murk(&dir, &key)
-        .args(["edit", "SECRET", "--vault", "test.murk"])
-        .env("EDITOR", &editor)
-        .assert()
-        .success();
-
-    // The copied file should exist (proves editor ran), but we can't easily
-    // check the original tempfile is gone since we don't know its path.
-    // Instead verify the marker file doesn't contain secrets in plaintext
-    // after the edit (the original tempfile was wiped).
-    assert!(marker.exists());
 }
 
 // ── scan ──

@@ -111,7 +111,7 @@ const ENV_GROUPS: &[(&str, &[EnvVar])] = &[
             },
             EnvVar {
                 name: "EDITOR, VISUAL",
-                summary: "Editor launched by `murk edit`, checking `EDITOR` then `VISUAL`, falling back to `vi`.",
+                summary: "Editor launched by `murk edit`, checking `EDITOR` then `VISUAL`, falling back to `vi`. On Unix it runs through `sh`, as with git, so it may include arguments (`code --wait`). `MURK_KEY` and `MURK_KEY_FILE` are removed from its environment.",
             },
             EnvVar {
                 name: "XDG_RUNTIME_DIR",

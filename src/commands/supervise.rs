@@ -26,6 +26,8 @@
 //!
 //! The masking is an accident guard, not a boundary: see `murk_cli::mask`.
 
+#[cfg(unix)]
+use super::signals;
 use super::die;
 use murk_cli::mask::Masker;
 use std::io::{self, Read, Write};
@@ -122,127 +124,4 @@ fn exit_like(status: ExitStatus) -> ! {
         }
     }
     process::exit(status.code().unwrap_or(1));
-}
-
-#[cfg(unix)]
-mod signals {
-    use std::sync::atomic::{AtomicI32, Ordering};
-
-    /// The signals forwarded to the child.
-    const FORWARDED: [libc::c_int; 4] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT];
-
-    /// Pid of the running child, or 0 before spawn and once it has exited.
-    static CHILD: AtomicI32 = AtomicI32::new(0);
-    /// A forwardable signal that arrived before the child existed.
-    static PENDING: AtomicI32 = AtomicI32::new(0);
-
-    /// Async-signal-safe handler: atomics and `kill(2)` only.
-    extern "C" fn forward(sig: libc::c_int, info: *mut libc::siginfo_t, _ctx: *mut libc::c_void) {
-        let child = CHILD.load(Ordering::SeqCst);
-        // No child to deliver to (not spawned yet, or already exited): keep the
-        // signal for `set_child` to forward or `stop_forwarding` to re-raise.
-        if child <= 0 {
-            PENDING.store(sig, Ordering::SeqCst);
-            return;
-        }
-        // SAFETY: with SA_SIGINFO the kernel passes a valid siginfo_t (null is
-        // checked anyway); si_pid is defined for these signals.
-        let sender = if info.is_null() {
-            0
-        } else {
-            unsafe { (*info).si_pid() }
-        };
-        // Sender 0 is the kernel: a terminal key or hangup, delivered to the
-        // whole foreground process group, so the child already has it. A signal
-        // from the child itself is not echoed back.
-        if sender == 0 || sender == child {
-            return;
-        }
-        // SAFETY: kill(2) is async-signal-safe.
-        unsafe {
-            libc::kill(child, sig);
-        }
-    }
-
-    /// Catch the forwarded signals so they don't kill murk while the child runs.
-    /// A caught signal resets to its default in the child on exec.
-    pub(super) fn install() {
-        for sig in FORWARDED {
-            // SAFETY: a zeroed sigaction is a valid starting value; the handler
-            // is async-signal-safe and lives for the whole process.
-            unsafe {
-                let mut action: libc::sigaction = std::mem::zeroed();
-                action.sa_sigaction = forward as *const () as libc::sighandler_t;
-                action.sa_flags = libc::SA_SIGINFO | libc::SA_RESTART;
-                libc::sigemptyset(&raw mut action.sa_mask);
-                libc::sigaction(sig, &raw const action, std::ptr::null_mut());
-            }
-        }
-    }
-
-    /// Record the child's pid, then forward any signal that arrived first.
-    pub(super) fn set_child(pid: u32) {
-        let pid = pid as libc::pid_t;
-        CHILD.store(pid, Ordering::SeqCst);
-        let early = PENDING.swap(0, Ordering::SeqCst);
-        if early != 0 {
-            // SAFETY: plain syscall on our own, not yet reaped, child.
-            unsafe {
-                libc::kill(pid, early);
-            }
-        }
-    }
-
-    /// Block until the child has exited, without reaping it, so the pid stays
-    /// ours until forwarding is turned off.
-    pub(super) fn wait_exited(pid: u32) {
-        loop {
-            // SAFETY: waitid writes into `info`, which outlives the call.
-            let rc = unsafe {
-                let mut info: libc::siginfo_t = std::mem::zeroed();
-                libc::waitid(
-                    libc::P_PID,
-                    pid as libc::id_t,
-                    &raw mut info,
-                    libc::WEXITED | libc::WNOWAIT,
-                )
-            };
-            if rc == 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
-            {
-                break;
-            }
-        }
-        CHILD.store(0, Ordering::SeqCst);
-    }
-
-    /// The child is reaped: give the forwarded signals their default action
-    /// back, then re-raise one caught since the child exited. Default first, so
-    /// a signal arriving after the swap kills murk directly instead of landing
-    /// in `PENDING` unseen.
-    pub(super) fn stop_forwarding() {
-        for sig in FORWARDED {
-            // SAFETY: plain syscall on this process.
-            unsafe {
-                libc::signal(sig, libc::SIG_DFL);
-            }
-        }
-        let pending = PENDING.swap(0, Ordering::SeqCst);
-        if pending != 0 {
-            raise_default(pending);
-        }
-    }
-
-    /// Die from `sig` the way the child did: default disposition, then raise.
-    /// Returns only if the signal did not end the process.
-    pub(super) fn raise_default(sig: libc::c_int) {
-        // SAFETY: plain syscalls on this process.
-        unsafe {
-            libc::signal(sig, libc::SIG_DFL);
-            let mut set: libc::sigset_t = std::mem::zeroed();
-            libc::sigemptyset(&raw mut set);
-            libc::sigaddset(&raw mut set, sig);
-            libc::pthread_sigmask(libc::SIG_UNBLOCK, &raw const set, std::ptr::null_mut());
-            libc::raise(sig);
-        }
-    }
 }
