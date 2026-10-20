@@ -4,6 +4,8 @@ This document describes murk's security properties and limitations. It is intend
 
 murk is pre-1.0 and has not been independently audited. See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
+This document is also murk's assurance case: the threat model is in the sections up to [Cryptographic properties](#cryptographic-properties), the trust boundaries are in [Trust boundaries](#trust-boundaries), and the arguments for secure design and against common implementation weaknesses are in [Secure design principles](#secure-design-principles) and [Common implementation weaknesses](#common-implementation-weaknesses). Code references in those two sections are paths from the repository root, with the function name.
+
 ## What murk protects
 
 **Secrets at rest in git.** The `.murk` file is designed to be committed. Secret values are individually encrypted with [age](https://age-encryption.org/) (X25519 + ChaCha20-Poly1305). An attacker with read access to the repository cannot decrypt values without a recipient's private key.
@@ -171,6 +173,146 @@ murk uses age for all encryption and decryption. It does not implement custom cr
 - **Key derivation:** BIP39 mnemonic (256 bits of entropy) → direct Bech32 encoding → age identity (no intermediate hash; same bytes, same key). The Ed25519 signing key derives from those same bytes, so the recovery phrase recovers both. SSH keys use their native format.
 
 The MAC binds independent age ciphertexts together, so accidental corruption or naive tampering is caught. Because its key travels in the (re-encryptable) meta blob, it does not stop a deliberate repo-writer — the Ed25519 signature does, since only a recipient's private key can produce a valid one.
+
+## Secure design principles
+
+This section applies the eight design principles of Saltzer and Schroeder ("The Protection of Information in Computer Systems", 1975) to murk. Each entry says what murk does, where in the code it does it, and where the principle is only partly met.
+
+**Economy of mechanism.** murk implements no cryptographic primitives. Encryption and decryption go through the `age` crate (`src/crypto.rs`), the integrity MAC is keyed BLAKE3 (`src/mac.rs`), and signatures are Ed25519 (`src/signing.rs`). The vault is one JSON file, parsed in one function (`vault::parse` in `src/vault.rs`). The CLI and the Python and Node bindings all load a vault through the same function (`load_vault` in `src/load.rs`; called from `src/python.rs` and `node/src/lib.rs`). *Partly met:* the format carries several MAC versions for backward compatibility, including unkeyed legacy `sha256:` and `sha256v2:` MACs that are still accepted on load and flagged as legacy (`verify_mac` in `src/mac.rs`, `resolve_meta_state` in `src/load.rs`). The agent features (grants, policy, MCP server, output masking) add mechanism that the core encrypt/decrypt path does not need.
+
+**Fail-safe defaults.** When murk cannot establish that an operation is safe, it refuses it:
+
+- Key resolution returns an error instead of guessing. A `MURK_KEY_FILE` that is set but unreadable is an error, not a fallback to auto-discovery. `.env` is never read at runtime. In strict or agent context (`MURK_STRICT`, `MURK_AGENT`), auto-discovery of the operator's stored key is off (`resolve_key_with_source` in `src/env.rs`, `strict_mode` in `src/hardening.rs`).
+- Loading fails if the vault has secrets but no meta or an empty MAC, if the MAC does not match, if a signature is present but invalid, if a pinned signer's verifying key changed, if a grant bound to the loading key has expired or has an unreadable expiry, or if the vault's major version is unknown (`resolve_meta_state`, `check_signature`, `decrypt_vault` and `load_vault` in `src/load.rs`; `check_grant_expiry` in `src/policy.rs`; `vault::parse`).
+- `murk agent exec` refuses an auto-discovered operator key unless `--allow-operator-key` is passed (`cmd_agent_exec` in `src/commands/grants.rs`). The MCP server's `murk_exec` tool is removed unless `--allow-exec` is passed (`MurkMcp::new` in `src/mcp.rs`). `ssh-rsa` recipients are refused unless `--allow-ssh-rsa` is passed (see [SECURITY.md](SECURITY.md)). Under an agent policy, a key without an allowed tag is refused, and an empty allow-list refuses every key (`check_agent_keys` in `src/policy.rs`).
+
+*Partly met:* an absent signature is a warning, not an error. It is an error only under `MURK_STRICT` on a vault this machine saw signed before (`load_vault`). An age signer seen for the first time is trusted on first use, and `MURK_NO_SIGNER_PIN` turns pin checks off (`reconcile` in `src/pins.rs`). A grant with an empty `expires_at` is accepted as a legacy grant without expiry (`check_grant_expiry`). See [Vault signatures](#vault-signatures).
+
+**Complete mediation.** murk checks integrity again on every load; it keeps no record that a vault already passed. `decrypt_vault` verifies the MAC and the signature before it decrypts any secret value, and checks the expiry of every grant bound to the loading key. `load_vault` then enforces signer pins (`src/load.rs`). Long-lived holders of decrypted state check again on each read: the MCP server calls `enforce_agent_policy` (`src/policy.rs`) in `murk_get` and `murk_exec` (`src/mcp.rs`). `murk exec` and `murk agent exec` check the agent policy before any value reaches the child process (`cmd_exec` in `src/commands/exec.rs`). *Partly met:* the merge driver has no key, so it cannot check the MAC or signature. The next load checks them ([Merge driver](#merge-driver)). Every check is in the murk binary and library, so a recipient who uses `age` directly, or an older murk, is not mediated.
+
+**Open design.** murk's security does not depend on its design being secret. The source is public, the vault format is specified in [SPEC.md](SPEC.md), and this document states what murk does not protect. The only secrets are recipients' private keys. Key names and the recipient list are public in the vault header by design ([What murk does not protect](#what-murk-does-not-protect)).
+
+**Separation of privilege.** *Partly met.* murk has no m-of-n control: one recipient's private key is enough to decrypt every shared secret and to write a validly signed vault. Where murk does require two conditions:
+
+- `murk mcp` needs both an agent context (`MURK_AGENT=1`) and a key that is a grant of this vault (`cmd_mcp` in `src/commands/grants.rs`).
+- A recipient added or removed on only one side of a merge is a conflict, so both sides must agree (`src/merge.rs`; see [Merge driver](#merge-driver)).
+- A release needs a tag on a commit that reached `main` through a merged pull request, under the branch protection that the release workflow checks (`preflight` job in `.github/workflows/release.yaml`).
+
+**Least privilege.**
+
+- Named groups and private secrets limit decryption to their members, and age enforces this.
+- An agent grant is an ephemeral identity that can decrypt only the keys it was granted. It is excluded from the shared layer (`decrypt_vault`; see [Agent grants](#what-murk-does-not-protect)).
+- `murk agent exec` and the MCP `murk_exec` tool clear the child's environment and keep only `PATH`, `HOME` and `TERM` on Unix (`cmd_exec` in `src/commands/exec.rs`, `run_command` in `src/mcp.rs`). `run_command` also gives the child a null stdin, a 1 MiB output cap and a 120-second timeout.
+- Key files and `.env` are created `0600` (`write_secret_file` in `src/env.rs`). The `~/.config/murk` directories are set to `0700` (`config_subdir` in `src/env.rs`). The vault's temporary file is set to `0600` before it is written (`vault::write`).
+- The GitHub key fetch follows no redirects, ignores proxy environment variables, times out after 30 seconds and reads at most 1 MiB (`fetch_keys` in `src/github.rs`).
+- CI workflow tokens are read-only by default and elevated per job ([SECURITY.md](SECURITY.md)).
+
+*Partly met:* a grant can read the encrypted meta, so it learns recipient names, group membership and other grants' metadata. Child processes run with the user's full OS privileges. `HOME` is kept, so a child can read `~/.config/murk/keys` directly. Plain `murk exec` without `--clean-env` passes the whole parent environment except `MURK_KEY` and `MURK_KEY_FILE`.
+
+**Least common mechanism.** Mechanisms that users share are kept apart:
+
+- Each value is a separate age ciphertext with a fresh file key.
+- A stored key is bound to one vault path (`vault_hash` and `discover_key_file` in `src/env.rs`), so a vault copied elsewhere finds no key.
+- Grant keys are stored in a separate `agent-keys/` directory that auto-discovery never reads (`agent_key_file_path` in `src/env.rs`).
+- Signer pins are kept per vault path (`pin_path` in `src/pins.rs`).
+- The MCP server uses a stdio pipe, not a network listener.
+
+*Partly met:* all recipients share the `everyone` layer and the MAC key, which is why the MAC proves integrity but not authorship ([Audit logging](#what-murk-does-not-protect)). Sibling git worktrees of one repository share a stored key by design. The worktree relationship is verified against git's metadata in both directions first (`sibling_worktrees` in `src/git.rs`).
+
+**Psychological acceptability.** The secure path is the default path. `murk init` stores the key where auto-discovery finds it. `murk add` and `murk rotate` read values from a prompt that does not echo, or from stdin, never from the command line (`resolve_value` in `src/commands/mod.rs`). Errors give one action per line (`resolve_key_with_source`). The trade-offs made for usability are stated in this document: public key names, sign-when-capable, and trust on first use. *Partly met:* the strictest settings are opt-in. These include `MURK_STRICT`, running agents as a separate OS user, and signed git commits.
+
+## Common implementation weaknesses
+
+This section covers common implementation weaknesses that apply to a local Rust CLI and its bindings, drawn from the CWE Top 25 and OWASP Top 10 and from CWE entries specific to handling secrets. For each one, it gives murk's countermeasure, the evidence, and the known gaps. Denial of service against the CLI is out of scope ([SECURITY.md](SECURITY.md)).
+
+**OS command and argument injection (CWE-78, CWE-88).** murk never starts a shell itself. Its code starts every child process with an argument vector through `std::process::Command` or `tokio::process::Command`. These are the user's command in `murk exec` (`cmd_exec` in `src/commands/exec.rs`), the MCP `murk_exec` tool (`run_command` in `src/mcp.rs`), the editor in `murk edit` (`cmd_edit` in `src/commands/secrets.rs`) and `git` (`src/git.rs`, `src/init.rs`, `src/commands/git.rs`, `src/commands/verify.rs`). `$EDITOR` is run as a single program name and is not split by a shell. For output that a shell evaluates:
+
+- `murk export` single-quotes each value and escapes embedded quotes (`export_secrets` in `src/export.rs`; test `export_secrets_shell_escaping`). It skips any key name that is not a valid identifier (`cmd_export` in `src/commands/secrets.rs`, `is_valid_key_name` in `src/lib.rs`).
+- The vault name written to `.envrc` is quoted by `shell_escape` (`src/env.rs`; test `write_envrc_escapes_vault_name`).
+- Before `cmd_exec` injects variables, it refuses empty key names, key names with `=` or NUL, and values with NUL.
+
+**Path traversal and link following (CWE-22, CWE-59).** Untrusted names do not become paths:
+
+- A GitHub username must be 1 to 39 ASCII letters, digits or hyphens before it goes into the URL (`fetch_keys` in `src/github.rs`).
+- Stored key file names are hashes of the vault path (`vault_hash` in `src/env.rs`).
+- Grant names are limited to letters, digits, `-` and `_` (`validate_short_name` in `src/grants.rs`).
+
+Symlinks are refused:
+
+- At the vault path (`vault::read_with_raw`).
+- At key files read through `MURK_KEY_FILE` or auto-discovery. Key files are also refused if they are group- or world-accessible (`read_secret_file` in `src/env.rs`; test `world_readable_key_file_rejected`).
+- At key files and `.env` on write. On Unix, those writes also open with `O_NOFOLLOW` (`write_key_to_file` and `write_secret_file` in `src/env.rs`).
+- At the lock file, which is opened with `O_NOFOLLOW` (`vault::lock`; test `lock_file_symlink_rejected`).
+
+Auto-discovery hashes the literal vault path, without resolving symlinks, so a symlinked `.murk` does not borrow another project's key (`absolute_vault_path` in `src/env.rs`). *Gaps:*
+
+- The symlink checks look only at the final path component.
+- On non-Unix platforms there is no `O_NOFOLLOW` and no file-permission hardening.
+- Signer-pin files are written with a plain `std::fs::write`, with no symlink check (`write_pin` in `src/pins.rs`).
+- The `.envrc` append and the zero-overwrite in `overwrite_and_remove` (`src/commands/secrets.rs`) open without `O_NOFOLLOW`. The `.envrc` append is guarded only by a prior symlink check.
+
+**Race conditions, TOCTOU (CWE-367).** Vault writes are atomic. The vault goes to a temporary file in the same directory, which is set to `0600`, fsynced and renamed over the vault, and then the directory is fsynced (`vault::write`). Read-modify-write cycles hold an exclusive lock on `.murk.lock` (`vault::lock`). Key and `.env` writes use `O_NOFOLLOW` at open time, so a symlink planted after the check is still refused. *Gaps:* reads check for a symlink and then open the file by path (`read_with_raw`, `read_secret_file`), which leaves a window between the check and the open. The lock on non-Unix platforms is check-then-create, as `vault::lock` notes.
+
+**Insecure temporary files (CWE-377).** `murk edit` creates its file with the `tempfile` crate in `$XDG_RUNTIME_DIR` when that is a directory, and in the system temporary directory otherwise. It sets the file to `0600`, and after the editor exits it overwrites the file with zeros and deletes it (`cmd_edit` and `overwrite_and_remove` in `src/commands/secrets.rs`). Under `MURK_STRICT`, `murk edit` refuses to run unless the directory is RAM-backed (`is_ram_backed` in `src/hardening.rs`). *Gaps:*
+
+- The plaintext is on disk while the editor runs, as [SECURITY.md](SECURITY.md) states.
+- Some errors end the process through `process::exit` (`die` in `src/commands/mod.rs`). That skips the temporary file's cleanup, so the plaintext file stays in the temporary directory. This happens if writing the file fails, if `$EDITOR` cannot be started, or if reading the file back fails.
+- The overwrite cannot defeat journaling or copy-on-write file systems.
+
+**Exposure of secrets in output, logs, arguments and environment (CWE-200, CWE-532, CWE-214).**
+
+- Secret values are never taken from the command line. `murk add` and `murk rotate` read them from a prompt that does not echo, or from stdin (`resolve_value` in `src/commands/mod.rs`).
+- The key reaches murk only through `MURK_KEY`, `MURK_KEY_FILE` or a key file.
+- The commands that `murk exec`, `murk agent exec` and the MCP `murk_exec` tool run do not inherit `MURK_KEY` or `MURK_KEY_FILE`: `cmd_exec` either clears the environment or removes both variables, and `run_command` clears the environment.
+- Library modules must not print to stdout, and only `src/env.rs` reads the `MURK_KEY*` variables. Both rules are enforced by tests (`library_modules_do_not_print_to_stdout` and `murk_key_is_read_only_in_the_env_module` in `tests/invariants.rs`).
+- `dbg!` is denied (`[lints.clippy]` in `Cargo.toml`).
+- The `Debug` output of `MurkIdentity` (`src/crypto.rs`) and `DiffEntry` (`src/export.rs`) never prints key material or values.
+- Under `MURK_STRICT`, `murk get` and `murk export` refuse to write plaintext to stdout when stdout is a regular file (`strict_guard_plaintext_stdout` in `src/commands/secrets.rs`).
+- The CLI turns off core dumps at startup on Unix (`disable_core_dumps` in `src/hardening.rs`, called from `run` in `src/main.rs`).
+- `murk agent exec` and the MCP `murk_exec` tool mask injected values in the child's output ([Output masking](#what-murk-does-not-protect)).
+
+*Gaps:*
+
+- Other processes of the same user can see `MURK_KEY` in murk's environment.
+- The editor that `murk edit` starts, and the `git` subprocesses, inherit murk's environment unchanged, including `MURK_KEY` if it is set.
+- CodeQL's `rust/cleartext-logging` query is excluded repo-wide as a false positive for a local CLI (`.github/codeql/codeql-config.yml`), so CodeQL does not check this class.
+- The invariant tests scan source text, not types. The type-aware lints in `lints/murk_lints` are run by hand and are not part of CI.
+- The Python and Node bindings do not turn off core dumps.
+
+**Memory safety (CWE-787, CWE-125, CWE-416).** murk is written in Rust. Non-test `unsafe` code is in two places:
+
+- `src/hardening.rs`: `setrlimit` in `disable_core_dumps`, `statfs` in `is_ram_backed`, and borrowing the stdout file descriptor in `stdout_is_regular_file`.
+- The `signals` module of `src/commands/supervise.rs`: `sigaction`, `kill`, `waitid`, `signal`, `pthread_sigmask` and `raise`. The signal handler there uses only atomics and `kill(2)`.
+
+Each block has a comment that explains why it is sound. All other `unsafe` in `src/` is in tests (`std::env::set_var` and `remove_var`). The Python bindings (`src/python.rs`) and Node bindings (`node/src/`) have no hand-written `unsafe`. *Gaps:* there is no `forbid(unsafe_code)` or `deny(unsafe_code)` lint, so review is what stops new `unsafe` code. Dependencies contain their own `unsafe`. CI runs `cargo audit --deny unsound` on dependency changes (`.github/workflows/ci.yaml`).
+
+**Parsing untrusted input (CWE-20, CWE-502).** Anyone with write access to the repository controls the `.murk` file, so murk treats it as untrusted input. It is deserialized with `serde_json` into fixed types, a step that runs no code from the input, and an unknown major version is rejected (`vault::parse`). Malformed base64, JSON or age data in the meta blob gives an integrity error, not a panic (`resolve_meta_state` in `src/load.rs`). The evidence:
+
+- Six fuzz targets in `fuzz/fuzz_targets/` cover vault parsing, the three-way merge driver, `.env` parsing, recipient and identity parsing, and recovery phrases. CI runs them for 90 seconds per target on pull requests that change `src/`, `fuzz/` or the Cargo manifests, and for 300 seconds per target every night (`.github/workflows/fuzz.yaml`).
+- Adversarial tests include `load_vault_not_json`, `load_vault_wrong_version` and `load_vault_huge_key_name` in `tests/adversarial.rs`.
+- The property test `any_tamper_fails_the_load` is in `src/property_tests.rs`.
+- The GitHub response body is capped at 1 MiB (`fetch_keys`).
+
+*Gaps:* the vault file is read with no size limit, and unknown JSON fields are ignored, not rejected. No fuzz target reaches the decryption and verification path (`decrypt_vault`), which needs a key.
+
+**Cryptographic weaknesses (CWE-327, CWE-208).** murk uses no custom primitives ([Cryptographic properties](#cryptographic-properties)). It compares MACs in constant time (`constant_time_eq` in `verify_mac`, `src/mac.rs`). The `rsa` crate's timing side channel (RUSTSEC-2023-0071) is handled by refusing `ssh-rsa` recipients by default ([SECURITY.md](SECURITY.md)). *Gap:* legacy unkeyed `sha256:` and `sha256v2:` MACs are still accepted on load. They are flagged as legacy (`legacy_mac` in `resolve_meta_state`).
+
+**Vulnerable and untrusted dependencies, and build integrity (CWE-1395, CWE-494; OWASP A06, A08).**
+
+- `Cargo.lock` is committed, and release builds use `--locked`.
+- `cargo deny` checks licenses, bans and sources on every pull request. It denies wildcard versions and unknown registries and git sources (`deny.toml`).
+- On dependency changes and pushes, CI also checks RustSec advisories, with `cargo deny` and with `cargo audit --deny unmaintained --deny unsound` (`.github/workflows/ci.yaml`).
+- A daily workflow opens fix pull requests for new advisories (`.github/workflows/advisories.yaml`). Dependabot proposes updates (`.github/dependabot.yml`).
+- Actions are pinned to full commit SHAs.
+- CodeQL scans Rust, Python, JavaScript/TypeScript and the workflows on pull requests, on pushes to `main` and weekly (`.github/workflows/codeql.yaml`). OpenSSF Scorecard runs on pushes to `main` and weekly (`.github/workflows/scorecard.yaml`).
+- A CI job on `main` builds twice and checks that the output is reproducible (`reproducibility` in `.github/workflows/ci.yaml`).
+- A release runs only from a tag on a commit that reached `main` through a merged pull request, under a checked branch-protection baseline (`preflight` in `.github/workflows/release.yaml`). Release artifacts carry Sigstore provenance ([Supply chain](#supply-chain)).
+
+*Gaps:*
+
+- RUSTSEC-2023-0071 is ignored, with the reason given in `deny.toml`.
+- crates.io packages carry no attestation ([VERIFYING.md](VERIFYING.md)).
+- The release workflow does not run the test suite again. It relies on CI having passed on `main`.
 
 ## Scope
 
