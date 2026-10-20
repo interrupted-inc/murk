@@ -171,6 +171,7 @@ export default async function plugin(bb: BbPluginApi) {
     requested: string[],
     grants: GrantRecord[],
     allowReveal: boolean,
+    threadId: string,
   ): Map<string, GrantRecord> {
     const assignment = new Map<string, GrantRecord>();
     for (const key of requested) {
@@ -178,7 +179,7 @@ export default async function plugin(bb: BbPluginApi) {
       if (covering.length === 0) {
         throw new Error(
           `${key} is not covered by any active grant for this thread — ` +
-            `ask the user to mint one with: bb murk grant mint --keys ${key}`,
+            `ask the user to mint one with: bb murk grant mint --keys ${key} --thread ${threadId}`,
         );
       }
       const revealGrant = allowReveal ? covering.find((grant) => grant.reveal) : undefined;
@@ -263,11 +264,12 @@ export default async function plugin(bb: BbPluginApi) {
         const grants = store.activeFor(projectId, threadId);
         if (grants.length === 0) {
           return toolError(
-            "no active grant covers this thread — ask the user to mint one with: bb murk grant mint --keys KEY[,KEY…]",
+            "no active grant covers this thread — ask the user to mint one with: " +
+              `bb murk grant mint --keys KEY[,KEY…] --thread ${threadId}`,
           );
         }
         const requested = keys ?? [...new Set(grants.flatMap((grant) => grant.keys))];
-        const assignment = assignGrants(requested, grants, allowRevealGrants);
+        const assignment = assignGrants(requested, grants, allowRevealGrants, threadId);
         const values = decryptAssigned(assignment);
 
         const revealKeys = requested.filter((key) => allowRevealGrants && assignment.get(key)?.reveal);
@@ -287,7 +289,7 @@ export default async function plugin(bb: BbPluginApi) {
           const mergeValues = new Map<string, string>();
           for (const key of previous) {
             try {
-              const merged = decryptAssigned(assignGrants([key], grants, false));
+              const merged = decryptAssigned(assignGrants([key], grants, false, threadId));
               const value = merged.get(key);
               if (value !== undefined) mergeValues.set(key, value);
             } catch {
