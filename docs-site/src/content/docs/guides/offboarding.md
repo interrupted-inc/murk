@@ -99,7 +99,11 @@ it was made on, and the branches it was merged or pulled into.
 
 Revoke on the main branch. A revoke on an unmerged branch doesn't stop main's
 vaults from listing them until you merge it, and that merge is a
-[conflict](/guides/git-merge-ssh/#conflicts) to resolve by hand. If you really
+[conflict](/guides/git-merge-ssh/#conflicts) to resolve by hand. Until then
+they are still a recipient on main and on every other branch the revoke hasn't
+reached, so they can read any secret added or rotated there. If you revoked on
+a branch, merge it into main before you add or rotate secrets anywhere else. A
+`--rotate` on that branch protects only the values rotated there. If you really
 do need to go back to an older vault, see [rollback and deliberate
 reverts](/concepts/recipients-signatures/#rollback-and-deliberate-reverts).
 
