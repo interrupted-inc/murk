@@ -9,7 +9,9 @@ A grant gives an agent or tool read access to a fixed set of secrets, for a limi
 
 ## A grant key isn't your key
 
-`murk agent grant --name NAME --only KEY [--ttl DUR]` mints a fresh, ephemeral age identity: never your `MURK_KEY`. The grant becomes a recipient of the encrypted `meta` blob, so it can verify vault integrity and read group/grant state, but it's excluded from the `everyone` layer entirely. Its actual access is the set of `--only` keys, each re-encrypted as a private ciphertext addressed to the grant's own pubkey. Nothing else in the vault decrypts for it, shared or otherwise.
+`murk agent grant --name NAME --only KEY [--ttl DUR]` mints a fresh, ephemeral age identity: never your `MURK_KEY`. The grant is a recipient, but it can't read the encrypted `meta` blob, and it's excluded from the `everyone` layer entirely. It gets its own record (name, scope, issue and expiry times, issuer), encrypted to its key alone in the vault's top-level `agents` map. Its actual access is the set of `--only` keys, each re-encrypted as a private ciphertext addressed to the grant's own pubkey. Nothing else in the vault decrypts for it, shared or otherwise. You can grant only keys that have a shared value. murk refuses a key whose base tier is a named group, or that has only private values.
+
+A grant can't check the MAC, because the MAC key lives in the meta. It trusts a vault only by its signature, checked against signers named outside the vault: the `# murk-trusted-signer:` lines murk writes into the grant's key file when it mints or renews the grant, plus any in `MURK_TRUSTED_SIGNERS`. With neither, murk refuses the load and tells you to re-mint the grant. murk checks the signature first, then the grant's own record, then its values.
 
 The key is written to `~/.config/murk/agent-keys/<vault-hash>-NAME` (or `--out PATH`, which refuses an existing file unless you pass `--force`, or `--out -` to stream it instead of writing a file). It's a bearer credential: whoever holds it has the access it grants, so treat the file like the secrets it unlocks.
 
@@ -42,4 +44,4 @@ A grant is read-only. murk refuses a vault signed by a grant key, and refuses a 
 
 ## Where grant state lives
 
-The `grants` map lives inside the encrypted `meta` blob, not the plaintext header. Grant names, timestamps, issuers and the recorded scope list are encrypted there. The ephemeral recipient key and the `scoped` ciphertexts under each secret it can read are plaintext, so which secrets that key can read is visible without decryption. See [Vault format](/concepts/vault-format/) for the full on-disk layout, and [Recipients & signatures](/concepts/recipients-signatures/) for how that meta blob is protected against tampering.
+The full `grants` registry lives inside the encrypted `meta` blob, not the plaintext header. Each grant also has its own record in the top-level `agents` map, encrypted to that grant only. Grant names, timestamps, issuers and the recorded scope list are encrypted in both places. The ephemeral recipient key and the `scoped` ciphertexts under each secret it can read are plaintext, so which secrets that key can read is visible without decryption. See [Vault format](/concepts/vault-format/) for the full on-disk layout, and [Recipients & signatures](/concepts/recipients-signatures/) for how that meta blob is protected against tampering.
