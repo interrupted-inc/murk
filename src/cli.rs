@@ -257,7 +257,7 @@ pub enum Command {
         /// Filter by tag (repeatable)
         #[arg(long)]
         tag: Vec<String>,
-        /// Strip inherited environment (only murk secrets + PATH)
+        /// Strip inherited environment (keeps murk secrets and a few system variables such as PATH)
         #[arg(long)]
         clean_env: bool,
         /// Vault filename

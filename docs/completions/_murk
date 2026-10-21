@@ -185,7 +185,7 @@ _arguments "${_arguments_options[@]}" : \
 '*--only=[Only inject these specific keys (repeatable)]:ONLY:_default' \
 '*--tag=[Filter by tag (repeatable)]:TAG:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
-'--clean-env[Strip inherited environment (only murk secrets + PATH)]' \
+'--clean-env[Strip inherited environment (keeps murk secrets and a few system variables such as PATH)]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::command -- Command and arguments to execute:_default' \

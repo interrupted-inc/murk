@@ -106,8 +106,9 @@ pub struct RevokeResult {
 
 /// Remove a recipient from the vault. `recipient` can be a pubkey or a display name.
 ///
-/// When matched by display name, removes **all** recipients sharing that name
-/// (e.g. multiple SSH keys added via `github:username`).
+/// A display name must match exactly one recipient. A name shared by several
+/// recipients (e.g. multiple SSH keys added via `github:username`) is rejected;
+/// revoke each of those by pubkey.
 /// Returns an error if the recipient is not found or would remove the last recipient.
 pub fn revoke_recipient(
     vault: &mut types::Vault,

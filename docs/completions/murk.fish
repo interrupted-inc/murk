@@ -124,7 +124,7 @@ complete -c murk -n "__fish_murk_using_subcommand skeleton" -s h -l help -d 'Pri
 complete -c murk -n "__fish_murk_using_subcommand exec" -l only -d 'Only inject these specific keys (repeatable)' -r
 complete -c murk -n "__fish_murk_using_subcommand exec" -l tag -d 'Filter by tag (repeatable)' -r
 complete -c murk -n "__fish_murk_using_subcommand exec" -l vault -d 'Vault filename' -r
-complete -c murk -n "__fish_murk_using_subcommand exec" -l clean-env -d 'Strip inherited environment (only murk secrets + PATH)'
+complete -c murk -n "__fish_murk_using_subcommand exec" -l clean-env -d 'Strip inherited environment (keeps murk secrets and a few system variables such as PATH)'
 complete -c murk -n "__fish_murk_using_subcommand exec" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "plan" -d 'Emit schema-only context safe to paste into an AI agent prompt'

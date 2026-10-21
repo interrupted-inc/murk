@@ -12,13 +12,30 @@ could read.
 
 ## Revoke and rotate in one step
 
+murk cannot change a credential at its provider. Rotating here means storing
+a replacement value in the vault. Create the new credential at each service
+first. Invalidate the old one after you push the new vault (in an urgent case,
+invalidate it first).
+
 ```bash
 murk circle revoke carol --rotate
 ```
 
+`carol` can be a display name or a public key. A name that matches several
+recipients is rejected (`ambiguous name "carol@github" matches 5
+recipients`). This happens for teammates added with `github:`, which adds
+every key on the account under one name. List the full keys with `murk
+circle --json`, then revoke each one by public key.
+
+Another recipient runs this command. murk refuses to revoke your own key, so
+a member who is leaving cannot remove themselves: ask a teammate to run `murk
+circle revoke <you>`.
+
 This removes carol as a recipient and re-encrypts the shared secrets she
 had access to without her key. With `--rotate`, it also prompts you for a
-new value for each of them in the same session. Commit and push the result:
+new value for each secret she could read, in the same session. That covers
+shared secrets and secrets in her groups. A group secret gets its new value
+in the same group. Commit and push the result:
 
 ```bash
 git commit -am "revoke carol, rotate secrets" && git push
@@ -28,15 +45,23 @@ Without `--rotate` on an interactive terminal, `murk circle revoke` offers to
 rotate anyway. When it runs non-interactively (e.g. in a script), it just
 prints a hint instead.
 
-## Import rotated values from a file
+## Rotate from a file
 
-If you already have replacement values staged in a file, revoke first and
-bulk-import instead of answering prompts one at a time:
+If you already have the new values in a file, pass it with `--values-from`
+instead of answering prompts:
 
 ```bash
-murk circle revoke carol
-murk import .env.rotated
+murk circle revoke carol --rotate --values-from .env.rotated
+rm .env.rotated
 ```
+
+The file holds `KEY=value` lines, in the same format as `murk import` (`-`
+reads them from stdin). Values are matched by name, and each one stays in its
+tier. If the file names a key that cannot be rotated here (not in the vault,
+in a group you are not in, or not one carol could read), murk refuses the whole
+batch and writes nothing, so carol is not revoked either. Keys the file leaves
+out are not rotated: murk reports them and `murk rotate --list` keeps listing
+them. Delete the file afterwards: it holds plaintext secrets.
 
 ## Why rotation matters
 
@@ -46,9 +71,9 @@ from future shared-secret ciphertexts. It does not touch git history:
 :::caution
 Revocation doesn't erase git history. The revoked user can still decrypt any
 version of the vault they previously had access to, straight from old git
-commits. Rotation, giving the secret a new value, is the only way to
-actually close the exposure. Revocation alone just stops *future* changes
-from being readable to them.
+commits. Rotation (a new credential at the provider, stored as the new value)
+is the only way to close the exposure. Revocation alone just stops *future*
+changes from being readable to them.
 :::
 
 So always rotate after revoking someone whose access mattered. `murk circle

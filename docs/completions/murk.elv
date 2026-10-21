@@ -170,7 +170,7 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand --only 'Only inject these specific keys (repeatable)'
             cand --tag 'Filter by tag (repeatable)'
             cand --vault 'Vault filename'
-            cand --clean-env 'Strip inherited environment (only murk secrets + PATH)'
+            cand --clean-env 'Strip inherited environment (keeps murk secrets and a few system variables such as PATH)'
             cand -h 'Print help'
             cand --help 'Print help'
         }

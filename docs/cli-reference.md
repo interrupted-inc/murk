@@ -397,7 +397,7 @@ Run a command with secrets injected as environment variables
 
 * `--only <ONLY>` — Only inject these specific keys (repeatable)
 * `--tag <TAG>` — Filter by tag (repeatable)
-* `--clean-env` — Strip inherited environment (only murk secrets + PATH)
+* `--clean-env` — Strip inherited environment (keeps murk secrets and a few system variables such as PATH)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`

@@ -155,14 +155,16 @@ murk circle revoke carol --rotate   # remove carol, then rotate what she could r
 git commit -am "revoke carol, rotate secrets" && git push
 ```
 
-Revocation re-encrypts the vault going forward, but old versions remain in git history. The revoked user can still decrypt any version they previously had access to. Always rotate secrets after revocation.
+Revocation re-encrypts the vault going forward, but old versions remain in git history. The revoked user can still decrypt any version they previously had access to. Always rotate secrets after revocation. murk only stores the replacement values: create new credentials at each provider and invalidate the old ones there.
 
-If you already have new values in a file, import them directly:
+If you already have the new values in a file, rotate from it in the same step:
 
 ```bash
-murk circle revoke carol
-murk import .env.rotated  # bulk-update from a file
+murk circle revoke carol --rotate --values-from .env.rotated
+rm .env.rotated               # it holds plaintext secrets
 ```
+
+Values are matched by name and each stays in its tier. If the file names a key that cannot be rotated, nothing is written and carol is not revoked. Keys it leaves out stay listed by `murk rotate --list`.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/interrupted-sh/murk/demo/offboard.gif" alt="murk offboarding demo" width="900">
@@ -195,7 +197,7 @@ steps:
   - run: ./deploy.sh  # all vault secrets are now in the environment
 ```
 
-Workflows that still reference `interrupted-inc/murk-action` must switch to `interrupted-sh/murk-action`: GitHub does not redirect action references after an organization rename.
+The organization was renamed from `interrupted-inc` to `interrupted-sh`. Change any workflow that still uses `interrupted-inc/murk-action` to `interrupted-sh/murk-action`.
 
 Store your `MURK_KEY` as a GitHub Actions secret. Decrypted values are registered with GitHub's log masking, but masking depends on GitHub's runner behavior and is not a hard security boundary.
 
@@ -204,9 +206,13 @@ Store your `MURK_KEY` as a GitHub Actions secret. Decrypted values are registere
 Your key is a BIP39 mnemonic. `murk init` prints 24 recovery words — write them down.
 
 ```bash
-# Lost your key? Recover it (prompts for phrase, hidden input)
-murk restore
+# Lost your key? Print it from the phrase (prompts, hidden input) and save it
+mkdir -p -m 700 ~/.config/murk
+(umask 077 && murk restore > ~/.config/murk/restored.key)
+export MURK_KEY_FILE=~/.config/murk/restored.key
 ```
+
+`murk restore` prints the key and saves nothing. See the [key recovery guide](https://murk.interrupted.sh/guides/recovery/) for details.
 
 ## Commands
 

@@ -5,9 +5,25 @@ sidebar:
   order: 4
 ---
 
-CI runners aren't people, but they still need a key to decrypt the vault.
-The pattern is the same as any other recipient: authorize a key, store it as
-a CI secret, and decrypt at run time.
+A CI job needs its own key to decrypt the vault. Authorize that key, store it
+in your CI system's secret store, and decrypt at run time.
+
+## Create a key for CI
+
+If the job needs only some secrets, mint a scoped grant (see [Prefer a scoped
+grant over a full key](#prefer-a-scoped-grant-over-a-full-key) below). For a
+key with the same access as a teammate, generate a key pair with
+[`age-keygen`](https://github.com/FiloSottile/age), authorize the public key,
+and store the secret key:
+
+```bash
+age-keygen -o ci.key                    # prints the public key (age1...)
+murk circle authorize age1... --name ci
+grep AGE-SECRET-KEY ci.key | gh secret set MURK_KEY
+rm ci.key
+```
+
+murk-action needs an age secret key (`AGE-SECRET-KEY-1...`), not an SSH key.
 
 ## GitHub Actions
 
@@ -23,31 +39,30 @@ steps:
   - run: ./deploy.sh  # all vault secrets are now in the environment
 ```
 
-Workflows that still reference `interrupted-inc/murk-action` must switch to
-`interrupted-sh/murk-action`: GitHub does not redirect action references after
-an organization rename.
+The organization was renamed from `interrupted-inc` to `interrupted-sh`.
+Change any workflow that still uses `interrupted-inc/murk-action` to
+`interrupted-sh/murk-action`.
 
-Store your `MURK_KEY` as a GitHub Actions secret (`Settings → Secrets and
-variables → Actions`). GitHub's log masking registers decrypted values,
-but masking depends on GitHub's runner behavior: it is a
-convenience, not a hard security boundary. Don't `echo` a decrypted value in
-a step if you can avoid it.
+Store the key as a GitHub Actions secret (`Settings → Secrets and variables
+→ Actions`). The action registers each decrypted value with GitHub's log
+masking. Masking depends on the runner and is not a security boundary, so
+never print a decrypted value.
 
 ## Other CI systems
 
-There's no action for other platforms yet, but the underlying flow is just
-the CLI: install murk, put the recipient's `MURK_KEY` in your CI system's
-secret store, and run
+For other CI systems, install murk (see [Install](/install/)), store the key
+in the system's secret store as `MURK_KEY`, and wrap the command:
 
 ```bash
 murk exec -- ./deploy.sh
 ```
 
-`murk exec` reads `MURK_KEY` from the environment, decrypts, and runs the
-given command with every secret injected: no `.envrc` or direnv step
-needed for a non-interactive runner. Use `--only KEY` to hand a command a
-subset of secrets, or `--clean-env` to avoid also inheriting the runner's
-own ambient environment.
+`murk exec` decrypts the vault and runs the command with the secrets in its
+environment. It needs no `.envrc` or direnv. The command does not receive
+`MURK_KEY`. Use `--only KEY` (repeatable) to pass a subset of the secrets. Use
+`--clean-env` to drop the runner's other variables. On Unix it keeps `PATH`,
+`HOME` and `TERM`. On Windows it keeps `PATH` and the system variables
+Windows programs need.
 
 ## Prefer a scoped grant over a full key
 

@@ -190,7 +190,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             [CompletionResult]::new('--only', '--only', [CompletionResultType]::ParameterName, 'Only inject these specific keys (repeatable)')
             [CompletionResult]::new('--tag', '--tag', [CompletionResultType]::ParameterName, 'Filter by tag (repeatable)')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
-            [CompletionResult]::new('--clean-env', '--clean-env', [CompletionResultType]::ParameterName, 'Strip inherited environment (only murk secrets + PATH)')
+            [CompletionResult]::new('--clean-env', '--clean-env', [CompletionResultType]::ParameterName, 'Strip inherited environment (keeps murk secrets and a few system variables such as PATH)')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
