@@ -35,7 +35,9 @@ automatically during a merge or rebase that touches `.murk`, instead of
 falling back to a text-based three-way merge on the raw file. `PATH` is the
 vault's path (git's `%P`), so the driver reads the right trust pin. It
 merges non-conflicting secret changes (different keys added or changed on
-each side) automatically, without decrypting any secret value.
+each side) automatically. It decrypts secret values only when both sides
+changed the recipients in the same way. Every ciphertext then differs from the
+ancestor, so it compares the values to find which side changed each secret.
 
 Run it with your key available (`MURK_KEY`, `MURK_KEY_FILE`, or the stored
 key for a vault named `.murk`; for a vault with another name, set
@@ -47,7 +49,15 @@ ancestor decides what counts as a change and which group memberships the
 sides are judged against. A parent an attacker chose (a cherry-pick, a
 `git apply --3way`) could otherwise shape the merge. An ancestor your key
 can't read is merged conservatively: any difference in the encrypted meta is
-a conflict. An ancestor that fails its checks is refused.
+a conflict. An ancestor that fails its checks is refused. An unsigned
+ancestor from before 0.14 is the exception: murk can't check it, and accepts
+it as history. A forged one, in a commit that you cherry-pick or rebase, can
+set values back to an older revision without a conflict. Check what you
+merged with `murk diff` (below) before you push.
+
+Until this machine has accepted or saved the vault in 0.14 form, it can't
+tell an older 0.13 revision on a branch from a newer one either. Make the
+first 0.14 save before you merge branches that still carry 0.13 vaults.
 
 If the ancestor or a side fails, the merge is a conflict that names it, and
 the driver writes no fresh MAC or signature. Otherwise the driver writes the
@@ -119,8 +129,16 @@ The driver reports a conflict, and git stops the merge, when:
 - both sides added or changed the same key,
 - one side removed a key that the other side kept or changed,
 - only one side added or removed a recipient (authorize and revoke teammates
-  on the main branch, not on a side branch that also changes secrets),
+  on the main branch, not on a side branch that also changes secrets; a revoke
+  on a side branch already makes this machine refuse the revoked key's
+  signatures on every branch, main included),
 - one side changed a secret while the other side changed recipients,
+- both sides changed the recipients in the same way, and both added the same
+  secret, or a secret changed differently on each side, or one side removed a
+  secret the other changed. In this case, with an unsigned ancestor from
+  before 0.14, any secret whose value differs between the sides conflicts, and so does a secret
+  with a value your key can't read (a group you're not in), because the
+  driver can't compare it,
 - both sides changed the agent policy differently,
 - a side, or the common ancestor, fails the checks above (MAC, signature,
   trusted signer, grant key, vault id, save counter),
@@ -133,7 +151,9 @@ metadata and has no signature. Don't commit it, and don't accept it with
 Take one side (`git checkout --ours .murk` or `--theirs`) and redo the other
 side's changes with murk (`murk add KEY`, `murk circle authorize` or
 `murk circle revoke`, checking the result with `murk circle`). Then
-`git add .murk` and commit.
+`git add .murk` and commit. If the side you take is older than what this
+machine accepted on the branch, a load refuses it as rolled back until
+`murk trust`. Taking our side and redoing theirs avoids that.
 
 ## SSH keys as recipients
 

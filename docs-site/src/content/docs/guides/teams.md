@@ -90,13 +90,14 @@ a key the machine doesn't trust, a teammate's signing key it hasn't confirmed
 yet, an older revision, another vault's file, or
 a group membership change not signed by a member of that group. Switching to
 an older branch is not a rollback, because each branch keeps its own counter.
-But an accepted vault replaces the set of trusted signers with its own
-recipients. After you load an older branch, the newer branch can be refused
-as "not a trusted signer on this machine" if the teammate who signed it was
-added after that older vault. Review it and run `murk trust` again.
-After that, teammates' ordinary writes are accepted without a prompt: the
-signer is a recipient of the vault this machine last accepted, and its
-signing key is already known here. A newly authorized teammate's first write
+Loading an older branch, a detached HEAD or an unmerged pull request also
+never changes which signers this machine trusts. Only `murk trust`, your own
+saves, and a newer vault on a branch this machine accepted before do that. So
+reviewing a pull request that authorizes someone doesn't make this machine
+trust them.
+Once you have run `murk trust`, teammates' ordinary writes are accepted without a prompt: the
+signer is in the set this machine trusts, and its signing key is already
+known here. A newly authorized teammate's first write
 is the exception (see below). See [Recipients &
 signatures](/concepts/recipients-signatures/#trusting-a-signer) for the full
 rules.
@@ -230,11 +231,17 @@ vault, and CI, before the first 0.14 write lands on the shared branch.
 2. The first 0.14 save adds a vault id and a save counter and re-signs the
    vault in the new format. A vault from 0.13 has no id, so murk derives it
    from the vault's `created` timestamp and name. Every copy derives the
-   same one, so teammates who upgrade on different days still agree.
+   same one, so teammates who upgrade on different days still agree. A vault
+   that was made by copying another under 0.13 (staging copied from prod,
+   say) derives the same id as the original, so murk can't tell those two
+   apart by id: a copy whose save counter is higher would be accepted in
+   place of the other.
 3. Once a machine has seen a vault saved by 0.14, a vault signed by 0.13 is
    refused as rolled back. That is the order to follow: trust once, then
    make the first 0.14 save. A write from a teammate who is still on 0.13
-   won't be accepted.
+   won't be accepted. Until then, the merge driver can't tell an older 0.13
+   revision on a branch from a newer one, so make the first 0.14 save before
+   you merge branches that still carry 0.13 vaults.
 4. Give CI `MURK_TRUSTED_SIGNERS`. See [CI/CD](/guides/cicd/#upgrading-to-014).
 5. Re-run `murk setup-merge-driver` in each clone, so the driver gets the
    vault path. See [the merge driver](/guides/git-merge-ssh/#upgrading-an-older-driver-config).

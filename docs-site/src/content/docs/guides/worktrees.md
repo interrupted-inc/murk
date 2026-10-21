@@ -79,13 +79,16 @@ repo you've already trusted needs nothing.
 The save counter the pin keeps is tracked per branch. Checking out an older
 branch in another worktree isn't a rollback: murk compares the vault with the
 highest counter accepted on the branch that worktree has checked out. On a
-detached HEAD, or a branch this machine has never seen (reviewing a PR
+detached HEAD, or a branch this machine has never accepted (reviewing a PR
 branch, say), there is no counter check, so murk accepts a signed vault from
 a trusted signer whatever its counter.
 
-The set of trusted signers is shared too, and it follows the last vault any
-worktree loaded. A worktree on an old branch can make the main checkout ask
-for `murk trust` again.
+The set of trusted signers is shared too. Apart from `murk trust` and your
+own saves, only loading a vault newer than everything this machine accepted,
+on a branch it accepted before (or outside git), changes it. Loading an older
+branch, a detached HEAD or a PR branch never adds a signer. So reviewing a PR that authorizes someone doesn't make this machine
+trust them: that happens only once the change reaches a branch this machine
+accepted, or you run `murk trust`.
 
 ## Agents need their own key
 
