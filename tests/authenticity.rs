@@ -981,6 +981,24 @@ fn a_forged_first_write_under_a_new_members_name_is_refused() {
         .stderr(predicate::str::contains(&bob_fp).not());
 }
 
+/// A real unencrypted ssh-ed25519 keypair (test-only), for a teammate whose
+/// key is ssh-ed25519 and so carries its own verifying key.
+const SSH_SK: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\nQyNTUxOQAAACB7Ci6nqZYaVvrjm8+XbzII89TsXzP111AflR7WeorBjQAAAJCfEwtqnxML\nagAAAAtzc2gtZWQyNTUxOQAAACB7Ci6nqZYaVvrjm8+XbzII89TsXzP111AflR7WeorBjQ\nAAAEADBJvjZT8X6JRJI8xVq/1aU8nMVgOtVnmdwqWwrSlXG3sKLqeplhpW+uObz5dvMgjz\n1OxfM/XXUB+VHtZ6isGNAAAADHN0cjRkQGNhcmJvbgE=\n-----END OPENSSH PRIVATE KEY-----\n";
+const SSH_PK: &str =
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHsKLqeplhpW+uObz5dvMgjz1OxfM/XXUB+VHtZ6isGN";
+
+/// Write `SSH_SK` to an owner-only key file under `base`.
+fn ssh_key_file(base: &Path, name: &str) -> PathBuf {
+    let key = base.join(name);
+    fs::write(&key, SSH_SK).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    key
+}
+
 /// The main onboarding path. Alice (trusted, age key) runs `circle authorize
 /// github:bob`; Bob's GitHub key is ssh-ed25519, which carries its own
 /// verifying key. Carol, who already trusts the vault with Alice as a signer,
@@ -989,9 +1007,6 @@ fn a_forged_first_write_under_a_new_members_name_is_refused() {
 /// and his signed change loads on Carol's machine with no confirmation step.
 #[test]
 fn github_onboarding_extends_trust_to_the_new_member() {
-    const SSH_SK: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\nQyNTUxOQAAACB7Ci6nqZYaVvrjm8+XbzII89TsXzP111AflR7WeorBjQAAAJCfEwtqnxML\nagAAAAtzc2gtZWQyNTUxOQAAACB7Ci6nqZYaVvrjm8+XbzII89TsXzP111AflR7WeorBjQ\nAAAEADBJvjZT8X6JRJI8xVq/1aU8nMVgOtVnmdwqWwrSlXG3sKLqeplhpW+uObz5dvMgjz\n1OxfM/XXUB+VHtZ6isGNAAAADHN0cjRkQGNhcmJvbgE=\n-----END OPENSSH PRIVATE KEY-----\n";
-    const SSH_PK: &str =
-        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHsKLqeplhpW+uObz5dvMgjz1OxfM/XXUB+VHtZ6isGN";
     let base = TempDir::new().unwrap();
     let (alice, repo) = alice_repo(base.path());
 
@@ -2095,4 +2110,75 @@ fn a_save_over_an_older_revision_never_writes_a_removed_recipient_back() {
             .unwrap()
             .contains(&bob.pubkey().into())
     );
+}
+
+/// Rule: a branch this machine has never accepted is only read, never
+/// trusted. Bob, a trusted signer, opens a pull request that authorizes
+/// Mallory. Alice checks it out, reads it, and rejects it. Mallory, who can
+/// push to main but signs nothing on main, then takes the pull request's
+/// vault (she is a recipient there), changes a value and commits it to main.
+/// Alice's machine refuses it: reading the pull request did not trust Mallory.
+#[test]
+fn reading_a_pull_request_never_trusts_what_it_adds() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo) = alice_repo(base.path());
+    let bob = Machine::new(base.path(), "bob");
+    bob.init(&base.path().join("bob-scratch"), "bob");
+    let bob_key = bob.key_file();
+    authorize(&alice, &repo, &bob, "bob");
+    bob.with_key(&repo, &bob_key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    bob.with_key(&repo, &bob_key)
+        .args(["add", "FROM_BOB"])
+        .write_stdin("bob\n")
+        .assert()
+        .success();
+    alice
+        .murk(&repo)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    commit(&repo, "bob is a signer");
+
+    git_ok(&repo, &["checkout", "-q", "-b", "pr"]);
+    bob.with_key(&repo, &bob_key)
+        .args(["circle", "authorize", SSH_PK, "--name", "mallory"])
+        .assert()
+        .success();
+    commit(&repo, "pr: authorize mallory");
+    alice
+        .murk(&repo)
+        .args(["get", "DB_URL"])
+        .assert()
+        .success()
+        .stdout("prod-db\n");
+
+    let mallory = Machine::new(base.path(), "mallory");
+    let mallory_key = ssh_key_file(base.path(), "mallory_ed25519");
+    mallory
+        .with_key(&repo, &mallory_key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    mallory
+        .with_key(&repo, &mallory_key)
+        .args(["add", "DB_URL"])
+        .write_stdin("EVIL\n")
+        .assert()
+        .success();
+    let forged = fs::read(repo.join(".murk")).unwrap();
+    git_ok(&repo, &["checkout", "--", ".murk"]);
+    git_ok(&repo, &["checkout", "-q", "main"]);
+    fs::write(repo.join(".murk"), &forged).unwrap();
+    commit(&repo, "mallory on main");
+
+    alice
+        .murk(&repo)
+        .args(["get", "DB_URL"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("EVIL").not())
+        .stderr(predicate::str::contains("not a trusted signer"));
 }

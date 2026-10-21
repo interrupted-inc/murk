@@ -39,15 +39,15 @@
 //!    and never past [`MAX_GENERATION`]; a different vault with the counter
 //!    this machine accepted on the branch is a fork.
 //!
-//! An accepted vault that is the newest this machine has seen, on a checked-
-//! out branch, replaces the pin's trusted set, grants and groups with its
-//! own, and raises the counter; any other accepted load is history and only
-//! narrows the pin (see [`Acceptance`]). Its registry entries for trusted
-//! recipients are pinned where no key was pinned before — believed because the
-//! vault carrying them was signed by an already-trusted signer (or confirmed by
-//! `murk trust`), and only while that signer stays trusted. A pinned key is
-//! never replaced. `murk trust` accepts a refused vault on the user's say-so
-//! after showing what changed.
+//! An accepted vault that is the newest this machine has seen, on a branch it
+//! accepted before (or outside git), replaces the pin's trusted set, grants
+//! and groups with its own, and raises the counter; any other accepted load
+//! is history and only narrows the pin (see [`Acceptance`]). Its registry
+//! entries for trusted recipients are pinned where no key was pinned before —
+//! believed because the vault carrying them was signed by an already-trusted
+//! signer (or confirmed by `murk trust`), and only while that signer stays
+//! trusted. A pinned key is never replaced. `murk trust` accepts a refused
+//! vault on the user's say-so after showing what changed.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1007,11 +1007,13 @@ pub fn group_change_violation(
 pub enum Acceptance<'a> {
     /// A load the trust rules accepted. It is the vault's current state, and
     /// replaces the trusted set, groups and registry, only when it is newer
-    /// than everything this machine accepted and checked out on a branch (or
-    /// outside git). Any other accepted load — a detached HEAD, a branch
-    /// behind the mark, the vault already accepted, or a different vault with
-    /// that counter — is history: it only narrows the pin (marks, grants seen,
-    /// the signed bit), so reading history never adds trust.
+    /// than everything this machine accepted and checked out on a branch this
+    /// machine accepted before (or outside git). Any other accepted load — a
+    /// branch never accepted here (an unmerged pull request), a detached HEAD,
+    /// a branch behind the mark, the vault already accepted, or a different
+    /// vault with that counter — is history: it only narrows the pin (marks
+    /// of branches accepted before, grants seen, the signed bit), so reading
+    /// history never adds trust.
     Load,
     /// The user's decision: `murk trust`, or `murk init` creating the vault.
     /// `reset_counter` lowers this branch's mark to the vault's counter (a
@@ -1058,17 +1060,26 @@ pub fn accepted_pin(
         }
     );
     let found = loaded.vault.generation;
-    // Generation 0 is murk ≤ 0.13: no order, so every such load is current.
-    let current = match how {
-        Acceptance::Load => prior_v2.filter(|p| p.has_trust()).is_none_or(|p| {
-            *head != HeadState::Detached
-                && (found > p.generation || (found == 0 && p.generation == 0))
-        }),
-        Acceptance::Trust { .. } | Acceptance::OwnSave { .. } => true,
-    };
     let branch_seen = match head {
         HeadState::Branch(b) => prior_v2.is_some_and(|p| p.branches.contains_key(b)),
         _ => false,
+    };
+    // Only the next state of a branch this machine accepted before (or of
+    // the vault outside git) is current: a branch it has never accepted —
+    // an unmerged pull request, say — is read as history and only narrows
+    // the pin, like a detached HEAD. Generation 0 is murk ≤ 0.13: no order,
+    // so every such load is current.
+    let current = match how {
+        Acceptance::Load => prior_v2.filter(|p| p.has_trust()).is_none_or(|p| {
+            let newer = found > p.generation || (found == 0 && p.generation == 0);
+            newer
+                && match head {
+                    HeadState::NotARepo => true,
+                    HeadState::Branch(_) => branch_seen,
+                    HeadState::Detached => false,
+                }
+        }),
+        Acceptance::Trust { .. } | Acceptance::OwnSave { .. } => true,
     };
 
     let mut pin = prior_v2.cloned().unwrap_or_default();
@@ -1095,11 +1106,9 @@ pub fn accepted_pin(
     }
 
     let dropped = replace_trusted(&mut pin, loaded.vault, how, had_trust, current);
-    // A load on a branch never seen here may be a stale branch numbered past
-    // the mark: what it lacks is not recorded as removed.
     let record_removals = !other_vault
         && match how {
-            Acceptance::Load => current && (*head == HeadState::NotARepo || branch_seen),
+            Acceptance::Load => current,
             Acceptance::Trust { .. } | Acceptance::OwnSave { .. } => true,
         };
     if record_removals {
@@ -1158,6 +1167,11 @@ fn advance_marks(
     }
     if let HeadState::Branch(b) = head {
         let old = pin.branches.get(b).copied();
+        // History never gives a branch its first mark: the mark is what
+        // makes the branch's next state current.
+        if old.is_none() && !current {
+            return;
+        }
         let mark = match old {
             Some(m) if !reset_counter => m.max(found),
             _ => found,
@@ -1521,9 +1535,14 @@ mod tests {
         let main = HeadState::Branch("main".into());
         let feature = HeadState::Branch("feature".into());
         let at = |g| Case::new(&[A], g, A);
-        // main accepted at 5, then feature moved to 6.
+        // main accepted at 5, then this machine saved feature at 6.
         let pin = super::accepted_pin(&at(5).loaded(), None, Acceptance::Load, &main);
-        let pin = super::accepted_pin(&at(6).loaded(), Some(&pin), Acceptance::Load, &feature);
+        let pin = super::accepted_pin(
+            &at(6).loaded(),
+            Some(&pin),
+            Acceptance::OwnSave { before: None },
+            &feature,
+        );
         // Switching back to main (still 5) is fine; main going back to 4 is not.
         assert_eq!(
             super::verdict(&at(5).loaded(), Some(&pin), None, &main),
