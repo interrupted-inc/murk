@@ -3112,49 +3112,108 @@ fn a_fresh_clone_reads_main_after_revoking_on_a_branch() {
         .stderr(predicate::str::contains("signed by bob"));
 }
 
+/// Alice's repo where Bob, a member, signed the vault at commit `bob0`
+/// (holding `BK0=b0`), and both machines trust it.
+struct BobWroteMain {
+    base: TempDir,
+    alice: Machine,
+    bob: Machine,
+    bob_key: PathBuf,
+    repo: PathBuf,
+    bob0: String,
+}
+
+impl BobWroteMain {
+    fn new() -> Self {
+        let base = TempDir::new().unwrap();
+        let (alice, repo) = alice_repo(base.path());
+        let bob = Machine::new(base.path(), "bob");
+        bob.init(&base.path().join("bob-scratch"), "bob");
+        let bob_key = bob.key_file();
+        authorize(&alice, &repo, &bob, "bob");
+        bob.with_key(&repo, &bob_key)
+            .args(["trust", "--yes"])
+            .assert()
+            .success();
+        bob.with_key(&repo, &bob_key)
+            .args(["add", "BK0"])
+            .write_stdin("b0\n")
+            .assert()
+            .success();
+        commit(&repo, "bob0");
+        let bob0 = head_commit(&repo);
+        alice
+            .murk(&repo)
+            .args(["trust", "--yes"])
+            .assert()
+            .success();
+        Self {
+            base,
+            alice,
+            bob,
+            bob_key,
+            repo,
+            bob0,
+        }
+    }
+
+    /// Alice revokes Bob on a new branch `offboard` (not committed).
+    fn revoke_on_offboard(&self) {
+        git_ok(&self.repo, &["checkout", "-q", "-b", "offboard"]);
+        self.alice
+            .murk(&self.repo)
+            .args(["circle", "revoke", "bob"])
+            .assert()
+            .success();
+    }
+
+    /// Bob signs a new value of `DB_URL` over the vault checked out (his
+    /// machine never saw the removal) and commits it; the new commit id.
+    fn bob_writes(&self, value: &str) -> String {
+        self.bob
+            .with_key(&self.repo, &self.bob_key)
+            .args(["add", "DB_URL"])
+            .write_stdin(format!("{value}\n"))
+            .assert()
+            .success();
+        commit(&self.repo, "bob writes");
+        head_commit(&self.repo)
+    }
+
+    /// Alice's `murk get DB_URL` on a new branch at `at`: refused, naming Bob.
+    fn refused_on_new_branch(&self, branch: &str, at: &str) {
+        git_ok(&self.repo, &["checkout", "-q", "-b", branch, at]);
+        self.alice
+            .murk(&self.repo)
+            .args(["get", "DB_URL"])
+            .assert()
+            .failure()
+            .stdout("")
+            .stderr(predicate::str::contains("bob"));
+    }
+}
+
+fn head_commit(repo: &Path) -> String {
+    String::from_utf8(git(repo, &["rev-parse", "HEAD"]).stdout)
+        .unwrap()
+        .trim()
+        .to_string()
+}
+
 /// Rule: only history from before a removal counts as before it. Alice
 /// revokes Bob on `offboard` and merges it into main. Bob, revoked but able
-/// to push, commits a vault he signed after his removal on top of main, and
-/// later a replay of his last pre-removal vault. Main refuses both, and so
-/// does a new branch created at either commit: being in main's history does
-/// not make a commit older than the removal. A branch at Bob's real
-/// pre-removal commit still reads.
+/// to push, commits a vault he signed after his removal on top of main. Main
+/// refuses it, and so does a new branch created at that commit: being in
+/// main's history does not make a commit older than the removal. A branch at
+/// Bob's real pre-removal commit still reads.
 #[test]
 fn a_removed_signers_later_vault_is_refused_on_a_new_branch() {
-    let base = TempDir::new().unwrap();
-    let (alice, repo) = alice_repo(base.path());
-    let bob = Machine::new(base.path(), "bob");
-    bob.init(&base.path().join("bob-scratch"), "bob");
-    let bob_key = bob.key_file();
-    authorize(&alice, &repo, &bob, "bob");
-    bob.with_key(&repo, &bob_key)
-        .args(["trust", "--yes"])
-        .assert()
-        .success();
-    bob.with_key(&repo, &bob_key)
-        .args(["add", "BK0"])
-        .write_stdin("b0\n")
-        .assert()
-        .success();
-    commit(&repo, "bob0");
-    let bob0 = String::from_utf8(git(&repo, &["rev-parse", "HEAD"]).stdout).unwrap();
-    let bob0 = bob0.trim().to_string();
-    alice
-        .murk(&repo)
-        .args(["trust", "--yes"])
-        .assert()
-        .success();
-
-    git_ok(&repo, &["checkout", "-q", "-b", "offboard"]);
-    alice
-        .murk(&repo)
-        .args(["circle", "revoke", "bob"])
-        .assert()
-        .success();
-    commit(&repo, "offboard");
-    git_ok(&repo, &["checkout", "-q", "main"]);
+    let t = BobWroteMain::new();
+    t.revoke_on_offboard();
+    commit(&t.repo, "offboard");
+    git_ok(&t.repo, &["checkout", "-q", "main"]);
     git_ok(
-        &repo,
+        &t.repo,
         &[
             "-c",
             "commit.gpgsign=false",
@@ -3166,52 +3225,182 @@ fn a_removed_signers_later_vault_is_refused_on_a_new_branch() {
             "merge",
         ],
     );
-    alice
-        .murk(&repo)
+    t.alice
+        .murk(&t.repo)
         .args(["get", "DB_URL"])
         .assert()
         .success()
         .stdout("prod-db\n");
 
-    // Bob signs a vault after his removal and commits it on main.
-    git_ok(&repo, &["checkout", "-q", &bob0, "--", ".murk"]);
-    bob.with_key(&repo, &bob_key)
-        .args(["add", "DB_URL"])
-        .write_stdin("attacker-db\n")
-        .assert()
-        .success();
-    commit(&repo, "bob: update");
-    let refused = |branch: &str| {
-        git_ok(&repo, &["checkout", "-q", "-b", branch]);
-        alice
-            .murk(&repo)
-            .args(["get", "DB_URL"])
-            .assert()
-            .failure()
-            .stdout("")
-            .stderr(predicate::str::contains("bob"));
-        git_ok(&repo, &["checkout", "-q", "main"]);
-    };
-    alice
-        .murk(&repo)
+    git_ok(&t.repo, &["checkout", "-q", &t.bob0, "--", ".murk"]);
+    let after = t.bob_writes("attacker-db");
+    t.alice
+        .murk(&t.repo)
         .args(["get", "DB_URL"])
         .assert()
         .failure()
         .stdout("")
         .stderr(predicate::str::contains("signed by bob"));
-    refused("debug");
+    t.refused_on_new_branch("debug", &after);
 
-    // A replay of Bob's last pre-removal vault, committed after the removal.
-    git_ok(&repo, &["checkout", "-q", &bob0, "--", ".murk"]);
-    commit(&repo, "bob: replay");
-    refused("debug-replay");
-
-    // Bob's real pre-removal commit is history from before the removal.
-    git_ok(&repo, &["checkout", "-q", "-b", "old", &bob0]);
-    alice
-        .murk(&repo)
+    git_ok(&t.repo, &["checkout", "-q", "-b", "old", &t.bob0]);
+    t.alice
+        .murk(&t.repo)
         .args(["get", "BK0"])
         .assert()
         .success()
         .stdout("b0\n");
+}
+
+/// Rule: a replay is not history from before the removal. After the removal
+/// is merged into main, Bob commits his last pre-removal vault again on top
+/// of main. A new branch at that commit refuses it: the same vault, but at a
+/// commit made after the removal.
+#[test]
+fn a_replayed_pre_removal_vault_is_refused_on_a_new_branch() {
+    let t = BobWroteMain::new();
+    t.revoke_on_offboard();
+    commit(&t.repo, "offboard");
+    git_ok(&t.repo, &["checkout", "-q", "main"]);
+    git_ok(
+        &t.repo,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "merge",
+            "-q",
+            "--no-ff",
+            "offboard",
+            "-m",
+            "merge",
+        ],
+    );
+    t.alice
+        .murk(&t.repo)
+        .args(["get", "DB_URL"])
+        .assert()
+        .success();
+    git_ok(&t.repo, &["checkout", "-q", &t.bob0, "--", ".murk"]);
+    commit(&t.repo, "bob: replay");
+    let replay = head_commit(&t.repo);
+    t.refused_on_new_branch("debug", &replay);
+}
+
+/// Rule: rewriting the removing branch never widens the exception. Alice
+/// revokes Bob on `offboard`; Bob then writes on main; Alice rebases
+/// `offboard` onto main (her removal on top of his write). A new branch at
+/// Bob's post-removal commit, now in `offboard`'s history, is refused.
+#[test]
+fn a_rebased_removal_branch_does_not_vouch_for_what_it_was_rebased_onto() {
+    let t = BobWroteMain::new();
+    t.revoke_on_offboard();
+    commit(&t.repo, "offboard");
+    let offboard = head_commit(&t.repo);
+    git_ok(&t.repo, &["checkout", "-q", "main"]);
+    let after = t.bob_writes("attacker-db");
+    // Rebase and squash: offboard becomes main plus Alice's removing vault.
+    git_ok(&t.repo, &["checkout", "-q", "-B", "offboard", "main"]);
+    git_ok(&t.repo, &["checkout", "-q", &offboard, "--", ".murk"]);
+    commit(&t.repo, "offboard, rebased");
+    t.alice
+        .murk(&t.repo)
+        .args(["get", "DB_URL"])
+        .assert()
+        .success()
+        .stdout("prod-db\n");
+    t.refused_on_new_branch("debug", &after);
+}
+
+/// Rule: a removal saved but not committed yet already marks what came
+/// before it. Alice revokes Bob on `offboard` and stashes the change
+/// uncommitted; Bob writes on main. A new branch at Bob's write is refused;
+/// one at his pre-removal commit reads.
+#[test]
+fn a_removal_not_yet_committed_marks_only_earlier_commits() {
+    let t = BobWroteMain::new();
+    t.revoke_on_offboard();
+    git_ok(&t.repo, &["stash", "-q"]);
+    git_ok(&t.repo, &["checkout", "-q", "main"]);
+    let after = t.bob_writes("attacker-db");
+    t.refused_on_new_branch("debug", &after);
+    git_ok(&t.repo, &["checkout", "-q", "-b", "old", &t.bob0]);
+    t.alice
+        .murk(&t.repo)
+        .args(["get", "BK0"])
+        .assert()
+        .success()
+        .stdout("b0\n");
+}
+
+/// Rule: a removal accepted from a vault file that is not committed has no
+/// pre-removal exception (fail closed). Carol revokes Bob in the shared
+/// checkout; Alice loads the uncommitted result, accepting the removal.
+/// Bob's pre-removal vault on a new branch is then refused like any vault
+/// he signed.
+#[test]
+fn a_removal_accepted_from_an_uncommitted_vault_has_no_exception() {
+    let t = BobWroteMain::new();
+    let carol = Machine::new(t.base.path(), "carol");
+    let carol_key = ssh_key_file(t.base.path(), "carol_ed25519");
+    t.alice
+        .murk(&t.repo)
+        .args(["circle", "authorize", SSH_ED25519_PK, "--name", "carol"])
+        .assert()
+        .success();
+    commit(&t.repo, "carol is a member");
+    carol
+        .with_key(&t.repo, &carol_key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    carol
+        .with_key(&t.repo, &carol_key)
+        .args(["circle", "revoke", "bob"])
+        .assert()
+        .success();
+    t.alice
+        .murk(&t.repo)
+        .args(["get", "DB_URL"])
+        .assert()
+        .success();
+    commit(&t.repo, "carol revokes bob");
+    git_ok(&t.repo, &["checkout", "-q", "-b", "old", &t.bob0]);
+    t.alice
+        .murk(&t.repo)
+        .args(["get", "BK0"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("signed by bob"));
+}
+
+/// Rule: an abandoned removal has a way out. Alice revokes Bob on `offboard`
+/// and drops the branch; Bob keeps writing on main. Alice's machine refuses
+/// his vault, and the hint says that if the removing branch will not be
+/// merged, `murk trust --re-add` restores him here; doing so reads his write.
+#[test]
+fn an_abandoned_removal_is_undone_with_re_add() {
+    let t = BobWroteMain::new();
+    t.revoke_on_offboard();
+    commit(&t.repo, "offboard");
+    git_ok(&t.repo, &["checkout", "-q", "main"]);
+    t.bob_writes("bob-db");
+    t.alice
+        .murk(&t.repo)
+        .args(["get", "DB_URL"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("will not be merged"))
+        .stderr(predicate::str::contains("--re-add"));
+    t.alice
+        .murk(&t.repo)
+        .args(["trust", "--yes", "--re-add", "bob"])
+        .assert()
+        .success();
+    t.alice
+        .murk(&t.repo)
+        .args(["get", "DB_URL"])
+        .assert()
+        .success()
+        .stdout("bob-db\n");
 }

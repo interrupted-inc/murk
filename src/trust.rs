@@ -710,10 +710,20 @@ pub fn head_of(vault_path: &str) -> HeadState {
     crate::git::head_state(&absolute(vault_path))
 }
 
-/// The commit checked out in the checkout holding `vault_path` (see
-/// [`accepted_pin`]).
+/// The commit to record a removal this machine makes at (see
+/// [`accepted_pin`]): the one checked out, so every commit at or before it
+/// existed before the removal, whether or not the removal is committed yet.
 pub fn commit_of(vault_path: &str) -> Option<String> {
     crate::git::head_commit(&absolute(vault_path))
+}
+
+/// The commit to record a removal this machine accepts from another signer
+/// at (see [`accepted_pin`]): the one checked out, only when it holds the
+/// vault that made the removal exactly as committed. A removal accepted from
+/// an uncommitted vault file gets no commit, so it has no pre-removal
+/// exception.
+pub fn accepted_commit_of(vault_path: &str) -> Option<String> {
+    crate::git::head_commit_holding_vault(&absolute(vault_path))
 }
 
 /// Rule 4: an age signer's registry key must be the one pinned for it (or
@@ -1675,7 +1685,8 @@ fn removed_key_message(
     let who = label(loaded.names, key);
     let what = if signer {
         format!(
-            "it is signed by {who}, who was removed from this vault at generation {removed_at} on this machine\nif the branch that removed them is not merged here yet, merge it with the murk merge driver; when the merge stops on this vault, keep the side that removed them (`git checkout --theirs -- {vault_path}` when you merged that branch in) and `git add {vault_path}`. That drops every vault change made on this branch since the two branches split, by anyone, not only by them: run `murk trust --vault {vault_path}` (the vault you keep may read as a rollback or fork of this branch; accepting it never re-trusts them), find this branch's last vault commit not signed by them (`git log -- {vault_path}`), list what differs with `murk diff <that commit> --show-values`, and review it change by change — a later vault signed by someone else can still carry their changes — then make only the changes trusted members made again with murk, and commit. Otherwise restore {vault_path} from git"
+            "it is signed by {who}, who was removed from this vault at generation {removed_at} on this machine\nif the branch that removed them is not merged here yet, merge it with the murk merge driver; when the merge stops on this vault, keep the side that removed them (`git checkout --theirs -- {vault_path}` when you merged that branch in) and `git add {vault_path}`. That drops every vault change made on this branch since the two branches split, by anyone, not only by them: run `murk trust --vault {vault_path}` (the vault you keep may read as a rollback or fork of this branch; accepting it never re-trusts them), find this branch's last vault commit not signed by them (`git log -- {vault_path}`), list what differs with `murk diff <that commit> --show-values`, and review it change by change — a later vault signed by someone else can still carry their changes — then make only the changes trusted members made again with murk, and commit. If the branch that removed them will not be merged (the removal was abandoned), `murk trust --vault {vault_path} --re-add {}` restores them on this machine. Otherwise restore {vault_path} from git",
+            canonical_recipient(key)
         )
     } else {
         format!(
