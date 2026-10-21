@@ -12,39 +12,61 @@ use std::env;
 use crate::{crypto, encrypt_value, now_utc, types};
 use age::secrecy::{ExposeSecret, SecretString};
 
-/// Strip embedded credentials from a git remote URL.
+/// Strip credentials and other secrets from a git remote URL before it goes
+/// into the plaintext vault header.
 ///
-/// Handles `https://user:pass@host/repo` → `https://host/repo` and
-/// `https://token@host/repo` → `https://host/repo`.
-/// SSH and other formats are returned as-is (no credentials to strip).
+/// - URL form (`scheme://authority/path`, any scheme, any case): drops
+///   everything up to the last `@` of the authority (user, password or token),
+///   and any `?query` or `#fragment`, where tokens also travel.
+///   `https://user:p@ss@host/o/r?token=x` becomes `https://host/o/r`.
+/// - scp-like form (`user@host:path`): keeps a plain user such as `git@`, but
+///   drops a `user:password@` prefix entirely.
+/// - Anything else (a local path) is returned unchanged.
 fn sanitize_remote_url(url: &str) -> String {
-    if let Some(rest) = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-    {
-        let scheme = if url.starts_with("https://") {
-            "https"
-        } else {
-            "http"
+    if let Some((scheme, rest)) = url.split_once("://") {
+        // Strip userinfo before cutting ?query/#fragment, so a `?` or `#`
+        // inside a password cannot hide the `@` that ends it.
+        let authority_end = rest.find('/').unwrap_or(rest.len());
+        let rest = match rest[..authority_end].rfind('@') {
+            Some(at) => &rest[at + 1..],
+            None => rest,
         };
-        if let Some(at_pos) = rest.find('@') {
-            // Only strip if the '@' is before the first '/' (i.e. in the authority).
-            let slash_pos = rest.find('/').unwrap_or(rest.len());
-            if at_pos < slash_pos {
-                return format!("{scheme}://{}", &rest[at_pos + 1..]);
-            }
+        let rest = &rest[..rest.find(['?', '#']).unwrap_or(rest.len())];
+        return format!("{}://{rest}", scheme.to_ascii_lowercase());
+    }
+    // scp-like `user@host:path`. A plain user (`git@`) stays; a user with a
+    // password loses everything up to the last `@` before the path, since the
+    // password may itself contain `@`.
+    match url.split_once('@') {
+        Some((user, _)) if user.contains(':') && !user.contains(['/', '\\']) => {
+            let prefix_end = url.find('/').unwrap_or(url.len());
+            let at = url[..prefix_end].rfind('@').unwrap_or(user.len());
+            url[at + 1..].to_string()
         }
-        url.to_string()
-    } else {
-        url.to_string()
+        _ => url.to_string(),
     }
 }
 
-/// A key discovered from the environment or .env file.
+/// A key `murk init` found in the environment or in `~/.config/murk/keys`.
 #[derive(Debug)]
 pub struct DiscoveredKey {
     pub secret_key: SecretString,
     pub pubkey: String,
+    /// Where the key came from: `MURK_KEY`, `MURK_KEY_FILE`, or a stored key.
+    pub source: crate::env::KeySource,
+}
+
+impl DiscoveredKey {
+    fn new(secret_key: SecretString, source: crate::env::KeySource) -> Result<Self, String> {
+        let identity = crypto::parse_identity(secret_key.expose_secret())
+            .map_err(|e| format!("{}: {e}", source.describe()))?;
+        let pubkey = identity.pubkey_string().map_err(|e| e.to_string())?;
+        Ok(Self {
+            secret_key,
+            pubkey,
+            source,
+        })
+    }
 }
 
 /// Try to find an existing age key from the environment.
@@ -56,20 +78,49 @@ pub struct DiscoveredKey {
 pub fn discover_existing_key() -> Result<Option<DiscoveredKey>, String> {
     // The env vars are read in one place (the env module) so the auth read path
     // stays auditable — see tests/invariants.rs.
-    let raw = crate::env::key_from_env_only()?;
+    crate::env::key_from_env_only()?
+        .map(|(key, source)| DiscoveredKey::new(key, source))
+        .transpose()
+}
 
-    match raw {
-        Some(key) => {
-            let identity =
-                crypto::parse_identity(key.expose_secret()).map_err(|e| e.to_string())?;
-            let pubkey = identity.pubkey_string().map_err(|e| e.to_string())?;
-            Ok(Some(DiscoveredKey {
-                secret_key: key,
-                pubkey,
-            }))
-        }
-        None => Ok(None),
+/// Find the key already stored for this vault in `~/.config/murk/keys`, for
+/// `murk init` to reuse instead of generating a new one.
+///
+/// Generating a key writes `keys/<vault-hash>`, so without this check `init`
+/// would silently replace an identity the operator still needs whenever the
+/// environment did not name it (a fresh clone, a new worktree, a deleted
+/// `.env`). It looks where the runtime would: this checkout, then sibling
+/// worktrees (see [`crate::env::discover_key_file`]). That holds for a new
+/// vault too: a fresh key stored for a worktree's path would shadow the
+/// sibling's key there.
+///
+/// Strict and agent mode never auto-use a stored key, so there a stored key
+/// is an error rather than a reuse: init neither adopts nor replaces it.
+pub fn discover_stored_key(vault_path: &str) -> Result<Option<DiscoveredKey>, String> {
+    let path = crate::env::discover_key_file(vault_path);
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    if crate::hardening::strict_mode() {
+        return Err([
+            format!(
+                "a key for this vault is already stored at {}",
+                path.display()
+            ),
+            "strict mode (MURK_STRICT or MURK_AGENT) neither uses nor replaces stored keys".into(),
+            format!("to use it, set MURK_KEY_FILE={}", path.display()),
+        ]
+        .join("\n"));
     }
+    let secret_key = crate::env::read_stored_key(&path)?;
+    DiscoveredKey::new(secret_key, crate::env::KeySource::Auto(path.clone()))
+        .map(Some)
+        .map_err(|e| {
+            format!(
+                "{e}\nif you do not need {}, move it aside and run murk init again",
+                path.display()
+            )
+        })
 }
 
 /// Status of an existing vault relative to a given key.
@@ -403,5 +454,45 @@ mod tests {
             sanitize_remote_url("http://user:pass@example.com/repo"),
             "http://example.com/repo"
         );
+    }
+
+    #[test]
+    fn sanitize_strips_credentials_from_every_url_form() {
+        for (url, want) in [
+            // `@` inside the password: cut at the last `@` of the authority.
+            (
+                "https://user:p@ss@example.com/o/r.git",
+                "https://example.com/o/r.git",
+            ),
+            (
+                "HTTPS://user:secrettoken@example.com/o/r.git",
+                "https://example.com/o/r.git",
+            ),
+            (
+                "ssh://git:hunter2@example.com/o/r.git",
+                "ssh://example.com/o/r.git",
+            ),
+            (
+                "https://example.com/o/r.git?token=abc123",
+                "https://example.com/o/r.git",
+            ),
+            (
+                "https://example.com/o/r.git#tok",
+                "https://example.com/o/r.git",
+            ),
+            // `?` / `#` inside the password must not hide the `@`.
+            ("https://u:a?b#c@example.com/o/r", "https://example.com/o/r"),
+            ("git+ssh://tok@example.com/o/r", "git+ssh://example.com/o/r"),
+            ("user:pass@example.com:o/r.git", "example.com:o/r.git"),
+            // `@` inside an scp-form password: strip up to the last `@`.
+            ("user:p@ss@example.com:o/r.git", "example.com:o/r.git"),
+            ("user:p@ss@example.com:repo.git", "example.com:repo.git"),
+            ("git@example.com:o/r@v1.git", "git@example.com:o/r@v1.git"),
+            // `@` in the path is not userinfo.
+            ("https://example.com/o/r@v1", "https://example.com/o/r@v1"),
+            ("/srv/git/repo.git", "/srv/git/repo.git"),
+        ] {
+            assert_eq!(sanitize_remote_url(url), want, "{url}");
+        }
     }
 }

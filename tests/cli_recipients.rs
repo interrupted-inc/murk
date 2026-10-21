@@ -364,7 +364,9 @@ fn init_refuses_to_overwrite_dotenv_key_by_default() {
         .assert()
         .failure()
         .stderr(
-            predicate::str::contains("Overwrite? [y/N]").and(predicate::str::contains("Aborted.")),
+            predicate::str::contains("Generate a new key and replace that line?")
+                .and(predicate::str::contains("[y/N]"))
+                .and(predicate::str::contains("Aborted.")),
         );
     assert_eq!(
         fs::read_to_string(&env_path).unwrap(),

@@ -250,16 +250,25 @@ pub fn resolve_key_for_vault(vault_path: &str) -> Result<SecretString, String> {
 /// (see [`env_key`]). The value comes back in a `SecretString` (zeroized on
 /// drop) and is trimmed — init later writes it back as a single-line key file;
 /// the runtime path deliberately does not trim, to keep plugin identity files
-/// intact.
-pub fn key_from_env_only() -> Result<Option<SecretString>, String> {
+/// intact. The [`KeySource`] says which variable supplied it.
+pub fn key_from_env_only() -> Result<Option<(SecretString, KeySource)>, String> {
     match env_key()? {
-        Some(EnvKey::Inline(k)) => Ok(Some(SecretString::from(k))),
+        Some(EnvKey::Inline(k)) => Ok(Some((SecretString::from(k), KeySource::EnvVar))),
         Some(EnvKey::File(path)) => {
             let key = read_secret_file(&path, "MURK_KEY_FILE")?.trim().to_string();
-            Ok(Some(SecretString::from(key)))
+            Ok(Some((SecretString::from(key), KeySource::EnvFile(path))))
         }
         None => Ok(None),
     }
+}
+
+/// Read a key file from `~/.config/murk/keys` with the same symlink and
+/// permission checks as the runtime resolver, trimmed like
+/// [`key_from_env_only`]. `murk init` uses it to reuse a stored identity
+/// instead of generating a new one over it.
+pub(crate) fn read_stored_key(path: &Path) -> Result<SecretString, String> {
+    let key = read_secret_file(path, "key file")?.trim().to_string();
+    Ok(SecretString::from(key))
 }
 
 /// Parse a .env file into key-value pairs.
@@ -376,36 +385,42 @@ pub fn write_key_to_dotenv(secret_key: &str) -> Result<(), String> {
     )
 }
 
-/// Create or truncate `path` and write `contents`. On Unix the file is created
-/// `0600` atomically (no window where it is world-readable) and opened with
-/// `O_NOFOLLOW`, so a symlink planted after the caller's check is refused. On
-/// non-Unix platforms permissions are not hardened. Errors are prefixed with
-/// `open_context` or `write_context` depending on which step failed.
+/// Open `path` for writing a secret. On Unix the file is created `0600`
+/// atomically (no window where it is world-readable) and opened with
+/// `O_NOFOLLOW`, so a symlink planted after the caller's check is refused. With
+/// `create_new`, an existing file is an `AlreadyExists` error and is left
+/// untouched; otherwise it is truncated. On non-Unix platforms permissions are
+/// not hardened.
+fn open_secret_file(path: &Path, create_new: bool) -> std::io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true);
+    if create_new {
+        options.create_new(true);
+    } else {
+        options.create(true).truncate(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(SECRET_FILE_MODE)
+            .custom_flags(libc::O_NOFOLLOW);
+    }
+    options.open(path)
+}
+
+/// Create or truncate `path` and write `contents` (see [`open_secret_file`]).
+/// Errors are prefixed with `open_context` or `write_context` depending on
+/// which step failed.
 fn write_secret_file(
     path: &Path,
     contents: &[u8],
     open_context: &str,
     write_context: &str,
 ) -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .mode(SECRET_FILE_MODE)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(path)
-            .map_err(|e| format!("{open_context}: {e}"))?;
-        file.write_all(contents)
-            .map_err(|e| format!("{write_context}: {e}"))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = open_context;
-        fs::write(path, contents).map_err(|e| format!("{write_context}: {e}"))
-    }
+    let mut file = open_secret_file(path, false).map_err(|e| format!("{open_context}: {e}"))?;
+    file.write_all(contents)
+        .map_err(|e| format!("{write_context}: {e}"))
 }
 
 /// The absolute — but *lexical* — path of `vault_path`: cwd-joined when
@@ -561,6 +576,30 @@ pub fn write_key_to_file(path: &std::path::Path, secret_key: &str) -> Result<(),
         "writing key file",
         "writing key file",
     )
+}
+
+/// Store a newly generated key at `path`, refusing if the file already exists.
+///
+/// `murk init` looks for a stored key before generating one, but another
+/// `murk init` can store one between that check and this write. Creating the
+/// file exclusively (`O_EXCL`) instead of truncating it means a stored key is
+/// never overwritten: the existing file is left byte-for-byte unchanged.
+pub fn create_key_file(path: &Path, secret_key: &str) -> Result<(), String> {
+    reject_symlink(path, &path.display().to_string())?;
+    let mut file = match open_secret_file(path, true) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err([
+                format!("a key is already stored at {}", path.display()),
+                "murk init never replaces a stored key".into(),
+                "run murk init again to use it".into(),
+            ]
+            .join("\n"));
+        }
+        Err(e) => return Err(format!("creating key file: {e}")),
+    };
+    file.write_all(secret_key.as_bytes())
+        .map_err(|e| format!("writing key file: {e}"))
 }
 
 /// Write a MURK_KEY_FILE reference to `.env`, removing any existing MURK_KEY/MURK_KEY_FILE lines.
@@ -948,7 +987,7 @@ mod tests {
         let result = key_from_env_only();
         unsafe { env::remove_var("MURK_KEY_FILE") };
 
-        let key = result.unwrap().unwrap();
+        let (key, _source) = result.unwrap().unwrap();
         assert_eq!(key.expose_secret(), "AGE-SECRET-KEY-1TIGHT");
     }
 
@@ -1384,6 +1423,37 @@ mod tests {
         let result = reject_symlink(&link, "test");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("symlink"));
+    }
+
+    #[test]
+    fn create_key_file_never_replaces_an_existing_key_file() {
+        // Another `murk init` stored a key after this one's discovery check.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("key");
+        std::fs::write(&path, "AGE-SECRET-KEY-1FIRST\n").unwrap();
+
+        let err = create_key_file(&path, "AGE-SECRET-KEY-1SECOND").unwrap_err();
+
+        assert!(err.contains("already stored"), "{err}");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"AGE-SECRET-KEY-1FIRST\n",
+            "existing key file was modified"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_key_file_creates_a_0600_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("key");
+
+        create_key_file(&path, "AGE-SECRET-KEY-1NEW").unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"AGE-SECRET-KEY-1NEW");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[cfg(unix)]

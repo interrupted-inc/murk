@@ -63,10 +63,10 @@ mod property_tests;
 // Re-exports: keep the flat murk_cli::foo() API for main.rs
 pub use agent::{AgentPlan, AgentPlanKey, agent_plan, format_agent_plan_text};
 pub use env::{
-    EnvrcStatus, KeySource, agent_key_file_path, agent_keys_dir, dotenv_has_murk_key,
-    env_permission_warning, home_short, key_file_path, locate_key, parse_env, resolve_key,
-    resolve_key_for_vault, resolve_key_with_source, secret_file_loose_mode, strip_key_env,
-    write_envrc, write_key_ref_to_dotenv, write_key_to_dotenv, write_key_to_file,
+    EnvrcStatus, KeySource, agent_key_file_path, agent_keys_dir, create_key_file,
+    dotenv_has_murk_key, env_permission_warning, home_short, key_file_path, locate_key, parse_env,
+    resolve_key, resolve_key_for_vault, resolve_key_with_source, secret_file_loose_mode,
+    strip_key_env, write_envrc, write_key_ref_to_dotenv, write_key_to_dotenv, write_key_to_file,
 };
 pub use error::MurkError;
 pub use export::{
@@ -83,7 +83,10 @@ pub use groups::{
     validate_group_name,
 };
 pub use info::{InfoEntry, VaultInfo, format_info_lines, lifecycle_segment, vault_info};
-pub use init::{DiscoveredKey, InitStatus, check_init_status, create_vault, discover_existing_key};
+pub use init::{
+    DiscoveredKey, InitStatus, check_init_status, create_vault, discover_existing_key,
+    discover_stored_key,
+};
 pub use merge::{MergeDriverOutput, run_merge_driver};
 pub use policy::{check_agent_keys, enforce_agent_policy, is_agent_identity, is_agent_key_allowed};
 pub use recipients::{
@@ -205,11 +208,15 @@ pub fn read_vault(vault_path: &str) -> Result<types::Vault, MurkError> {
 ///
 /// Mirrors how git finds `.git` and cargo finds `Cargo.toml`: if the user passed a bare
 /// filename (no path separator, not absolute) and it does not exist in the current
-/// directory, walk up from CWD looking for a file of that name. Stops at:
+/// directory, walk up from CWD looking for a file of that name, as far as the first
+/// boundary:
 ///
 /// - a directory containing `.git` (the git root — don't escape the repo)
 /// - `$HOME` (don't traverse into parents of the user's home)
-/// - the filesystem root
+///
+/// With no boundary above CWD (outside every git repo and outside `$HOME`, say under
+/// `/tmp`), there is no walk at all: a vault another user planted in a shared ancestor
+/// directory must never be picked up.
 ///
 /// If a match is found, returns the absolute path. Otherwise returns the input unchanged,
 /// so downstream error messages still reference what the user asked for.
@@ -233,26 +240,24 @@ pub fn resolve_vault_path(arg: &str) -> String {
         return arg.to_string();
     }
 
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let mut dir = cwd.as_path();
-    loop {
+    // CWD is canonical; compare HOME the same way so a symlinked HOME still
+    // counts as a boundary.
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|h| std::fs::canonicalize(&h).unwrap_or(h));
+    let is_boundary =
+        |dir: &Path| dir.join(".git").exists() || home.as_deref().is_some_and(|h| dir == h);
+    let Some(boundary) = cwd.ancestors().find(|dir| is_boundary(dir)) else {
+        return arg.to_string();
+    };
+
+    for dir in cwd.ancestors() {
         let candidate = dir.join(arg);
         if candidate.exists() {
             return candidate.to_string_lossy().into_owned();
         }
-        // Stop at git root after checking this directory.
-        if dir.join(".git").exists() {
+        if dir == boundary {
             break;
-        }
-        // Stop at $HOME boundary (don't traverse above the user's home).
-        if let Some(ref h) = home
-            && dir == h.as_path()
-        {
-            break;
-        }
-        match dir.parent() {
-            Some(parent) => dir = parent,
-            None => break,
         }
     }
 

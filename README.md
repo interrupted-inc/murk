@@ -214,7 +214,7 @@ murk restore
 
 | Command | Description |
 |---------|-------------|
-| `murk init` | Generate keypair and create vault |
+| `murk init` | Create a vault and key, or reuse your existing key |
 | `murk env` | Write a `.envrc` for direnv integration |
 | `murk restore` | Recover key from BIP39 phrase |
 | `murk recover` | Show recovery phrase for current key |

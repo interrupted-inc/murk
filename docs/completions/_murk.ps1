@@ -23,7 +23,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
         'murk' {
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
-            [CompletionResult]::new('init', 'init', [CompletionResultType]::ParameterValue, 'Initialize a new vault and generate a keypair')
+            [CompletionResult]::new('init', 'init', [CompletionResultType]::ParameterValue, 'Initialize a vault or reuse its existing key')
             [CompletionResult]::new('env', 'env', [CompletionResultType]::ParameterValue, 'Write a .envrc for direnv integration')
             [CompletionResult]::new('restore', 'restore', [CompletionResultType]::ParameterValue, 'Restore MURK_KEY from a BIP39 recovery phrase')
             [CompletionResult]::new('recover', 'recover', [CompletionResultType]::ParameterValue, 'Re-derive recovery phrase from current MURK_KEY')
@@ -564,7 +564,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             break
         }
         'murk;help' {
-            [CompletionResult]::new('init', 'init', [CompletionResultType]::ParameterValue, 'Initialize a new vault and generate a keypair')
+            [CompletionResult]::new('init', 'init', [CompletionResultType]::ParameterValue, 'Initialize a vault or reuse its existing key')
             [CompletionResult]::new('env', 'env', [CompletionResultType]::ParameterValue, 'Write a .envrc for direnv integration')
             [CompletionResult]::new('restore', 'restore', [CompletionResultType]::ParameterValue, 'Restore MURK_KEY from a BIP39 recovery phrase')
             [CompletionResult]::new('recover', 'recover', [CompletionResultType]::ParameterValue, 'Re-derive recovery phrase from current MURK_KEY')
