@@ -41,8 +41,11 @@ pub(crate) fn cmd_trust(yes: bool, re_add: &[String], vault_path: &str) {
 
     // Keys this machine recorded as removed that the vault lists or is signed
     // by: trusted again only when named with --re-add.
-    let removed =
-        murk_cli::trust::removed_keys_in(&inspected.loaded(), inspected.assessment.pin.as_ref());
+    let removed = murk_cli::trust::removed_keys_in(
+        &inspected.loaded(),
+        inspected.assessment.pin.as_ref(),
+        &murk_cli::trust::Checkout::of(vault_path, inspected.assessment.pin.as_ref()),
+    );
     let readmit = readmitted_keys(re_add, &removed, &inspected.murk.recipients);
     if !readmit.is_empty() {
         try_or_die(inspected.readmit(vault_path, &readmit));

@@ -81,11 +81,20 @@ pub struct TrustPin {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub added_by: BTreeMap<String, String>,
     /// Keys an accepted vault removed: canonical key → the generation of the
-    /// vault that removed it. A vault listing the key at that generation or
-    /// below, or signed by it, is refused; a newer vault from a trusted signer
-    /// that lists it again, or `murk trust --re-add`, takes it out.
+    /// vault that removed it. Where the removal applies (see `removed_on`), a
+    /// vault listing the key at that generation or below, or signed by it, is
+    /// refused; a newer vault from a trusted signer that lists it again there,
+    /// or `murk trust --re-add`, takes it out.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub removed: BTreeMap<String, u64>,
+    /// The branches whose accepted history contains each removal: the branch
+    /// it was made or accepted on, and every branch where an accepted vault at
+    /// or after the removal no longer lists the key. A removal also applies
+    /// outside git, on a detached HEAD and on a branch this machine has no
+    /// mark for (unless git shows its commit is in the history of one of these
+    /// branches); a key in `removed` with no entry here applies everywhere.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub removed_on: BTreeMap<String, BTreeSet<String>>,
     /// Fingerprint ([`crate::trust::vault_fingerprint`]) of the vault accepted
     /// at `generation`.
     #[serde(default, skip_serializing_if = "String::is_empty")]

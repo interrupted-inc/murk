@@ -640,6 +640,7 @@ impl InspectedVault {
                         pin.signers = prior.signers;
                         pin.added_by = prior.added_by;
                         pin.removed = prior.removed;
+                        pin.removed_on = prior.removed_on;
                         pin.groups = prior.groups;
                     }
                     Ok((fresh != Some(&pin)).then_some(pin))

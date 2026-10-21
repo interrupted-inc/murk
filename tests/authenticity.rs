@@ -2045,12 +2045,15 @@ fn reading_history_never_adds_trust() {
 }
 
 /// Rule: merge sides follow removal. After Alice's machine accepts Bob's
-/// removal, two branches forked while Bob was a member and saved before his
-/// removal still list him; merging them with each other must not keep him,
-/// since neither re-adds him in a newer revision. And an older alice-signed
-/// revision that adds Bob, committed on a branch forked from before he was
-/// added, is refused as a rollback when merged into a branch that also
-/// added him (so the recipient merge itself sees no conflict).
+/// removal on main, merging on a branch it has no record of, whose commit is
+/// not in main's history (so it may be a replay): two branches forked while
+/// Bob was a member and saved before his removal still list him, and merging
+/// them must not keep him, since neither re-adds him in a newer revision. And
+/// an older alice-signed revision that adds Bob, committed on a branch forked
+/// from before he was added, is refused as a rollback (both sides add Bob, so
+/// the recipient merge itself sees no conflict). On f1, a branch this machine
+/// accepted before the removal, Bob is still a member and the same merge goes
+/// through.
 #[test]
 fn a_merge_side_never_brings_a_removed_recipient_back() {
     let base = TempDir::new().unwrap();
@@ -2074,16 +2077,18 @@ fn a_merge_side_never_brings_a_removed_recipient_back() {
         .success();
     commit(&repo, "remove bob");
 
-    git_ok(&repo, &["checkout", "-q", "f1"]);
+    git_ok(&repo, &["checkout", "-q", "-b", "review", "f1"]);
     let (merged, stderr) = git_merge(&alice, &repo, "f2");
     assert!(!merged, "the merge must not complete: {stderr}");
     assert!(stderr.contains("neither side re-adds them"), "{stderr}");
     git_ok(&repo, &["merge", "--abort"]);
+    git_ok(&repo, &["checkout", "-q", "f1"]);
+    git_ok(&repo, &["branch", "-D", "review"]);
 
     git_ok(&repo, &["checkout", "-q", "-b", "side", "main~2"]);
     fs::write(repo.join(".murk"), &with_bob).unwrap();
     commit(&repo, "replay the revision that added bob");
-    git_ok(&repo, &["checkout", "-q", "f1"]);
+    git_ok(&repo, &["checkout", "-q", "-b", "review", "f1"]);
     let (merged, stderr) = git_merge(&alice, &repo, "side");
     assert!(!merged, "the merge must not complete: {stderr}");
     // Both sides are older revisions that add Bob relative to the ancestor.
@@ -2092,12 +2097,17 @@ fn a_merge_side_never_brings_a_removed_recipient_back() {
             && stderr.contains("rolled back: it adds bob"),
         "{stderr}"
     );
+    git_ok(&repo, &["merge", "--abort"]);
+
+    git_ok(&repo, &["checkout", "-q", "f1"]);
+    let (merged, stderr) = git_merge(&alice, &repo, "f2");
+    assert!(merged, "{stderr}");
 }
 
-/// Rule: a save never writes a removed recipient back. Alice's machine
-/// recorded Bob's removal; her working vault is then an older revision that
-/// still lists him — the remote tip she checked out predates the removal, on
-/// a branch this machine never saw, on a detached HEAD, or as a file. `murk
+/// Rule: a save never writes a removed recipient back where the removal
+/// applies. Alice's machine recorded Bob's removal on main; her working vault
+/// is then an older revision that still lists him — main reset to the tip
+/// she pulled before the removal, a detached HEAD, or the file itself. `murk
 /// add` refuses and tells her to update to the vault that removed him,
 /// writing nothing; re-authorizing Bob explicitly on the current vault works.
 #[test]
@@ -2132,8 +2142,10 @@ fn a_save_over_an_older_revision_never_writes_a_removed_recipient_back() {
             "nothing written"
         );
     };
-    git_ok(&repo, &["checkout", "-q", "-b", "pulled", "HEAD~1"]);
+    let tip = String::from_utf8(git(&repo, &["rev-parse", "HEAD"]).stdout).unwrap();
+    git_ok(&repo, &["reset", "-q", "--hard", "HEAD~1"]);
     refuse_save();
+    git_ok(&repo, &["reset", "-q", "--hard", tip.trim()]);
     git_ok(&repo, &["checkout", "-q", "--detach", "main~1"]);
     refuse_save();
     git_ok(&repo, &["checkout", "-q", "main"]);
@@ -2221,4 +2233,152 @@ fn reading_a_pull_request_never_trusts_what_it_adds() {
         .failure()
         .stdout(predicate::str::contains("EVIL").not())
         .stderr(predicate::str::contains("not a trusted signer"));
+}
+
+/// Rule: a removal applies where it happened. Alice revokes Carol on a
+/// feature branch that is not merged yet. On main, which still lists Carol,
+/// everything keeps working: Alice reads and writes, and Carol's own writes
+/// load. On the feature branch, a replay of the vault that still listed
+/// Carol is refused, and the message points at merging the removal first.
+#[test]
+fn a_removal_on_a_feature_branch_leaves_other_branches_working() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo) = alice_repo(base.path());
+    let carol = Machine::new(base.path(), "carol");
+    carol.init(&base.path().join("carol-scratch"), "carol");
+    let carol_key = carol.key_file();
+    authorize(&alice, &repo, &carol, "carol");
+    // Alice's own signed vault that lists Carol, before Carol writes.
+    let with_carol = fs::read(repo.join(".murk")).unwrap();
+    carol
+        .with_key(&repo, &carol_key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    carol
+        .with_key(&repo, &carol_key)
+        .args(["add", "C1"])
+        .write_stdin("c1\n")
+        .assert()
+        .success();
+    alice
+        .murk(&repo)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    commit(&repo, "carol is a member");
+
+    git_ok(&repo, &["checkout", "-q", "-b", "feature"]);
+    alice
+        .murk(&repo)
+        .args(["circle", "revoke", "carol"])
+        .assert()
+        .success();
+    commit(&repo, "revoke carol");
+
+    git_ok(&repo, &["checkout", "-q", "main"]);
+    alice
+        .murk(&repo)
+        .args(["get", "C1"])
+        .assert()
+        .success()
+        .stdout("c1\n");
+    alice.add(&repo, "MAIN2", "main2");
+    commit(&repo, "main moves on");
+    carol
+        .with_key(&repo, &carol_key)
+        .args(["add", "C2"])
+        .write_stdin("c2\n")
+        .assert()
+        .success();
+    commit(&repo, "carol writes on main");
+    alice
+        .murk(&repo)
+        .args(["get", "C2"])
+        .assert()
+        .success()
+        .stdout("c2\n");
+
+    git_ok(&repo, &["checkout", "-q", "feature"]);
+    alice
+        .murk(&repo)
+        .args(["get", "DB_URL"])
+        .assert()
+        .success()
+        .stdout("prod-db\n");
+    fs::write(repo.join(".murk"), &with_carol).unwrap();
+    commit(&repo, "replay: carol listed");
+    let out = alice.murk(&repo).args(["get", "DB_URL"]).output().unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("rolled back"), "{stderr}");
+    let merge_hint = stderr.find("merge the removal into this branch");
+    let re_add_hint = stderr.find("--re-add");
+    assert!(
+        merge_hint.is_some_and(|m| re_add_hint.is_none_or(|r| m < r)),
+        "the first fix offered is merging the removal: {stderr}"
+    );
+}
+
+/// Rule: a removal applies where it happened, on one machine with no other
+/// branch history. Alice creates the vault before `git init`, so main has
+/// never been accepted on a branch. She revokes Carol and rotates X on branch
+/// `theirs`, then revokes Carol on main as well, whose commit is still in
+/// `theirs`' history from before the removal. Both revokes work, and the
+/// keyed merge of the two goes through.
+#[test]
+fn both_branches_revoke_the_same_member_on_one_machine() {
+    let base = TempDir::new().unwrap();
+    let alice = Machine::new(base.path(), "alice");
+    let repo = base.path().join("repo");
+    alice.init(&repo, "alice");
+    let carol = Machine::new(base.path(), "carol");
+    carol.init(&base.path().join("carol-scratch"), "carol");
+    authorize(&alice, &repo, &carol, "carol");
+    for args in [
+        &["group", "create", "ops"][..],
+        &["generate", "X", "--group", "ops"],
+    ] {
+        alice.murk(&repo).args(args).assert().success();
+    }
+    git_ok(&repo, &["init", "-q", "-b", "main"]);
+    use_merge_driver(&repo);
+
+    git_ok(&repo, &["checkout", "-q", "-b", "theirs"]);
+    alice
+        .murk(&repo)
+        .args(["circle", "revoke", "carol"])
+        .assert()
+        .success();
+    alice
+        .murk(&repo)
+        .args(["rotate", "X", "--generate"])
+        .assert()
+        .success();
+    commit(&repo, "theirs: revoke carol, rotate X");
+
+    git_ok(&repo, &["checkout", "-q", "main"]);
+    alice
+        .murk(&repo)
+        .args(["circle", "revoke", "carol"])
+        .assert()
+        .success();
+    alice.add(&repo, "Z", "v");
+    commit(&repo, "ours: revoke carol, add Z");
+
+    let (merged, stderr) = git_merge(&alice, &repo, "theirs");
+    assert!(merged, "{stderr}");
+    alice
+        .murk(&repo)
+        .args(["get", "Z"])
+        .assert()
+        .success()
+        .stdout("v\n");
+    let verify = alice.murk(&repo).arg("verify").output().unwrap();
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&verify.stdout),
+        String::from_utf8_lossy(&verify.stderr)
+    );
+    assert!(all.contains("vault integrity verified"), "{all}");
 }

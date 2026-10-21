@@ -538,6 +538,27 @@ pub fn head_state(abs_vault: &Path) -> HeadState {
     }
 }
 
+/// Whether the commit checked out in the checkout holding `abs_vault` is in
+/// the history of local branch `branch` (equal to its tip or an ancestor of
+/// it). False when git fails, the branch does not exist, or the name could
+/// be read as an option.
+pub fn head_in_history_of(abs_vault: &Path, branch: &str) -> bool {
+    let Some(root) = abs_vault.parent().and_then(worktree_root) else {
+        return false;
+    };
+    if branch.starts_with('-') {
+        return false;
+    }
+    git_command()
+        .current_dir(&root)
+        .args(["merge-base", "--is-ancestor", "HEAD"])
+        .arg(format!("refs/heads/{branch}"))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
 /// A path naming a vault the same way from every worktree of its repository:
 /// the repository's common git directory joined with the vault's path inside
 /// the checkout. `None` when the vault is not inside a git checkout.
