@@ -27,7 +27,7 @@ Anyone with read access to the repo can see what secrets exist and why (`murk in
 
 ## Three layers for one secret
 
-Every secret has a base tier: either **shared** (encrypted to every recipient, the implicit `everyone` group) or a single **named group** (encrypted only to that group's members), plus an optional personal **private override** (a "mote", the `me` tier, encrypted to just your key).
+A secret has at most one base tier: either **shared** (encrypted to every recipient except agent grants, the implicit `everyone` group) or a single **named group** (encrypted only to that group's members). It can also carry a personal **private override** (a "mote", the `me` tier, encrypted to just your key), or have only private values and no base tier.
 
 When you `murk get` or `murk export`, resolution goes in order:
 

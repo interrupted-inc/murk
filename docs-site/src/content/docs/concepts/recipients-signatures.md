@@ -17,9 +17,9 @@ Display names are stored only inside the encrypted `meta` blob, never in the pla
 
 ## The integrity MAC
 
-Every save computes a BLAKE3 keyed hash over the vault's key names, per-key ciphertexts, recipient list, schema, group and grant definitions, policy, and any pending-rotation markers, storing the digest as `mac` alongside its key (`hmac_key`) in the encrypted meta. On load, murk recomputes and checks it, catching accidental corruption or a non-recipient's tampering immediately.
+Every save computes a BLAKE3 keyed hash over the vault's key names, per-key ciphertexts, recipient list, schema, group and grant definitions, policy, and any pending-rotation markers, storing the digest as `mac` alongside its key (`mac_key`) in the encrypted meta. On load, murk recomputes and checks it, catching accidental corruption or a non-recipient's tampering immediately.
 
-It is **not** a defense against a malicious recipient or anyone else with write access to the repo. age only needs recipients' *public* keys (which sit in the plaintext header) to re-encrypt content, so a repo-writer can mint a fresh `hmac_key`, recompute a valid MAC over tampered content, and re-encrypt `meta` to match. Authorship integrity comes from the signature below, not the MAC.
+It is **not** a defense against a malicious recipient or anyone else with write access to the repo. age only needs recipients' *public* keys (which sit in the plaintext header) to re-encrypt content, so a repo-writer can mint a fresh `mac_key`, recompute a valid MAC over tampered content, and re-encrypt `meta` to match. Authorship integrity comes from the signature below, not the MAC.
 
 ## Signatures
 
@@ -27,7 +27,7 @@ murk signs the vault with Ed25519 on every save where the writer holds a signing
 
 Two identity types can sign: an **age** key (an Ed25519 key derived from the raw age key bytes via a domain-separated KDF, so the same BIP39 phrase recovers both), and an **ssh-ed25519** key (which signs directly, since the key itself is already Ed25519). `ssh-rsa` keys and hardware/plugin identities can't sign, so vaults saved with those identities are written unsigned.
 
-On load, if a signature is present, murk requires the signer to be a current recipient and the signature to match the vault's content: **a present-but-invalid signature fails the load as tampering**, not a warning. An absent signature loads with an "unsigned" warning instead. Integrity then rests entirely on git. The merge driver deliberately leaves merged vaults unsigned, since resolving a merge automatically isn't the same as vouching for the result. The next person to write the vault re-signs it after reviewing `murk diff`.
+On load, if a signature is present, murk requires the signer to be a current recipient and the signature to match the vault's content: **a present-but-invalid signature fails the load as tampering**, not a warning. An absent signature loads with an "unsigned" warning instead. Integrity then rests entirely on git. When the merge driver has a key and regenerates the meta, it deliberately leaves the merged vault unsigned, since resolving a merge automatically isn't the same as vouching for the result. The next person to write the vault re-signs it. Before that write, review `git diff -- .murk` for recipients, schema, policy and ciphertext entries, and `murk diff` for secret values.
 
 ## Signer-registry pinning (TOFU)
 

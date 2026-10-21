@@ -2,9 +2,9 @@
 
 ## Cryptography
 
-murk does not implement any cryptography. All encryption and decryption is performed by [age](https://age-encryption.org/) via the [rage](https://github.com/str4d/rage) Rust implementation. Key generation uses BIP39 mnemonics over cryptographically random bytes.
+murk uses age for encryption and decryption (the [age](https://age-encryption.org/) Rust crate from the [rage](https://github.com/str4d/rage) project), BLAKE3 for keyed integrity and signing-key derivation, and Ed25519 for signatures. It implements no custom cryptographic primitives. Its vault format and the composition of these primitives are murk-specific. Key generation uses BIP39 mnemonics over cryptographically random bytes.
 
-If you find a vulnerability in the underlying cryptographic primitives, please report it to the [age](https://github.com/FiloSottile/age) or [rage](https://github.com/str4d/rage) projects directly.
+If you find a vulnerability in the underlying cryptographic primitives, please report it to the [age](https://github.com/FiloSottile/age) or [rage](https://github.com/str4d/rage) projects directly. Report a flaw in how murk combines them (its MAC, signature or signing-key construction) to murk, as described below.
 
 For a detailed analysis of what murk protects and what it doesn't, see [THREAT_MODEL.md](THREAT_MODEL.md).
 
@@ -16,7 +16,7 @@ For a detailed analysis of what murk protects and what it doesn't, see [THREAT_M
 - **Plaintext during edit.** `murk edit` writes decrypted values to a temp file for `$EDITOR`. The file is overwritten with zeros and deleted afterward, but the plaintext existed on disk briefly. Core dumps, swap, or filesystem journaling could retain fragments.
 - **Compromised workstation = full access.** If an attacker has access to the machine where your key lives, they can decrypt all shared secrets. murk is not a defense against a compromised machine — it protects secrets at rest in git and in transit.
 - **Key names are public.** The `.murk` header exposes what secrets exist (e.g. `STRIPE_SECRET_KEY`). Only values are encrypted. This is a deliberate trade-off for usability (`murk info` without a key, readable git diffs).
-- **No custom cryptography.** murk delegates all crypto to [age](https://age-encryption.org/). Minimal custom code, explicit trade-offs, single-file format.
+- **No custom cryptographic primitives.** murk uses age, BLAKE3 and Ed25519. The vault format, its keyed MAC and its signature scheme are murk's own.
 
 ## Known Issues
 
@@ -75,6 +75,7 @@ In scope:
 - Bypassing recipient-based access control
 - Key material exposure beyond `.env`
 - Integrity check bypass (MAC validation)
+- Flaws in murk's MAC, signature or signing-key construction
 
 Out of scope:
 - Vulnerabilities in age/rage cryptographic primitives (report upstream)

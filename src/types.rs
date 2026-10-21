@@ -97,9 +97,11 @@ pub struct SecretEntry {
 /// narrow set of keys. The grant's `pubkey` is also a `Vault::recipients`
 /// entry, and each granted key carries a `scoped` ciphertext under that pubkey —
 /// so the agent's *access* is governed (and MAC-covered) by the scoped entries.
-/// This record is the audit/TTL layer: it lives in the encrypted meta (so an
-/// agent's existence and scope don't leak) and is covered by the keyed MAC
-/// (`blake3v5:`) so TTL, scope, and issuer cannot be tampered with undetected.
+/// This record is the audit/TTL layer: it lives in the encrypted meta (so the
+/// grant's name, timestamps, issuer and recorded scope list stay out of the
+/// plaintext; the pubkey and its `scoped` entries still show which keys it can
+/// read) and is covered by the keyed MAC (`blake3v5:`) so TTL, scope, and issuer
+/// cannot be tampered with undetected.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GrantEntry {
     /// The agent's ephemeral age public key (also in `Vault::recipients`).
@@ -189,8 +191,9 @@ pub struct Meta {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub groups: BTreeMap<String, Vec<String>>,
     /// Short-lived agent grants: grant name → metadata. Stored here (encrypted)
-    /// so an agent's existence and scope do not leak. Covered by the keyed MAC
-    /// (`blake3v5:`) so TTL/scope/issuer are tamper-evident.
+    /// so grant names, timestamps and issuers stay out of the plaintext header.
+    /// Covered by the keyed MAC (`blake3v5:`) so TTL/scope/issuer are
+    /// tamper-evident.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub grants: BTreeMap<String, GrantEntry>,
 }

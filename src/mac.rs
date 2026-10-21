@@ -454,7 +454,7 @@ fn v8_mac_bytes(
 
     // Policy (header). `0x08` opens the policy block (present only when a policy
     // exists, so Some-but-empty is distinct from None). Each agent allow-tag is
-    // length-prefixed (4-byte big-endian) and sorted, so the byte stream is
+    // length-prefixed (8-byte big-endian) and sorted, so the byte stream is
     // unambiguous regardless of tag contents — a crafted tag can't forge a
     // boundary (e.g. `["a\tb"]` and `["a", "b"]` hash differently). New policy
     // fields extend this block.

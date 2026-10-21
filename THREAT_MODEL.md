@@ -97,7 +97,7 @@ murk signs the vault with an Ed25519 key so that tampering by someone with write
 
 **What crosses the boundary in plaintext:** key names, key descriptions, example values, recipient public keys, vault metadata (version, creation date, repo URL).
 
-**What the stored key is bound to.** Auto-discovery in `~/.config/murk/keys/` is keyed on the vault's absolute path, so a vault copied into another directory finds no key and fails closed — murk will not decrypt an attacker-supplied vault with your key just because it sits in your current directory. Git worktrees extend that binding, not loosen it: the same vault in a sibling checkout of the same repository resolves to the same key. Since a `.git` entry is a file any local process can write, the worktree relationship is treated as untrusted input and verified in both directions against git's own metadata — the current checkout must be one the repository records, and each sibling must point back at the same common directory. A directory that merely claims kinship gets no key. Discovery is disabled outright under `MURK_STRICT` and in agent context.
+**What the stored key is bound to.** Auto-discovery in `~/.config/murk/keys/` is keyed on the vault's absolute path, so a vault copied into another directory finds no key and fails closed — murk will not decrypt an attacker-supplied vault with your key just because it sits in your current directory. Git worktrees extend that binding, not loosen it: the same vault in a sibling checkout of the same repository resolves to the same key. Since a `.git` entry is a file any local process can write, the worktree relationship is treated as untrusted input and verified in both directions against git's own metadata — the vault's checkout must be one the repository records, and each sibling must point back at the same common directory. A directory that merely claims kinship gets no key. Discovery is disabled outright under `MURK_STRICT` and in agent context.
 
 ## GitHub SSH key onboarding
 
@@ -145,7 +145,7 @@ Releases up to and including 0.11.0 were signed as `interrupted-inc/murk`, befor
 
 **Install script:** `install.sh` downloads the binary archive and SHA256SUMS, then verifies the checksum before extracting. It does not execute downloaded code before verification.
 
-**Dependencies:** murk depends on age (via the `age` crate) for all cryptography, plus standard Rust crates for CLI, serialization, and I/O. `cargo deny` checks for known advisories and license compliance in CI. All CI actions are pinned to full SHA commit hashes.
+**Dependencies:** murk depends on age (via the `age` crate) for encryption, on `blake3` and `ed25519-dalek` for its integrity MAC and signatures, and on standard Rust crates for CLI, serialization, and I/O. `cargo deny` checks for known advisories and license compliance in CI. All CI actions are pinned to full SHA commit hashes.
 
 **Cargo.lock:** Committed and used for reproducible builds (`--locked` in release workflows).
 

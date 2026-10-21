@@ -54,7 +54,7 @@ stored for that vault in a sibling checkout of the same repository.
 
 "Sibling" here means what git says it means. murk reads git's own worktree
 metadata — never a `git` subprocess — and verifies the relationship in both
-directions: your current directory has to be a checkout the repository
+directions: the vault's checkout has to be one the repository
 records, and the checkout whose key is used has to point back at the same
 repository. A `.git` entry is just a file that any local process can write, so
 a directory that merely *claims* to be a worktree resolves to no key at all
