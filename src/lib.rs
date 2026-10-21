@@ -91,8 +91,9 @@ pub use recipients::{
     list_recipients, revoke_recipient, truncate_pubkey,
 };
 pub use secrets::{
-    EXPIRY_WARN_DAYS, RotationIssue, add_grouped_secret, add_secret, describe_key, get_secret,
-    import_secrets, list_keys, mark_revoked, remove_secret, rotation_health,
+    EXPIRY_WARN_DAYS, KeyTiers, RotationIssue, SecretWrite, add_grouped_secret, add_secret,
+    check_foreign_groups, describe_key, get_secret, key_tiers, list_keys, mark_revoked,
+    remove_secret, rotate_secret, rotation_health, set_secret,
 };
 
 use std::path::Path;

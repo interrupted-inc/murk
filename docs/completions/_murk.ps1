@@ -83,7 +83,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
         'murk;add' {
             [CompletionResult]::new('--desc', '--desc', [CompletionResultType]::ParameterName, 'Description for this key')
             [CompletionResult]::new('--example', '--example', [CompletionResultType]::ParameterName, 'Example value')
-            [CompletionResult]::new('--group', '--group', [CompletionResultType]::ParameterName, 'Who can read it: a group name, `everyone` (default), or `me`')
+            [CompletionResult]::new('--group', '--group', [CompletionResultType]::ParameterName, 'Who can read it: a group name, `everyone`, or `me`. Omit to keep an existing key''s tier; a new key is shared with everyone')
             [CompletionResult]::new('--tag', '--tag', [CompletionResultType]::ParameterName, 'Tag for grouping (repeatable)')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('--scoped', '--scoped', [CompletionResultType]::ParameterName, 'Deprecated alias for `--group me`')
@@ -95,7 +95,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             [CompletionResult]::new('--length', '--length', [CompletionResultType]::ParameterName, 'Length in bytes (default 32)')
             [CompletionResult]::new('--desc', '--desc', [CompletionResultType]::ParameterName, 'Description for this key')
             [CompletionResult]::new('--example', '--example', [CompletionResultType]::ParameterName, 'Example value')
-            [CompletionResult]::new('--group', '--group', [CompletionResultType]::ParameterName, 'Who can read it: a group name, `everyone` (default), or `me`')
+            [CompletionResult]::new('--group', '--group', [CompletionResultType]::ParameterName, 'Who can read it: a group name, `everyone`, or `me`. Omit to keep an existing key''s tier; a new key is shared with everyone')
             [CompletionResult]::new('--tag', '--tag', [CompletionResultType]::ParameterName, 'Tag for grouping (repeatable)')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('--hex', '--hex', [CompletionResultType]::ParameterName, 'Output as hex instead of base64')
@@ -152,7 +152,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             break
         }
         'murk;import' {
-            [CompletionResult]::new('--group', '--group', [CompletionResultType]::ParameterName, 'Assign imported secrets to this group (default: everyone)')
+            [CompletionResult]::new('--group', '--group', [CompletionResultType]::ParameterName, 'Assign imported secrets to this group (`everyone`, `me`, or a group name). Omit to keep each existing key''s tier; new keys are shared with everyone')
             [CompletionResult]::new('--example', '--example', [CompletionResultType]::ParameterName, 'Example value applied to every imported key')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('--force', '--force', [CompletionResultType]::ParameterName, 'Overwrite existing secrets without prompting')

@@ -54,7 +54,8 @@ pub enum Command {
         /// Example value
         #[arg(long)]
         example: Option<String>,
-        /// Who can read it: a group name, `everyone` (default), or `me`
+        /// Who can read it: a group name, `everyone`, or `me`. Omit to keep an
+        /// existing key's tier; a new key is shared with everyone
         #[arg(long)]
         group: Option<String>,
         /// Deprecated alias for `--group me`
@@ -84,7 +85,8 @@ pub enum Command {
         /// Example value
         #[arg(long)]
         example: Option<String>,
-        /// Who can read it: a group name, `everyone` (default), or `me`
+        /// Who can read it: a group name, `everyone`, or `me`. Omit to keep an
+        /// existing key's tier; a new key is shared with everyone
         #[arg(long)]
         group: Option<String>,
         /// Tag for grouping (repeatable)
@@ -189,7 +191,9 @@ pub enum Command {
         /// Overwrite existing secrets without prompting
         #[arg(long)]
         force: bool,
-        /// Assign imported secrets to this group (default: everyone)
+        /// Assign imported secrets to this group (`everyone`, `me`, or a group
+        /// name). Omit to keep each existing key's tier; new keys are shared
+        /// with everyone
         #[arg(long)]
         group: Option<String>,
         /// Example value applied to every imported key

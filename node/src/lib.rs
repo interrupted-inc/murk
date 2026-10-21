@@ -29,11 +29,12 @@ pub struct Vault {
 }
 
 /// Options for [`Vault::add`]. All fields are optional; an omitted `tier`
-/// defaults to `everyone` (the shared value).
+/// keeps an existing key in its tier and makes a new key shared (`everyone`).
 #[napi(object)]
 #[derive(Default)]
 pub struct AddOptions {
-    /// `"everyone"` (default), `"me"` (personal scoped), or a group name.
+    /// `"everyone"`, `"me"` (personal scoped), or a group name. Omit it to keep
+    /// an existing key where it is; a new key is then shared (`everyone`).
     pub tier: Option<String>,
     /// Human-readable description recorded in the vault schema.
     pub desc: Option<String>,
@@ -124,10 +125,15 @@ impl Vault {
     /// recipients and the vault is re-signed and written back to disk under an
     /// exclusive lock, so it is safe against concurrent writers.
     ///
-    /// `tier` selects the destination — `"everyone"` (default, shared to all
-    /// recipients), `"me"` (a personal value encrypted to the caller only), or a
-    /// group name (encrypted to that group's members; the caller must be a
-    /// member). An existing key is overwritten in place.
+    /// `tier` selects the destination — `"everyone"` (shared to all recipients),
+    /// `"me"` (a personal value encrypted to the caller only), or a group name
+    /// (encrypted to that group's members; the caller must be a member). Giving
+    /// a tier moves an existing key there. Without one, an existing key keeps its
+    /// tier: a group value stays in its group and a personal override stays the
+    /// caller's own. Only a new key defaults to `"everyone"`. A key held by a
+    /// group the caller is not a member of can't be written (except as a `"me"`
+    /// override), and a key holding only other recipients' overrides needs an
+    /// explicit tier: otherwise the call throws.
     ///
     /// PLAINTEXT CAVEAT: unlike the read path — where plaintext only ever appears
     /// *after* decryption — a write means the caller already holds the secret as a
@@ -153,10 +159,7 @@ impl Vault {
             )));
         }
         let opts = options.unwrap_or_default();
-        let tier = opts
-            .tier
-            .as_deref()
-            .map_or(SecretTier::Everyone, SecretTier::parse);
+        let tier = opts.tier.as_deref().map(SecretTier::parse);
         let desc = opts.desc.as_deref();
         let tags = opts.tags.unwrap_or_default();
 
@@ -172,48 +175,18 @@ impl Vault {
         let original = murk.clone();
         let mut current = murk;
 
-        match &tier {
-            SecretTier::Everyone => {
-                murk_cli::add_secret(
-                    &mut vault,
-                    &mut current,
-                    &key,
-                    &value,
-                    desc,
-                    None,
-                    false,
-                    &tags,
-                    Some(&pubkey),
-                );
-            }
-            SecretTier::Me => {
-                murk_cli::add_secret(
-                    &mut vault,
-                    &mut current,
-                    &key,
-                    &value,
-                    desc,
-                    None,
-                    true,
-                    &tags,
-                    Some(&pubkey),
-                );
-            }
-            SecretTier::Group(name) => {
-                murk_cli::add_grouped_secret(
-                    &mut vault,
-                    &mut current,
-                    &key,
-                    &value,
-                    desc,
-                    None,
-                    name,
-                    &tags,
-                    &pubkey,
-                )
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-            }
-        }
+        murk_cli::set_secret(
+            &mut vault,
+            &mut current,
+            &key,
+            &value,
+            desc,
+            None,
+            tier.as_ref(),
+            &tags,
+            &pubkey,
+        )
+        .map_err(|e| napi::Error::from_reason(e.to_string()))?;
 
         // Enforce the agent policy over the resulting key *before* persisting, so a
         // forbidden write fails closed and leaves the on-disk vault untouched. The

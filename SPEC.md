@@ -289,7 +289,9 @@ Interactive setup. Prompts for a display name. Then:
 
 Adds or updates a secret. Prompts for the value interactively (hidden input via rpassword) or reads from stdin when piped.
 
-`--group` selects who can read it: `everyone` (the default; the shared/murk layer), `me` (only your key; the private/mote layer), or a named group (encrypted to that group's members; you must be a member). Assigning a secret to a named group makes that group its sole base tier — any existing shared value is dropped. `--scoped` is a deprecated alias for `--group me`.
+`--group` selects who can read it: `everyone` (the shared/murk layer), `me` (only your key; the private/mote layer), or a named group (encrypted to that group's members; you must be a member). Assigning a secret to a named group makes that group its sole base tier — any existing shared value is dropped. When an explicit `--group` moves an existing key to a different tier, murk reports the move. `--scoped` is a deprecated alias for `--group me`.
+
+Without `--group`, an existing key keeps its tier, so an update never widens who can read it: a shared value stays shared, a group value stays in its group (encrypted to the group's current members), and a key that has only your `me` override gets a new override value. Only a new key defaults to `everyone`; a key whose only values are other recipients' `me` overrides is refused until you choose a tier with `--group`. If a group you are not a member of holds the key, murk refuses the write (only `--group me` can add your own override); a member of that group must update it.
 
 Key names are validated as shell identifiers. Invalid names are rejected.
 
@@ -339,7 +341,7 @@ Sets metadata for a key in the plaintext schema. Does not touch encrypted values
 
 ### `murk edit [KEY] [--scoped] [--group NAME] [--vault NAME]`
 
-Opens secrets in `$EDITOR`. With KEY, edits a single value; without, edits all secrets as `KEY=VALUE` lines. With `--scoped`, edits private overrides (motes) instead of shared values; with `--group NAME`, edits the values for that named group (you must be a member).
+Opens secrets in `$EDITOR`. With KEY, edits a single value; without, edits all secrets as `KEY=VALUE` lines. With `--scoped`, edits private overrides (motes) instead of shared values; with `--group NAME`, edits the values for that named group (you must be a member). An edited value stays in the tier you edited it in. If a group you are not a member of also holds the key, murk refuses to change its shared or group value, as `murk add` does. A new line for a key that is in a different tier is written as `murk add` writes it: without a tier flag, the key keeps its tier; with a tier flag, the key moves to that tier.
 
 The plaintext buffer is written to a mode-0600 temp file (preferring `XDG_RUNTIME_DIR`), then overwritten with zeros and deleted after the editor exits. An empty value or non-zero editor exit aborts without saving.
 
@@ -424,7 +426,7 @@ See `docs/ai-agents.md` for setup (`murk agent init`) and a verify snippet.
 
 ### `murk import [FILE] [--group NAME] [--vault NAME]`
 
-Imports secrets from a `.env` file. Parses `KEY=VALUE` lines (supports `export` prefix, single/double quotes). Skips `MURK_*` keys with a warning. Invalid key names are skipped with a warning. `--group` assigns all imported secrets to a tier (`everyone` default, `me`, or a named group), as for `murk add`.
+Imports secrets from a `.env` file. Parses `KEY=VALUE` lines (supports `export` prefix, single/double quotes). Skips `MURK_*` keys with a warning. Invalid key names are skipped with a warning. If keys already exist, murk refuses the import unless you give `--force`. `--group` assigns all imported secrets to a tier (`everyone`, `me`, or a named group), as for `murk add`. Without `--group`, each existing key keeps its tier and new keys are shared. If murk refuses any key (for example, a key that a group you are not a member of holds), it imports nothing.
 
 ---
 

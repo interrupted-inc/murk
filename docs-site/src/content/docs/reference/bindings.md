@@ -152,7 +152,7 @@ All options are optional:
 
 | Option | Type | Description |
 |---|---|---|
-| `tier` | `string` | Where the value lives: `"everyone"` (default, shared to all recipients), `"me"` (a personal value encrypted to you only), or a group name (encrypted to that group's members — you must be a member) |
+| `tier` | `string` | Where the value lives: `"everyone"` (shared to all recipients), `"me"` (a personal value encrypted to you only), or a group name (encrypted to that group's members — you must be a member). Omit it to keep an existing key in its tier; a new key is shared. A key held by a group you are not a member of can't be updated, except with `"me"`, and a key holding only other recipients' overrides needs an explicit `tier` |
 | `desc` | `string` | Human-readable description recorded in the vault schema |
 | `tags` | `string[]` | Tags recorded on the key. Tags are the unit the agent allow-tag policy gates on |
 

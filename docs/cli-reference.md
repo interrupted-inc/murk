@@ -158,7 +158,7 @@ Add or update a secret
 
 * `--desc <DESC>` — Description for this key
 * `--example <EXAMPLE>` — Example value
-* `--group <GROUP>` — Who can read it: a group name, `everyone` (default), or `me`
+* `--group <GROUP>` — Who can read it: a group name, `everyone`, or `me`. Omit to keep an existing key's tier; a new key is shared with everyone
 * `--tag <TAG>` — Tag for grouping (repeatable)
 * `--vault <VAULT>` — Vault filename
 
@@ -184,7 +184,7 @@ Generate a random secret and store it
 * `--hex` — Output as hex instead of base64
 * `--desc <DESC>` — Description for this key
 * `--example <EXAMPLE>` — Example value
-* `--group <GROUP>` — Who can read it: a group name, `everyone` (default), or `me`
+* `--group <GROUP>` — Who can read it: a group name, `everyone`, or `me`. Omit to keep an existing key's tier; a new key is shared with everyone
 * `--tag <TAG>` — Tag for grouping (repeatable)
 * `--vault <VAULT>` — Vault filename
 
@@ -321,7 +321,7 @@ Import secrets from a .env file
 ###### **Options:**
 
 * `--force` — Overwrite existing secrets without prompting
-* `--group <GROUP>` — Assign imported secrets to this group (default: everyone)
+* `--group <GROUP>` — Assign imported secrets to this group (`everyone`, `me`, or a group name). Omit to keep each existing key's tier; new keys are shared with everyone
 * `--example <EXAMPLE>` — Example value applied to every imported key
 * `--vault <VAULT>` — Vault filename
 

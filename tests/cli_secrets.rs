@@ -78,6 +78,37 @@ fn editor(dir: &TempDir, name: &str, log: &std::path::Path, body: &str) -> Strin
     script.display().to_string()
 }
 
+/// Which base tiers hold `name` in the on-disk vault: whether it has a shared
+/// value, and the names of the groups holding a value.
+fn stored_tiers(dir: &TempDir, name: &str) -> (bool, Vec<String>) {
+    let raw = fs::read_to_string(dir.path().join("test.murk")).unwrap();
+    let vault: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let entry = &vault["secrets"][name];
+    let shared = entry["shared"].as_str().is_some_and(|s| !s.is_empty());
+    let groups = entry["grouped"]
+        .as_object()
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
+    (shared, groups)
+}
+
+/// Run `murk edit` (all keys, default tier) as `key` with an editor that
+/// appends `line` to the buffer.
+#[cfg(unix)]
+fn bulk_edit_appending(dir: &TempDir, key: &str, line: &str) -> assert_cmd::assert::Assert {
+    let log = dir.path().join("seen");
+    let ed = editor(
+        dir,
+        "append.sh",
+        &log,
+        &format!(r#"printf '{line}\n' >> "$1""#),
+    );
+    murk(dir, key)
+        .args(["edit", "--vault", "test.murk"])
+        .env("EDITOR", &ed)
+        .assert()
+}
+
 // ── tier flags ──
 
 #[test]
@@ -571,4 +602,314 @@ fn bulk_edit_skips_malformed_and_invalid_lines() {
         .success()
         .stdout("TOKEN\n");
     get_ok(&dir, &key, "TOKEN", "v");
+}
+
+// ── updating a key without --group keeps its tier ──
+
+#[test]
+fn add_without_group_keeps_a_group_key_in_its_group() {
+    let dir = TempDir::new().unwrap();
+    let (alice, carol) = vault_with_outsider(&dir);
+    add(&dir, &alice, "DB", "old_db", &["--group", "prod"]);
+
+    murk(&dir, &alice)
+        .args(["add", "DB", "--vault", "test.murk"])
+        .write_stdin("new_db\n")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("added DB (group prod)"));
+
+    get_ok(&dir, &alice, "DB", "new_db");
+    get_fails(&dir, &carol, "DB", "new_db");
+    assert_eq!(stored_tiers(&dir, "DB"), (false, vec!["prod".to_string()]));
+}
+
+#[test]
+fn add_without_group_keeps_shared_keys_shared_and_new_keys_shared() {
+    let dir = TempDir::new().unwrap();
+    let (alice, carol) = vault_with_outsider(&dir);
+    add(&dir, &alice, "TOKEN", "old", &[]);
+    add(&dir, &alice, "TOKEN", "new", &[]);
+    add(&dir, &alice, "FRESH", "fresh", &[]);
+
+    get_ok(&dir, &carol, "TOKEN", "new");
+    get_ok(&dir, &carol, "FRESH", "fresh");
+    assert_eq!(stored_tiers(&dir, "TOKEN"), (true, vec![]));
+    assert_eq!(stored_tiers(&dir, "FRESH"), (true, vec![]));
+}
+
+#[test]
+fn add_without_group_keeps_a_personal_override_personal() {
+    let dir = TempDir::new().unwrap();
+    let (alice, carol) = vault_with_outsider(&dir);
+    add(&dir, &alice, "MINE", "old", &["--group", "me"]);
+
+    murk(&dir, &alice)
+        .args(["add", "MINE", "--vault", "test.murk"])
+        .write_stdin("new\n")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("added MINE (me)"));
+
+    get_ok(&dir, &alice, "MINE", "new");
+    get_fails(&dir, &carol, "MINE", "new");
+    assert_eq!(stored_tiers(&dir, "MINE"), (false, vec![]));
+}
+
+#[test]
+fn add_without_group_to_a_key_with_only_others_overrides_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let (alice, carol) = vault_with_outsider(&dir);
+    add(&dir, &carol, "CAROLS", "carol_only", &["--group", "me"]);
+    let before = fs::read_to_string(dir.path().join("test.murk")).unwrap();
+
+    murk(&dir, &alice)
+        .args(["add", "CAROLS", "--vault", "test.murk"])
+        .write_stdin("alice_value\n")
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "CAROLS holds only other recipients' personal overrides",
+        ));
+
+    assert_eq!(
+        fs::read_to_string(dir.path().join("test.murk")).unwrap(),
+        before
+    );
+    assert_eq!(stored_tiers(&dir, "CAROLS"), (false, vec![]));
+}
+
+#[test]
+fn add_with_explicit_group_everyone_moves_a_group_key_and_says_so() {
+    let dir = TempDir::new().unwrap();
+    let (alice, carol) = vault_with_outsider(&dir);
+    add(&dir, &alice, "DB", "old_db", &["--group", "prod"]);
+
+    murk(&dir, &alice)
+        .args(["add", "DB", "--group", "everyone", "--vault", "test.murk"])
+        .write_stdin("open_db\n")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "moved DB from group prod to everyone",
+        ));
+
+    get_ok(&dir, &carol, "DB", "open_db");
+    assert_eq!(stored_tiers(&dir, "DB"), (true, vec![]));
+}
+
+#[test]
+fn add_by_a_non_member_to_a_group_key_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let (alice, carol) = vault_with_outsider(&dir);
+    add(&dir, &alice, "DB", "prod_db", &["--group", "prod"]);
+    let before = fs::read_to_string(dir.path().join("test.murk")).unwrap();
+
+    for extra in [&[][..], &["--group", "everyone"][..]] {
+        murk(&dir, &carol)
+            .args(["add", "DB", "--vault", "test.murk"])
+            .args(extra)
+            .write_stdin("carol_db\n")
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains(
+                "DB is held by group prod, which you are not a member of",
+            ));
+    }
+
+    assert_eq!(
+        fs::read_to_string(dir.path().join("test.murk")).unwrap(),
+        before
+    );
+    get_ok(&dir, &alice, "DB", "prod_db");
+}
+
+#[test]
+fn import_without_group_keeps_each_key_in_its_tier() {
+    let dir = TempDir::new().unwrap();
+    let (alice, carol) = vault_with_outsider(&dir);
+    add(&dir, &alice, "DB", "old_db", &["--group", "prod"]);
+    add(&dir, &alice, "TOKEN", "old", &[]);
+    add(&dir, &alice, "MINE", "old", &["--group", "me"]);
+    fs::write(
+        dir.path().join("in.env"),
+        "DB=new_db\nTOKEN=new\nMINE=new\nFRESH=fresh\n",
+    )
+    .unwrap();
+
+    murk(&dir, &alice)
+        .args(["import", "in.env", "--force", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stderr(
+            predicate::str::contains("DB (group prod)")
+                .and(predicate::str::contains("MINE (me)"))
+                .and(predicate::str::contains("imported 4 secrets\n")),
+        );
+
+    get_ok(&dir, &alice, "DB", "new_db");
+    get_fails(&dir, &carol, "DB", "new_db");
+    get_fails(&dir, &carol, "MINE", "new");
+    get_ok(&dir, &carol, "TOKEN", "new");
+    get_ok(&dir, &carol, "FRESH", "fresh");
+    assert_eq!(stored_tiers(&dir, "DB"), (false, vec!["prod".to_string()]));
+    assert_eq!(stored_tiers(&dir, "MINE"), (false, vec![]));
+    assert_eq!(stored_tiers(&dir, "TOKEN"), (true, vec![]));
+    assert_eq!(stored_tiers(&dir, "FRESH"), (true, vec![]));
+}
+
+#[test]
+fn import_with_explicit_group_everyone_moves_a_group_key_and_says_so() {
+    let dir = TempDir::new().unwrap();
+    let (alice, carol) = vault_with_outsider(&dir);
+    add(&dir, &alice, "DB", "old_db", &["--group", "prod"]);
+    fs::write(dir.path().join("in.env"), "DB=open_db\n").unwrap();
+
+    murk(&dir, &alice)
+        .args(["import", "in.env", "--force", "--group", "everyone"])
+        .args(["--vault", "test.murk"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "moved DB from group prod to everyone",
+        ));
+
+    get_ok(&dir, &carol, "DB", "open_db");
+    assert_eq!(stored_tiers(&dir, "DB"), (true, vec![]));
+}
+
+#[test]
+fn import_by_a_non_member_touching_a_group_key_is_refused_whole() {
+    let dir = TempDir::new().unwrap();
+    let (alice, carol) = vault_with_outsider(&dir);
+    add(&dir, &alice, "DB", "prod_db", &["--group", "prod"]);
+    let before = fs::read_to_string(dir.path().join("test.murk")).unwrap();
+    fs::write(dir.path().join("in.env"), "OTHER=x\nDB=carol_db\n").unwrap();
+
+    murk(&dir, &carol)
+        .args(["import", "in.env", "--force", "--vault", "test.murk"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "DB is held by group prod, which you are not a member of",
+        ));
+
+    assert_eq!(
+        fs::read_to_string(dir.path().join("test.murk")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn generate_without_group_keeps_a_group_key_in_its_group() {
+    let dir = TempDir::new().unwrap();
+    let (alice, carol) = vault_with_outsider(&dir);
+    add(&dir, &alice, "DB", "old_db", &["--group", "prod"]);
+
+    murk(&dir, &alice)
+        .args(["generate", "DB", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("generated DB (group prod)"));
+
+    get_fails(&dir, &carol, "DB", "old_db");
+    assert_eq!(stored_tiers(&dir, "DB"), (false, vec!["prod".to_string()]));
+}
+
+#[cfg(unix)]
+#[test]
+fn bulk_edit_adding_a_group_key_keeps_it_in_its_group() {
+    let dir = TempDir::new().unwrap();
+    let (alice, carol) = vault_with_outsider(&dir);
+    add(&dir, &alice, "DB", "old_db", &["--group", "prod"]);
+
+    // The shared view doesn't list DB; a DB line written there updates the
+    // group value instead of creating a shared one.
+    bulk_edit_appending(&dir, &alice, "DB=new_db")
+        .success()
+        .stderr(predicate::str::contains("1 updated"));
+
+    get_ok(&dir, &alice, "DB", "new_db");
+    get_fails(&dir, &carol, "DB", "new_db");
+    assert_eq!(stored_tiers(&dir, "DB"), (false, vec!["prod".to_string()]));
+}
+
+#[cfg(unix)]
+#[test]
+fn bulk_edit_by_a_non_member_adding_a_group_key_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let (alice, carol) = vault_with_outsider(&dir);
+    add(&dir, &alice, "DB", "prod_db", &["--group", "prod"]);
+    let before = fs::read_to_string(dir.path().join("test.murk")).unwrap();
+
+    bulk_edit_appending(&dir, &carol, "DB=carol_db")
+        .code(1)
+        .stderr(predicate::str::contains(
+            "DB is held by group prod, which you are not a member of",
+        ));
+
+    assert_eq!(
+        fs::read_to_string(dir.path().join("test.murk")).unwrap(),
+        before
+    );
+}
+
+/// Give `name` both a shared value and a `prod` group value, as `alice` (a
+/// `prod` member). Current murk never writes this; older murk did when a
+/// non-member updated a group key, so `edit` must still cope with it.
+#[cfg(unix)]
+fn write_shared_beside_group(dir: &TempDir, alice: &str, name: &str) {
+    let path = dir.path().join("test.murk");
+    let mut vault = murk_cli::vault::read(&path).unwrap();
+    let identity = murk_cli::crypto::parse_identity(alice).unwrap();
+    let original = murk_cli::decrypt_vault(&vault, &identity).unwrap();
+    let mut current = original.clone();
+    current
+        .values
+        .insert(name.into(), zeroize::Zeroizing::new("shared_db".into()));
+    current
+        .grouped
+        .entry(name.into())
+        .or_default()
+        .insert("prod".into(), zeroize::Zeroizing::new("prod_db".into()));
+    murk_cli::save_vault(path.to_str().unwrap(), &mut vault, &original, &current).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn edit_by_a_non_member_of_a_shared_value_beside_a_group_value_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let (alice, carol) = vault_with_outsider(&dir);
+    write_shared_beside_group(&dir, &alice, "DB");
+    get_ok(&dir, &carol, "DB", "shared_db");
+    let before = fs::read_to_string(dir.path().join("test.murk")).unwrap();
+    let log = dir.path().join("seen");
+
+    // Single key: refused before the editor opens.
+    let ed = editor(&dir, "one.sh", &log, r#"echo "carol_db" > "$1""#);
+    murk(&dir, &carol)
+        .args(["edit", "DB", "--vault", "test.murk"])
+        .env("EDITOR", &ed)
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "DB is held by group prod, which you are not a member of",
+        ));
+    assert!(!log.exists(), "editor must not open");
+
+    // All keys: the changed DB line is refused and nothing is saved.
+    let ed = editor(&dir, "all.sh", &log, r#"printf 'DB=carol_db\n' > "$1""#);
+    murk(&dir, &carol)
+        .args(["edit", "--vault", "test.murk"])
+        .env("EDITOR", &ed)
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "DB is held by group prod, which you are not a member of",
+        ));
+
+    assert_eq!(
+        fs::read_to_string(dir.path().join("test.murk")).unwrap(),
+        before
+    );
 }

@@ -57,7 +57,7 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '--desc=[Description for this key]:DESC:_default' \
 '--example=[Example value]:EXAMPLE:_default' \
-'--group=[Who can read it\: a group name, \`everyone\` (default), or \`me\`]:GROUP:_default' \
+'--group=[Who can read it\: a group name, \`everyone\`, or \`me\`. Omit to keep an existing key'\''s tier; a new key is shared with everyone]:GROUP:_default' \
 '*--tag=[Tag for grouping (repeatable)]:TAG:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '--scoped[Deprecated alias for \`--group me\`]' \
@@ -71,7 +71,7 @@ _arguments "${_arguments_options[@]}" : \
 '--length=[Length in bytes (default 32)]:LENGTH:_default' \
 '--desc=[Description for this key]:DESC:_default' \
 '--example=[Example value]:EXAMPLE:_default' \
-'--group=[Who can read it\: a group name, \`everyone\` (default), or \`me\`]:GROUP:_default' \
+'--group=[Who can read it\: a group name, \`everyone\`, or \`me\`. Omit to keep an existing key'\''s tier; a new key is shared with everyone]:GROUP:_default' \
 '*--tag=[Tag for grouping (repeatable)]:TAG:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '--hex[Output as hex instead of base64]' \
@@ -140,7 +140,7 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (import)
 _arguments "${_arguments_options[@]}" : \
-'--group=[Assign imported secrets to this group (default\: everyone)]:GROUP:_default' \
+'--group=[Assign imported secrets to this group (\`everyone\`, \`me\`, or a group name). Omit to keep each existing key'\''s tier; new keys are shared with everyone]:GROUP:_default' \
 '--example=[Example value applied to every imported key]:EXAMPLE:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '--force[Overwrite existing secrets without prompting]' \

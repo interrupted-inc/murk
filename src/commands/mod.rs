@@ -245,6 +245,16 @@ pub(crate) fn resolve_value(key: &str) -> zeroize::Zeroizing<String> {
     password
 }
 
+/// Display suffix for a rotated value's tier: empty for the shared value,
+/// otherwise ` (group NAME)` or ` (me)`, matching `add`/`generate`.
+pub(crate) fn tier_label(tier: &murk_cli::SecretTier) -> String {
+    match tier {
+        murk_cli::SecretTier::Everyone => String::new(),
+        murk_cli::SecretTier::Group(name) => format!(" (group {name})"),
+        murk_cli::SecretTier::Me => " (me)".to_string(),
+    }
+}
+
 /// Rotate the given keys in the still-locked session after a revoke, prompting
 /// for each new value. `baseline` is the post-revoke state already on disk; we
 /// diff against it so only the rotated ciphertexts are re-encrypted.
