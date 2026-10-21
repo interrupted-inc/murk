@@ -162,6 +162,29 @@ pub fn ed25519_verifying_key_b64_from_ssh_recipient(recipient: &str) -> Option<S
     Some(BASE64.encode(pk.as_ref()))
 }
 
+/// `ssh-ed25519 <base64>` for a well-formed ssh-ed25519 public key line, with
+/// any trailing comment dropped; `None` for another key type or a string that
+/// is not a key. The one-line, comment-free form is safe to write into a
+/// file ssh-keygen reads (an allowed-signers list).
+pub fn ssh_ed25519_key_line(recipient: &str) -> Option<String> {
+    let mut key = ssh_key::PublicKey::from_openssh(recipient).ok()?;
+    key.key_data().ed25519()?;
+    key.set_comment("");
+    key.to_openssh().ok()
+}
+
+/// The `ssh-keygen -l` fingerprint of an ssh-ed25519 public key line:
+/// `SHA256:` and the unpadded base64 SHA-256 of the key's wire blob. This is
+/// the form git prints for an ssh commit signature (`%GK`), which is what
+/// lets a commit's signer be matched with a recipient. Not the same value as
+/// [`fingerprint`], which hashes the bare 32-byte verifying key. `None` for
+/// another key type or a string that is not a key.
+pub fn ssh_ed25519_fingerprint(recipient: &str) -> Option<String> {
+    let key = ssh_key::PublicKey::from_openssh(recipient).ok()?;
+    key.key_data().ed25519()?;
+    Some(key.fingerprint(ssh_key::HashAlg::Sha256).to_string())
+}
+
 /// Whether two strings name the same ssh-ed25519 key, ignoring any trailing
 /// comment. Both must be `ssh-ed25519 <base64> [comment]`; only the key type and
 /// base64 blob are compared. Needed because recipients may be stored with a
@@ -294,5 +317,29 @@ mod tests {
         ));
         // Non-ed25519 never matches, even if identical.
         assert!(!ssh_ed25519_key_eq("ssh-rsa AAAA", "ssh-rsa AAAA"));
+    }
+
+    #[test]
+    fn ssh_fingerprint_matches_ssh_keygen() {
+        // `ssh-keygen -lf` on this key prints this fingerprint; a comment on
+        // the key line does not change it.
+        let expected = "SHA256:PYX4o9UfGwCwG76hFcLAEkmMS0PtIBtV9MNmVgW16Oc";
+        assert_eq!(ssh_ed25519_fingerprint(SSH_ED25519_PK).unwrap(), expected);
+        let with_comment = format!("{SSH_ED25519_PK} str4d@carbon");
+        assert_eq!(ssh_ed25519_fingerprint(&with_comment).unwrap(), expected);
+    }
+
+    #[test]
+    fn ssh_fingerprint_and_key_line_reject_non_ed25519_and_garbage() {
+        for bad in ["not a key", "ssh-rsa AAAAB3xyz", "age1abc", ""] {
+            assert!(ssh_ed25519_fingerprint(bad).is_none(), "{bad}");
+            assert!(ssh_ed25519_key_line(bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn ssh_key_line_drops_comment() {
+        let with_comment = format!("{SSH_ED25519_PK} someone@host");
+        assert_eq!(ssh_ed25519_key_line(&with_comment).unwrap(), SSH_ED25519_PK);
     }
 }

@@ -76,7 +76,8 @@ pub use export::{
     parse_and_decrypt_values, resolve_secrets,
 };
 pub use git::{
-    CommitSignature, MergeDriverSetupStep, git_command, last_commit_signature, setup_merge_driver,
+    CommitSignature, CommitSigner, MergeDriverSetupStep, git_command, last_commit_signature,
+    setup_merge_driver,
 };
 pub use github::{GitHubError, fetch_keys};
 pub use grants::{create_grant, parse_ttl, remove_grant, validate_grant_name};

@@ -156,6 +156,34 @@ pub struct Assessment {
     pub external: Option<TrustedSigners>,
 }
 
+impl Assessment {
+    /// The ssh-ed25519 keys (canonical `ssh-ed25519 <blob>` form) this
+    /// assessment treats as trusted signers of the vault: the environment and
+    /// anchor set when there is one, otherwise the pin's trusted set, minus
+    /// every agent-grant key (`grants` are the vault's own; the pin knows the
+    /// ones seen before). Empty when nothing is trusted yet. Only these keys
+    /// can sign a git commit, so this is the set a commit's signer is judged
+    /// against.
+    pub fn trusted_ssh_signers(&self, grants: &BTreeMap<String, types::GrantEntry>) -> Vec<String> {
+        let keys: Vec<&String> = match (&self.external, self.pin.as_ref().filter(|p| p.has_trust()))
+        {
+            (Some(external), _) => external.keys().collect(),
+            (None, Some(pin)) => pin.trusted.iter().collect(),
+            (None, None) => return Vec::new(),
+        };
+        let mut grant = grant_keys(grants);
+        if let Some(pin) = &self.pin {
+            grant.extend(pin.grants.iter().cloned());
+        }
+        keys.into_iter()
+            .map(|k| canonical_recipient(k))
+            .filter(|k| k.starts_with("ssh-ed25519 ") && !grant.contains(k))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+}
+
 /// Parse one trusted-signer entry, the format `MURK_TRUSTED_SIGNERS` and a
 /// grant key file's anchor use:
 ///
@@ -1484,5 +1512,84 @@ mod tests {
             Ok((ssh.to_string(), None))
         );
         assert!(parse_trusted_signer("not-a-key").is_err());
+    }
+
+    fn assessment(pin: Option<TrustPin>, external: Option<TrustedSigners>) -> Assessment {
+        Assessment {
+            verdict: Verdict::Trusted,
+            pin,
+            env_signers: None,
+            external,
+        }
+    }
+
+    #[test]
+    fn trusted_ssh_signers_are_the_pins_ssh_keys_without_grants() {
+        let ssh = crate::testutil::SSH_ED25519_PK;
+        let other =
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJI7KsDGxx+I8XZQwtbgoEYDfuNd9fQ4MzcHHUmtIau9";
+        let pin = TrustPin {
+            v: pins::PIN_VERSION,
+            trusted: [A, ssh, other, "ssh-rsa AAAAB3xyz"]
+                .iter()
+                .map(|k| (*k).to_string())
+                .collect(),
+            grants: [other.to_string()].into(),
+            ..TrustPin::default()
+        };
+        // Only ssh-ed25519 keys, and a grant key never counts.
+        let got = assessment(Some(pin.clone()), None).trusted_ssh_signers(&BTreeMap::new());
+        assert_eq!(got, vec![ssh.to_string()]);
+
+        // A grant the vault carries now excludes its key too, even where the
+        // pin has not seen the grant yet.
+        let mut grants = BTreeMap::new();
+        grants.insert(
+            "bot".to_string(),
+            types::GrantEntry {
+                pubkey: format!("{ssh} bot@host"),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            assessment(Some(pin), None).trusted_ssh_signers(&grants),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn trusted_ssh_signers_prefer_the_external_set_over_the_pin() {
+        let ssh = crate::testutil::SSH_ED25519_PK;
+        let other =
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJI7KsDGxx+I8XZQwtbgoEYDfuNd9fQ4MzcHHUmtIau9";
+        let pin = TrustPin {
+            v: pins::PIN_VERSION,
+            trusted: [ssh.to_string()].into(),
+            ..TrustPin::default()
+        };
+        let external = env(&[&format!("{other} ci@runner")]);
+        let got =
+            assessment(Some(pin), Some(external.clone())).trusted_ssh_signers(&BTreeMap::new());
+        assert_eq!(got, vec![other.to_string()]);
+        // With no pin at all the external set still applies.
+        let got = assessment(None, Some(external)).trusted_ssh_signers(&BTreeMap::new());
+        assert_eq!(got, vec![other.to_string()]);
+    }
+
+    #[test]
+    fn trusted_ssh_signers_are_empty_without_a_trust_decision() {
+        // No pin, or a legacy pin that records no decision.
+        assert_eq!(
+            assessment(None, None).trusted_ssh_signers(&BTreeMap::new()),
+            Vec::<String>::new()
+        );
+        let legacy = TrustPin {
+            trusted: [crate::testutil::SSH_ED25519_PK.to_string()].into(),
+            ..TrustPin::default()
+        };
+        assert_eq!(
+            assessment(Some(legacy), None).trusted_ssh_signers(&BTreeMap::new()),
+            Vec::<String>::new()
+        );
     }
 }

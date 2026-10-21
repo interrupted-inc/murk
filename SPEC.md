@@ -604,7 +604,16 @@ Configures git to use `murk merge-driver %O %A %B %P` for `.murk` files via `.gi
 
 ### `murk verify [--vault NAME]`
 
-Verifies vault integrity (MAC and signature), reports whether this machine trusts the signer and why not (the same reasons a load refuses with), and runs safety checks without exporting secrets. Exits 1 on any finding.
+Verifies vault integrity (MAC and signature), reports whether this machine trusts the signer and why not (the same reasons a load refuses with), checks who signed the last git commit that touched the vault, and runs safety checks without exporting secrets. Exits 1 on any finding.
+
+**Commit check.** Only when the vault has git history. A signed commit proves nothing about who the signer is: git vouches for any key it is told about, an attacker's throwaway key included. So verify reports the commit as ok only when git verified the signature and the signing key is a trusted signer of this vault: an ssh-ed25519 key in the set the Trust rules used (`MURK_TRUSTED_SIGNERS` and a grant key file's anchor when either is given, otherwise the pin's trusted set; grant keys never count), matched by its `ssh-keygen -l` fingerprint. Only an ssh-ed25519 key can match, because it is the only key type that both signs git commits and is a murk signer. The line then reads `ok commit  last .murk commit signed by <name> with key <fingerprint>, a trusted signer of this vault`. Every other outcome is a finding, and exits 1:
+
+- **Signed by another key** — a gpg key, or an ssh key that is not a trusted signer: `signed by key <id>, which is not a trusted signer of this vault`, naming the recipient when the key is one. The vault's own recipients are not trusted by being listed; trust comes from the pin or the environment.
+- **Not vouched for by git** — the signature could not be checked, has expired, or was made with an expired key.
+- **Bad** — the signature does not match the commit, or the key is revoked in the user's `gpg.ssh.revocationFile`.
+- **Unsigned.**
+
+verify runs git with `gpg.ssh.allowedSignersFile` set to a temporary file listing the trusted ssh-ed25519 signers, so the result does not depend on the user's own allowed-signers list; without one git cannot check an ssh signature and reports a signed commit as unsigned.
 
 ---
 

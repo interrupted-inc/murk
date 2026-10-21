@@ -57,15 +57,64 @@ pub(crate) fn cmd_verify(vault_path: &str) {
         }
     }
 
-    // Git anchor — is the vault's latest commit signed? The vault signature
-    // covers content; a signed commit covers who landed it. Only surfaced when
-    // there is a git history to check.
-    match murk_cli::last_commit_signature(vault_path) {
-        Some(murk_cli::CommitSignature::Good | murk_cli::CommitSignature::Unverified) => {
-            eprintln!(
-                "{} commit  last .murk commit is signed",
-                "ok".green().bold()
-            );
+    // Git anchor — is the vault's latest commit signed, and by someone this
+    // vault trusts? The vault signature covers content; a signed commit covers
+    // who landed it. A signature by a key the vault does not trust is no
+    // anchor: git accepts any key it is told about. Only surfaced when there
+    // is a git history to check.
+    let trusted_ssh = inspected.assessment.trusted_ssh_signers(&murk.grants);
+    match murk_cli::last_commit_signature(vault_path, &trusted_ssh) {
+        Some(murk_cli::CommitSignature::Verified(signer)) => {
+            // git checked the signature; whose key it is, is for the vault to say.
+            let id = signer.id();
+            let trusted = id.and_then(|id| Some((id, key_with_fingerprint(&trusted_ssh, id)?)));
+            if let Some((id, key)) = trusted {
+                eprintln!(
+                    "{} commit  last .murk commit signed by {} with key {id}, a trusted signer of this vault",
+                    "ok".green().bold(),
+                    murk_cli::trust::label(&murk.recipients, key).dimmed(),
+                );
+            } else {
+                let by = id.map_or_else(|| "an unidentified key".into(), |id| format!("key {id}"));
+                let recipient = id
+                    .and_then(|id| key_with_fingerprint(&vault.recipients, id))
+                    .map(|r| {
+                        format!(
+                            ", recipient {}",
+                            murk_cli::trust::label(&murk.recipients, r)
+                        )
+                    })
+                    .unwrap_or_default();
+                findings.push(Finding {
+                    category: "commit",
+                    message: format!(
+                        "last .murk commit is signed by {by}{recipient}, which is not a trusted signer of this vault"
+                    ),
+                    fix: Some(if trusted_ssh.is_empty() {
+                        "no signer this machine trusts for this vault has an ssh-ed25519 key, the only kind murk matches a commit's signer to; sign vault commits with a trusted signer's ssh key once one does".into()
+                    } else {
+                        "sign vault commits with the ssh-ed25519 key of a trusted signer (`git config gpg.format ssh`, `git config user.signingkey`); murk checks the commit's key against the vault's signers, not git's own list".into()
+                    }),
+                });
+            }
+        }
+        Some(murk_cli::CommitSignature::Unverified { status, signer }) => {
+            let key = signer
+                .id()
+                .map(|id| format!(" (key {id})"))
+                .unwrap_or_default();
+            let message = match status {
+                'X' => format!("the signature on the last .murk commit has expired{key}"),
+                'Y' => format!("the last .murk commit is signed with an expired key{key}"),
+                _ => format!("git could not check the signature on the last .murk commit{key}"),
+            };
+            findings.push(Finding {
+                category: "commit",
+                message,
+                fix: Some(format!(
+                    "inspect `git log --show-signature -1 -- {vault_path}` to see why git does not vouch for it"
+                )),
+            });
         }
         Some(murk_cli::CommitSignature::Bad) => {
             findings.push(Finding {
@@ -152,6 +201,17 @@ pub(crate) fn cmd_verify(vault_path: &str) {
 
     eprintln!("{} vault integrity verified", "ok".green().bold());
     report_findings(&findings, "vault");
+}
+
+/// The ssh-ed25519 key among `keys` whose `ssh-keygen -l` fingerprint is
+/// `fingerprint`, the form git reports a commit's ssh signer in.
+fn key_with_fingerprint<'a>(
+    keys: impl IntoIterator<Item = &'a String>,
+    fingerprint: &str,
+) -> Option<&'a String> {
+    keys.into_iter().find(|key| {
+        murk_cli::signing::ssh_ed25519_fingerprint(key).is_some_and(|fp| fp == fingerprint)
+    })
 }
 
 pub(crate) fn cmd_doctor(vault_path: &str) {
