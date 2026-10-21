@@ -983,14 +983,14 @@ fn a_forged_first_write_under_a_new_members_name_is_refused() {
 
 /// A real unencrypted ssh-ed25519 keypair (test-only), for a teammate whose
 /// key is ssh-ed25519 and so carries its own verifying key.
-const SSH_SK: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\nQyNTUxOQAAACB7Ci6nqZYaVvrjm8+XbzII89TsXzP111AflR7WeorBjQAAAJCfEwtqnxML\nagAAAAtzc2gtZWQyNTUxOQAAACB7Ci6nqZYaVvrjm8+XbzII89TsXzP111AflR7WeorBjQ\nAAAEADBJvjZT8X6JRJI8xVq/1aU8nMVgOtVnmdwqWwrSlXG3sKLqeplhpW+uObz5dvMgjz\n1OxfM/XXUB+VHtZ6isGNAAAADHN0cjRkQGNhcmJvbgE=\n-----END OPENSSH PRIVATE KEY-----\n";
-const SSH_PK: &str =
+const SSH_ED25519_SK: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\nQyNTUxOQAAACB7Ci6nqZYaVvrjm8+XbzII89TsXzP111AflR7WeorBjQAAAJCfEwtqnxML\nagAAAAtzc2gtZWQyNTUxOQAAACB7Ci6nqZYaVvrjm8+XbzII89TsXzP111AflR7WeorBjQ\nAAAEADBJvjZT8X6JRJI8xVq/1aU8nMVgOtVnmdwqWwrSlXG3sKLqeplhpW+uObz5dvMgjz\n1OxfM/XXUB+VHtZ6isGNAAAADHN0cjRkQGNhcmJvbgE=\n-----END OPENSSH PRIVATE KEY-----\n";
+const SSH_ED25519_PK: &str =
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHsKLqeplhpW+uObz5dvMgjz1OxfM/XXUB+VHtZ6isGN";
 
-/// Write `SSH_SK` to an owner-only key file under `base`.
+/// Write `SSH_ED25519_SK` to an owner-only key file under `base`.
 fn ssh_key_file(base: &Path, name: &str) -> PathBuf {
     let key = base.join(name);
-    fs::write(&key, SSH_SK).unwrap();
+    fs::write(&key, SSH_ED25519_SK).unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1007,6 +1007,9 @@ fn ssh_key_file(base: &Path, name: &str) -> PathBuf {
 /// and his signed change loads on Carol's machine with no confirmation step.
 #[test]
 fn github_onboarding_extends_trust_to_the_new_member() {
+    const SSH_SK: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\nQyNTUxOQAAACB7Ci6nqZYaVvrjm8+XbzII89TsXzP111AflR7WeorBjQAAAJCfEwtqnxML\nagAAAAtzc2gtZWQyNTUxOQAAACB7Ci6nqZYaVvrjm8+XbzII89TsXzP111AflR7WeorBjQ\nAAAEADBJvjZT8X6JRJI8xVq/1aU8nMVgOtVnmdwqWwrSlXG3sKLqeplhpW+uObz5dvMgjz\n1OxfM/XXUB+VHtZ6isGNAAAADHN0cjRkQGNhcmJvbgE=\n-----END OPENSSH PRIVATE KEY-----\n";
+    const SSH_PK: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHsKLqeplhpW+uObz5dvMgjz1OxfM/XXUB+VHtZ6isGN";
     let base = TempDir::new().unwrap();
     let (alice, repo) = alice_repo(base.path());
 
@@ -1652,9 +1655,7 @@ fn removal_is_permanent_on_the_machine_that_accepted_it() {
 /// holds that key. Once Alice removes Mallory, the entry stops counting: a
 /// vault signed as Bob with Mallory's key is refused as unconfirmed. Alice's
 /// own writes never vouch for the entry, so Carol, a third machine that
-/// learns keys only from Alice's writes, refuses it too. And the binding is
-/// dropped, not just ignored: Bob's real key is then confirmed with `murk
-/// trust` like any first write, and his next write loads.
+/// learns keys only from Alice's writes, refuses it too.
 #[test]
 fn a_registry_entry_stops_counting_once_whoever_added_it_is_removed() {
     let base = TempDir::new().unwrap();
@@ -1768,12 +1769,54 @@ fn a_registry_entry_stops_counting_once_whoever_added_it_is_removed() {
         .failure()
         .stdout("")
         .stderr(predicate::str::contains("has not confirmed yet"));
+}
 
-    // Bob's real key is still confirmed the normal way: his first write
-    // waits for `murk trust`, which pins his key in place of the dropped
-    // binding, and his next write loads.
-    fs::write(repo.join(".murk"), &revoked).unwrap();
+/// Rule: a registry entry pinned on a removed signer's word is dropped, not
+/// just ignored. Mallory binds her signing key to Bob's name before Bob ever
+/// signs, and Alice's machine pins it on her word; then Alice removes
+/// Mallory. Bob's real key is then confirmed with `murk trust` like any
+/// first write, and his next write loads — which it could not if Mallory's
+/// binding still sat under his name.
+#[test]
+fn a_removed_signers_binding_makes_way_for_the_real_key() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo) = alice_repo(base.path());
+    let bob = Machine::new(base.path(), "bob");
+    bob.init(&base.path().join("bob-scratch"), "bob");
     let bob_key = bob.key_file();
+    let mallory = Machine::new(base.path(), "mallory");
+    mallory.init(&base.path().join("mallory-scratch"), "mallory");
+    let mallory_key = mallory.key_file();
+    authorize(&alice, &repo, &bob, "bob");
+    authorize(&alice, &repo, &mallory, "mallory");
+
+    mallory
+        .with_key(&repo, &mallory_key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    let (entry, _) = mallory.signer_entry(&repo);
+    let mallory_vk = entry.rsplit_once(':').unwrap().1.to_string();
+    edit_pin(&mallory, &repo, |pin| {
+        pin["signers"][bob.pubkey()] = mallory_vk.clone().into();
+    });
+    mallory
+        .with_key(&repo, &mallory_key)
+        .args(["add", "M1"])
+        .write_stdin("m1\n")
+        .assert()
+        .success();
+    alice
+        .murk(&repo)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    alice
+        .murk(&repo)
+        .args(["circle", "revoke", "mallory"])
+        .assert()
+        .success();
+
     bob.with_key(&repo, &bob_key)
         .args(["trust", "--yes"])
         .assert()
@@ -2045,15 +2088,12 @@ fn reading_history_never_adds_trust() {
 }
 
 /// Rule: merge sides follow removal. After Alice's machine accepts Bob's
-/// removal on main, merging on a branch it has no record of, whose commit is
-/// not in main's history (so it may be a replay): two branches forked while
-/// Bob was a member and saved before his removal still list him, and merging
-/// them must not keep him, since neither re-adds him in a newer revision. And
-/// an older alice-signed revision that adds Bob, committed on a branch forked
-/// from before he was added, is refused as a rollback (both sides add Bob, so
-/// the recipient merge itself sees no conflict). On f1, a branch this machine
-/// accepted before the removal, Bob is still a member and the same merge goes
-/// through.
+/// removal, two branches forked while Bob was a member and saved before his
+/// removal still list him; merging them with each other must not keep him,
+/// since neither re-adds him in a newer revision. And an older alice-signed
+/// revision that adds Bob, committed on a branch forked from before he was
+/// added, is refused as a rollback when merged into a branch that also
+/// added him (so the recipient merge itself sees no conflict).
 #[test]
 fn a_merge_side_never_brings_a_removed_recipient_back() {
     let base = TempDir::new().unwrap();
@@ -2077,18 +2117,16 @@ fn a_merge_side_never_brings_a_removed_recipient_back() {
         .success();
     commit(&repo, "remove bob");
 
-    git_ok(&repo, &["checkout", "-q", "-b", "review", "f1"]);
+    git_ok(&repo, &["checkout", "-q", "f1"]);
     let (merged, stderr) = git_merge(&alice, &repo, "f2");
     assert!(!merged, "the merge must not complete: {stderr}");
     assert!(stderr.contains("neither side re-adds them"), "{stderr}");
     git_ok(&repo, &["merge", "--abort"]);
-    git_ok(&repo, &["checkout", "-q", "f1"]);
-    git_ok(&repo, &["branch", "-D", "review"]);
 
     git_ok(&repo, &["checkout", "-q", "-b", "side", "main~2"]);
     fs::write(repo.join(".murk"), &with_bob).unwrap();
     commit(&repo, "replay the revision that added bob");
-    git_ok(&repo, &["checkout", "-q", "-b", "review", "f1"]);
+    git_ok(&repo, &["checkout", "-q", "f1"]);
     let (merged, stderr) = git_merge(&alice, &repo, "side");
     assert!(!merged, "the merge must not complete: {stderr}");
     // Both sides are older revisions that add Bob relative to the ancestor.
@@ -2097,17 +2135,12 @@ fn a_merge_side_never_brings_a_removed_recipient_back() {
             && stderr.contains("rolled back: it adds bob"),
         "{stderr}"
     );
-    git_ok(&repo, &["merge", "--abort"]);
-
-    git_ok(&repo, &["checkout", "-q", "f1"]);
-    let (merged, stderr) = git_merge(&alice, &repo, "f2");
-    assert!(merged, "{stderr}");
 }
 
-/// Rule: a save never writes a removed recipient back where the removal
-/// applies. Alice's machine recorded Bob's removal on main; her working vault
-/// is then an older revision that still lists him — main reset to the tip
-/// she pulled before the removal, a detached HEAD, or the file itself. `murk
+/// Rule: a save never writes a removed recipient back. Alice's machine
+/// recorded Bob's removal; her working vault is then an older revision that
+/// still lists him — the remote tip she checked out predates the removal, on
+/// a branch this machine never saw, on a detached HEAD, or as a file. `murk
 /// add` refuses and tells her to update to the vault that removed him,
 /// writing nothing; re-authorizing Bob explicitly on the current vault works.
 #[test]
@@ -2142,10 +2175,8 @@ fn a_save_over_an_older_revision_never_writes_a_removed_recipient_back() {
             "nothing written"
         );
     };
-    let tip = String::from_utf8(git(&repo, &["rev-parse", "HEAD"]).stdout).unwrap();
-    git_ok(&repo, &["reset", "-q", "--hard", "HEAD~1"]);
+    git_ok(&repo, &["checkout", "-q", "-b", "pulled", "HEAD~1"]);
     refuse_save();
-    git_ok(&repo, &["reset", "-q", "--hard", tip.trim()]);
     git_ok(&repo, &["checkout", "-q", "--detach", "main~1"]);
     refuse_save();
     git_ok(&repo, &["checkout", "-q", "main"]);
@@ -2196,7 +2227,7 @@ fn reading_a_pull_request_never_trusts_what_it_adds() {
 
     git_ok(&repo, &["checkout", "-q", "-b", "pr"]);
     bob.with_key(&repo, &bob_key)
-        .args(["circle", "authorize", SSH_PK, "--name", "mallory"])
+        .args(["circle", "authorize", SSH_ED25519_PK, "--name", "mallory"])
         .assert()
         .success();
     commit(&repo, "pr: authorize mallory");
@@ -2235,11 +2266,12 @@ fn reading_a_pull_request_never_trusts_what_it_adds() {
         .stderr(predicate::str::contains("not a trusted signer"));
 }
 
-/// Rule: a removal applies where it happened. Alice revokes Carol on a
-/// feature branch that is not merged yet. On main, which still lists Carol,
-/// everything keeps working: Alice reads and writes, and Carol's own writes
-/// load. On the feature branch, a replay of the vault that still listed
-/// Carol is refused, and the message points at merging the removal first.
+/// Rule: the listing part of a removal applies where it happened. Alice
+/// revokes Carol on a feature branch that is not merged yet. On main, which
+/// still lists Carol, Alice reads and writes as before. A vault signed by
+/// Carol is still refused there, as on every branch. On the feature branch,
+/// a replay of the vault that still listed Carol is refused, and the message
+/// points at merging the removal first.
 #[test]
 fn a_removal_on_a_feature_branch_leaves_other_branches_working() {
     let base = TempDir::new().unwrap();
@@ -2266,6 +2298,8 @@ fn a_removal_on_a_feature_branch_leaves_other_branches_working() {
         .args(["trust", "--yes"])
         .assert()
         .success();
+    // Alice writes last, so main's vault is hers when the revoke happens.
+    alice.add(&repo, "A0", "a0");
     commit(&repo, "carol is a member");
 
     git_ok(&repo, &["checkout", "-q", "-b", "feature"]);
@@ -2291,13 +2325,14 @@ fn a_removal_on_a_feature_branch_leaves_other_branches_working() {
         .write_stdin("c2\n")
         .assert()
         .success();
-    commit(&repo, "carol writes on main");
     alice
         .murk(&repo)
         .args(["get", "C2"])
         .assert()
-        .success()
-        .stdout("c2\n");
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("signed by carol"));
+    git_ok(&repo, &["checkout", "--", ".murk"]);
 
     git_ok(&repo, &["checkout", "-q", "feature"]);
     alice

@@ -31,11 +31,11 @@
 //!    vault this machine has seen in 0.14 form is a rollback.
 //! 7. A group membership change must be signed by a member of that group as
 //!    pinned (removing a member who left the vault entirely is exempt).
-//! 8. A key an accepted vault removed stays removed where the removal applies
-//!    (see [`removal_applies`]): a vault signed by it, or listing it at the
-//!    generation it was removed at or below, is refused. A newer vault from a
-//!    trusted signer that lists it again there, or `murk trust --re-add`,
-//!    brings it back.
+//! 8. A key an accepted vault removed stays removed: a vault signed by it is
+//!    refused everywhere, and a vault listing it at the generation it was
+//!    removed at or below is refused where the removal applies (see
+//!    [`removal_applies`]). A newer vault from a trusted signer that lists it
+//!    again there, or `murk trust --re-add`, brings it back.
 //! 9. The generation may rise at most [`MAX_GENERATION_STEP`] above the mark
 //!    and never past [`MAX_GENERATION`]; a different vault with the counter
 //!    this machine accepted on the branch is a fork.
@@ -386,14 +386,17 @@ impl Checkout {
     }
 }
 
-/// Whether the removal of `key` (canonical) applies to a load at `checkout`:
-/// on a branch whose accepted history contains the removal (see
-/// [`TrustPin::removed_on`]), on a detached HEAD, outside git, and on a branch
-/// this machine has no mark for (its history is unknown, so it may be a
-/// replay) unless its commit is already in the history of a branch the
-/// removal was made on and the vault is the one committed there — then it is
-/// that branch as it was before the removal. On a branch this machine
-/// accepted before the removal reached it, the key is still a member there.
+/// Whether the listing part of the removal rule applies to `key` (canonical)
+/// at `checkout`: whether a vault listing the key at or below the generation
+/// it was removed at is refused there. It applies on a branch whose accepted
+/// history contains the removal (see [`TrustPin::removed_on`]), on a detached
+/// HEAD, outside git, and on a branch this machine has no mark for (its
+/// history is unknown, so it may be a replay) unless its commit is already in
+/// the history of a branch the removal was made on and the vault is the one
+/// committed there — then it is that branch as it was before the removal. On
+/// a branch this machine accepted before the removal reached it, the vault
+/// may still list the key. A vault signed by a removed key is refused
+/// everywhere, whatever this says.
 pub fn removal_applies(pin: &TrustPin, key: &str, checkout: &Checkout) -> bool {
     let on = pin.removed_on.get(key);
     match &checkout.head {
@@ -405,28 +408,10 @@ pub fn removal_applies(pin: &TrustPin, key: &str, checkout: &Checkout) -> bool {
     }
 }
 
-/// `pin` as it applies at `checkout`: a removal that does not apply there
-/// (see [`removal_applies`]) is set aside, and its key counts as the trusted
-/// signer it was until the removal. The pin is never written from this view.
-pub fn scoped_pin(pin: &TrustPin, checkout: &Checkout) -> TrustPin {
-    let mut scoped = pin.clone();
-    let set_aside: Vec<String> = pin
-        .removed
-        .keys()
-        .filter(|k| !removal_applies(pin, k, checkout))
-        .cloned()
-        .collect();
-    for key in set_aside {
-        scoped.removed.remove(&key);
-        scoped.trusted.insert(key);
-    }
-    scoped
-}
-
 /// The removed keys (canonical, with the generation each was removed at)
-/// that `loaded` is signed by or lists, whatever its generation, where the
-/// removal applies at `checkout`. `murk trust` re-trusts a vault carrying
-/// any of them only when the user names each one.
+/// that `loaded` is signed by, or lists where the removal applies at
+/// `checkout` (see [`removal_applies`]), whatever its generation. `murk trust`
+/// re-trusts a vault carrying any of them only when the user names each one.
 pub fn removed_keys_in(
     loaded: &Loaded<'_>,
     pin: Option<&TrustPin>,
@@ -435,29 +420,34 @@ pub fn removed_keys_in(
     let Some(pin) = pin.filter(|p| p.v >= pins::PIN_VERSION) else {
         return BTreeMap::new();
     };
-    let pin = scoped_pin(pin, checkout);
+    let canonical = |k: &String| canonical_recipient(k).into_owned();
     let signer = match loaded.signature {
-        types::SignatureState::Signed { signer, .. } => Some(signer.as_str()),
+        types::SignatureState::Signed { signer, .. } => Some(canonical(signer)),
         types::SignatureState::Unsigned => None,
     };
-    loaded
+    let listed = loaded
         .vault
         .recipients
         .iter()
-        .map(String::as_str)
-        .chain(signer)
-        .filter_map(|k| {
-            let k = canonical_recipient(k).into_owned();
-            pin.removed.get(&k).map(|&at| (k, at))
-        })
+        .map(canonical)
+        .filter(|k| removal_applies(pin, k, checkout));
+    signer
+        .into_iter()
+        .chain(listed)
+        .filter_map(|k| pin.removed.get(&k).map(|&at| (k, at)))
         .collect()
 }
 
-/// Rule 8 for a load: the vault is signed by a removed key, or lists one at
-/// or below the generation it was removed at. A newer vault listing it again
-/// is how a trusted signer re-adds someone, so it passes (its signer is
+/// Rule 8 for a load: the vault is signed by a removed key (refused on every
+/// branch), or lists one at or below the generation it was removed at where
+/// the removal applies (see [`removal_applies`]). A newer vault listing it
+/// again is how a trusted signer re-adds someone, so it passes (its signer is
 /// checked like any other).
-fn removal_refusal(loaded: &Loaded<'_>, pin: Option<&TrustPin>) -> Option<Refusal> {
+fn removal_refusal(
+    loaded: &Loaded<'_>,
+    pin: Option<&TrustPin>,
+    checkout: &Checkout,
+) -> Option<Refusal> {
     let pin = pin.filter(|p| p.v >= pins::PIN_VERSION)?;
     let found = loaded.vault.generation;
     if let types::SignatureState::Signed { signer, .. } = loaded.signature
@@ -471,8 +461,9 @@ fn removal_refusal(loaded: &Loaded<'_>, pin: Option<&TrustPin>) -> Option<Refusa
         });
     }
     loaded.vault.recipients.iter().find_map(|r| {
-        let removed_at = *pin.removed.get(canonical_recipient(r).as_ref())?;
-        (found <= removed_at).then(|| Refusal::RemovedKey {
+        let key = canonical_recipient(r);
+        let removed_at = *pin.removed.get(key.as_ref())?;
+        (found <= removed_at && removal_applies(pin, &key, checkout)).then(|| Refusal::RemovedKey {
             key: r.clone(),
             removed_at,
             found,
@@ -520,15 +511,13 @@ fn load_verdict(
     checkout: &Checkout,
 ) -> Verdict {
     let head = &checkout.head;
-    let scoped = pin.map(|p| scoped_pin(p, checkout));
-    let pin = scoped.as_ref();
     let core = verdict(loaded, pin, external_signers, head);
     if let Verdict::Refused(r) = &core
         && !r.acceptable()
     {
         return core;
     }
-    if let Some(refusal) = removal_refusal(loaded, pin) {
+    if let Some(refusal) = removal_refusal(loaded, pin, checkout) {
         return Verdict::Refused(refusal);
     }
     if matches!(core, Verdict::Refused(_)) {
@@ -898,10 +887,7 @@ pub fn check_merge_side(
     changed: bool,
     upgraded: bool,
 ) -> Result<(), String> {
-    // Removals apply as they do to a load of the branch being merged into.
     let pin = pins::read(vault_path)?;
-    let checkout = Checkout::of(vault_path, pin.as_ref());
-    let pin = pin.map(|p| scoped_pin(&p, &checkout));
     let legacy = side.vault.vault_id.is_empty() || side.vault.generation == 0;
     let pinned_id = pin
         .as_ref()
@@ -1178,10 +1164,10 @@ pub fn accepted_pin(
         }),
         Acceptance::Trust { .. } | Acceptance::OwnSave { .. } => true,
     };
-    // Removals that do not apply on this branch (see `removal_applies`):
-    // their keys are still members here. A branch with no mark is judged
-    // without its git history: its loads are history, so this only decides
-    // what a save or `murk trust` there records.
+    // Removals whose listing rule does not apply on this branch (see
+    // `removal_applies`): a vault here listing the key again is not a re-add,
+    // so it never drops the recorded removal. A branch with no mark is judged
+    // without its git history, so nothing is set aside there.
     let checkout = Checkout::at(head.clone());
     let set_aside: BTreeSet<String> = prior_v2
         .map(|p| {
@@ -1215,8 +1201,6 @@ pub fn accepted_pin(
     if other_vault {
         pin.removed.clear();
         pin.removed_on.clear();
-    } else {
-        pin.trusted.extend(set_aside.iter().cloned());
     }
 
     let dropped = replace_trusted(&mut pin, loaded.vault, how, had_trust, current);
