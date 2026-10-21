@@ -568,9 +568,14 @@ pub(crate) fn cmd_get(key: &str, vault_path: &str) {
     strict_guard_plaintext_stdout("capture in a variable instead, e.g. TOKEN=$(murk get KEY)");
     let (vault, murk, identity) = load_vault(vault_path);
     let pubkey = identity.pubkey_string().unwrap_or_else(|e| die(&e, 1));
-    if murk_cli::hardening::self_scope() {
-        try_or_die(murk_cli::check_agent_keys(&vault, &[key.to_string()]));
-    }
+    // An agent grant is always held to the policy; an operator only under
+    // self-scope. Fails closed before any value is printed.
+    try_or_die(murk_cli::enforce_agent_policy(
+        &vault,
+        &murk,
+        &pubkey,
+        &[key.to_string()],
+    ));
 
     if let Some(value) = murk_cli::get_secret(&murk, key, &pubkey) {
         println!("{value}");
@@ -693,7 +698,11 @@ pub(crate) fn cmd_export(tags: &[String], json: bool, allow_reserved: bool, vaul
 
     if json {
         let mut raw = murk_cli::resolve_secrets(&vault, &murk, &pubkey, tags);
-        apply_self_scope(&mut raw, &vault);
+        apply_agent_policy(
+            &mut raw,
+            &vault,
+            murk_cli::agent_policy_applies(&murk, &pubkey),
+        );
         raw.retain(|k, _| {
             let ok = is_valid_key_name(k);
             if !ok {
@@ -714,7 +723,11 @@ pub(crate) fn cmd_export(tags: &[String], json: bool, allow_reserved: bool, vaul
         println!("{}", serde_json::to_string_pretty(&map).unwrap());
     } else {
         let mut exports = murk_cli::export_secrets(&vault, &murk, &pubkey, tags);
-        apply_self_scope(&mut exports, &vault);
+        apply_agent_policy(
+            &mut exports,
+            &vault,
+            murk_cli::agent_policy_applies(&murk, &pubkey),
+        );
         exports.retain(|k, _| {
             let ok = is_valid_key_name(k);
             if !ok {
@@ -731,14 +744,15 @@ pub(crate) fn cmd_export(tags: &[String], json: bool, allow_reserved: bool, vaul
     }
 }
 
-/// Under self-scope, drop keys the vault's agent policy forbids from an export
-/// map, warning (not silently) about what was withheld. A no-op without a policy
-/// or outside self-scope.
-pub(crate) fn apply_self_scope(
+/// For an agent grant or under self-scope (`applies`), drop keys the vault's
+/// agent policy forbids from an export map, warning (not silently) about what
+/// was withheld. A no-op without a policy or when the policy doesn't apply.
+pub(crate) fn apply_agent_policy(
     map: &mut std::collections::BTreeMap<String, zeroize::Zeroizing<String>>,
     vault: &types::Vault,
+    applies: bool,
 ) {
-    if !(murk_cli::hardening::self_scope() && vault.policy.is_some()) {
+    if !(applies && vault.policy.is_some()) {
         return;
     }
     let withheld: Vec<String> = map
@@ -751,7 +765,7 @@ pub(crate) fn apply_self_scope(
     }
     map.retain(|k, _| murk_cli::is_agent_key_allowed(vault, k));
     eprintln!(
-        "{} self-scope: withholding {} key(s) not allowed by policy: {}",
+        "{} agent policy: withholding {} key(s) not allowed by policy: {}",
         "⚠".yellow(),
         withheld.len(),
         withheld.join(", ")

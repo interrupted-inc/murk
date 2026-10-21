@@ -162,8 +162,8 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand --help 'Print help'
         }
         &'murk;skeleton'= {
-            cand -o 'Output file (prints to stdout if omitted)'
-            cand --output 'Output file (prints to stdout if omitted)'
+            cand -o 'New output file; refuses an existing path (prints to stdout if omitted)'
+            cand --output 'New output file; refuses an existing path (prints to stdout if omitted)'
             cand --vault 'Vault filename'
             cand -h 'Print help'
             cand --help 'Print help'
@@ -192,8 +192,8 @@ set edit:completion:arg-completer[murk] = {|@words|
         }
         &'murk;agent;plan'= {
             cand --tag 'Filter by tag (repeatable)'
-            cand -o 'Output file (prints to stdout if omitted)'
-            cand --output 'Output file (prints to stdout if omitted)'
+            cand -o 'New output file; refuses an existing path (prints to stdout if omitted)'
+            cand --output 'New output file; refuses an existing path (prints to stdout if omitted)'
             cand --vault 'Vault filename'
             cand --json 'Output as JSON'
             cand -h 'Print help'

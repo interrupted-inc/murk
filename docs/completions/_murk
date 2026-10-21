@@ -174,8 +174,8 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (skeleton)
 _arguments "${_arguments_options[@]}" : \
-'-o+[Output file (prints to stdout if omitted)]:OUTPUT:_default' \
-'--output=[Output file (prints to stdout if omitted)]:OUTPUT:_default' \
+'-o+[New output file; refuses an existing path (prints to stdout if omitted)]:OUTPUT:_default' \
+'--output=[New output file; refuses an existing path (prints to stdout if omitted)]:OUTPUT:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '-h[Print help]' \
 '--help[Print help]' \
@@ -210,8 +210,8 @@ _arguments "${_arguments_options[@]}" : \
             (plan)
 _arguments "${_arguments_options[@]}" : \
 '*--tag=[Filter by tag (repeatable)]:TAG:_default' \
-'-o+[Output file (prints to stdout if omitted)]:OUTPUT:_default' \
-'--output=[Output file (prints to stdout if omitted)]:OUTPUT:_default' \
+'-o+[New output file; refuses an existing path (prints to stdout if omitted)]:OUTPUT:_default' \
+'--output=[New output file; refuses an existing path (prints to stdout if omitted)]:OUTPUT:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '--json[Output as JSON]' \
 '-h[Print help]' \

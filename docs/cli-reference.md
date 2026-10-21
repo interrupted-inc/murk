@@ -379,7 +379,7 @@ Export schema-only vault with no secrets or recipients
 
 ###### **Options:**
 
-* `-o`, `--output <OUTPUT>` — Output file (prints to stdout if omitted)
+* `-o`, `--output <OUTPUT>` — New output file; refuses an existing path (prints to stdout if omitted)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`
@@ -437,7 +437,7 @@ Emit schema-only context safe to paste into an AI agent prompt
 
 * `--tag <TAG>` — Filter by tag (repeatable)
 * `--json` — Output as JSON
-* `-o`, `--output <OUTPUT>` — Output file (prints to stdout if omitted)
+* `-o`, `--output <OUTPUT>` — New output file; refuses an existing path (prints to stdout if omitted)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`

@@ -185,6 +185,9 @@ pub(crate) fn suppress_agent_nudge() {
 
 /// Load the vault while holding an exclusive lock for the entire read-modify-write cycle.
 /// Returns the lock guard — hold it until after `save_vault` completes.
+///
+/// Every CLI write loads through here, so an agent grant is refused up front,
+/// before any prompt or editor session. `save_vault` repeats the check.
 pub(crate) fn load_vault_locked(
     vault: &str,
 ) -> (
@@ -197,6 +200,7 @@ pub(crate) fn load_vault_locked(
         murk_cli::vault::lock(std::path::Path::new(vault)).map_err(murk_cli::MurkError::Vault),
     );
     let (v, m, i) = load_vault(vault);
+    try_or_die(murk_cli::ensure_writable(&m));
     (v, m, i, lock)
 }
 

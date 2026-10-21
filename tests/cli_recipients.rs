@@ -600,8 +600,9 @@ fn rotate_list_reports_each_rotation_problem() {
 
 // ── agent exec supervision ──
 
-/// `agent exec --only DB_URL -- sh -c <script>` with `DB_URL` in the vault,
-/// as a spawnable process for tests that need to drive its pipes.
+/// `agent exec --only DB_URL -- sh -c <script>` with `DB_URL` in the vault and
+/// a grant key for it (agent exec refuses the operator's key), as a spawnable
+/// process for tests that need to drive its pipes.
 #[cfg(unix)]
 fn agent_exec_sh(script: &str) -> (TempDir, std::process::Command) {
     let dir = TempDir::new().unwrap();
@@ -611,6 +612,16 @@ fn agent_exec_sh(script: &str) -> (TempDir, std::process::Command) {
         .write_stdin("postgres://prod-sentinel\n")
         .assert()
         .success();
+    let grant_path = dir.path().join("exec.key");
+    murk(&dir, &key)
+        .args([
+            "agent", "grant", "--name", "exec", "--only", "DB_URL", "--out",
+        ])
+        .arg(&grant_path)
+        .args(["--vault", "test.murk"])
+        .assert()
+        .success();
+    let grant_key = std::fs::read_to_string(&grant_path).unwrap();
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("murk"));
     for var in MURK_CONTEXT_VARS {
         cmd.env_remove(var);
@@ -618,7 +629,7 @@ fn agent_exec_sh(script: &str) -> (TempDir, std::process::Command) {
     cmd.current_dir(dir.path())
         .env("HOME", dir.path())
         .env("XDG_RUNTIME_DIR", dir.path())
-        .env("MURK_KEY", &key)
+        .env("MURK_KEY", grant_key.trim())
         .args([
             "agent",
             "exec",
