@@ -611,6 +611,8 @@ struct World<'f> {
     /// Plaintext → (step written, people the writing vault did not list).
     written: HashMap<String, (usize, BTreeSet<usize>)>,
     branches: Vec<String>,
+    /// Grants the last revoke had to take with it.
+    last_cascade: usize,
 }
 
 impl<'f> World<'f> {
@@ -631,6 +633,7 @@ impl<'f> World<'f> {
             agent: None,
             written: fixture_values.into_iter().collect(),
             branches: Vec::new(),
+            last_cascade: 0,
         }
     }
 
@@ -983,6 +986,7 @@ impl<'f> World<'f> {
                 };
                 let revoker = MACHINES[m.0].1;
                 let cascaded = self.grants_anchored_on(&before, revoker, who);
+                self.last_cascade = cascaded.len();
                 let out = mach
                     .murk()
                     .args(["circle", "revoke", &self.fx.people[who].pubkey])
@@ -1546,6 +1550,16 @@ fn run_sequence(ops: &[Op], script: Option<&[Scripted]>) -> Result<(), TestCaseE
             continue;
         };
         let ran = result.map_err(fail)?;
+        // A decisive revoke is there for its cascade: it must have had a
+        // grant to take with it, or the cascade check proved nothing.
+        if script.is_some_and(|s| s[i].decisive)
+            && matches!(op, Op::Revoke { .. })
+            && world.last_cascade == 0
+        {
+            return Err(fail(
+                "no grant trusted the revoked signer: nothing to cascade".into(),
+            ));
+        }
         match (expect, &ran) {
             (Some(Expect::Accepts), Ran::Refused(why)) => {
                 return Err(fail(format!("expected it to be accepted, refused: {why}")));
