@@ -615,9 +615,22 @@ Lists the secrets the revoked recipient had access to. With `--rotate`, prompts 
 
 ### `murk diff [REF] [--show-values] [--json] [--vault NAME]`
 
-Shows which secrets changed between the current vault and a git ref (defaults to `HEAD`), and what changed in who can read or sign it: recipients added or removed, a changed signer, a changed signing key for a recipient, the policy, agent grants and group members. `--show-values` prints the actual values, not just key names. Structural lines come before value lines, and every warning goes to stderr before either. Every vault-supplied string (key and group names, display names, grant names, values) is escaped before it reaches the terminal.
+Shows which secrets changed between the current vault and a git ref (defaults to `HEAD`), and what changed in who can read or sign it: recipients added or removed, a changed signer, a changed signing key for a recipient, the policy, agent grants and group members. `--show-values` prints the actual values, not just key names. `--vault NAME` selects the vault file (default `.murk`, or `MURK_VAULT`).
 
-`--json` prints one object, `{"secrets": [...], "changes": [...]}`; both arrays are always present. Each `secrets` entry has `key` and `kind` (`added`, `removed`, `changed`), plus `old_value` and `new_value` only with `--show-values`; entries are sorted by key. Each `changes` entry has `kind` and `op` (`added`, `removed`, `changed`) and never carries a secret value:
+The human output prints the structural lines first, one per change, then one line per secret, sorted by key. Every warning goes to stderr before either, and `no changes` goes to stderr when there is nothing to show.
+
+```
++ recipient bob@example.com (age1wzsw…8ns8)
+~ policy
++ group ops member alice@example.com (age1y8ne…rqke)
+- API_KEY
+~ DATABASE_URL
++ NEW_TOKEN
+```
+
+A secret line is `+ KEY` (added), `- KEY` (removed) or `~ KEY` (changed); with `--show-values` it is `+ KEY = value`, `- KEY = old value` and `~ KEY old → new`. A value is written the way `murk edit` writes one: bare when that reads back unchanged, double-quoted with control and invisible characters escaped otherwise, so it is always one line. A structural line is `+`/`- recipient NAME (key)`, `~ signer OLD → NEW` (`unsigned` when a side has no signature), `~ signing key of RECIPIENT → SHA256:…`, `~ policy`, `~ grant NAME (RECIPIENT)` for a grant that is new or changed, `- grant NAME` for one that is gone, and `+`/`- group NAME member RECIPIENT`. A recipient is shown as `name (age1abcd…wxyz)`, the display name with the key shortened to its first 8 and last 4 characters, or as the shortened key alone when it has no name. Every vault-supplied string (key, group, display and grant names, values) is escaped before it reaches the terminal.
+
+`--json` prints one pretty-printed object, `{"changes": [...], "secrets": [...]}` (object keys sorted); both arrays are always present. Each `secrets` entry has `key` and `kind` (`added`, `removed`, `changed`); with `--show-values` it also has `old_value` and `new_value`, which are `null` for the side that has no value (`old_value` of an added secret, `new_value` of a removed one). Entries are sorted by key. Each `changes` entry has `kind` and `op` (`added`, `removed`, `changed`) and never carries a secret value. A `signer`, `signing_key` or `policy` entry always has `op` `changed`, and a grant that is new has `op` `added` even though the terminal line starts with `~`:
 
 | `kind` | Fields |
 |--------|--------|

@@ -64,11 +64,28 @@ has to do that merge.
 
 Because the result is signed in your name, check what you merged:
 
-<!-- Re-check against the merged 0.14.0 murk diff output. -->
 ```bash
 git diff HEAD@{1} -- .murk   # recipients, schema, policy and ciphertext entries
-murk diff HEAD@{1}           # structural and secret value changes
+murk diff HEAD@{1}           # who can read or sign it, and which secrets changed
 ```
+
+`murk diff` prints the structural changes first, one line each, then one line
+per secret: `+` added, `-` removed, `~` changed, by key name only. It prints
+values only with `--show-values`.
+
+```
++ recipient bob@example.com (age1wzsw…8ns8)
+~ policy
++ group ops member alice@example.com (age1y8ne…rqke)
+- API_KEY
+~ DATABASE_URL
++ NEW_TOKEN
+```
+
+A vault signed by a different key than before shows `~ signer`, with the old
+and new signer, and a recipient whose signing key changed shows
+`~ signing key of …`. Add `--json` for a script to read: one object with a
+`secrets` array and a `changes` array.
 
 `murk diff [REF]` shows which secrets changed relative to a git ref
 (defaults to `HEAD`) without printing values, unless you pass

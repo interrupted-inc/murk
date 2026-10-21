@@ -470,9 +470,7 @@ commit signature, if you sign commits). The diff shows policy edits and
 added or removed recipient keys in plaintext. A new grant shows up as a new
 recipient key and new `scoped` ciphertexts under the secrets it can read, so
 the diff shows which secrets that key can read. Its name, TTL and issuer are
-encrypted and appear only as a changed `meta` blob. `murk diff` compares
-secret values only. It does not show grant, policy or recipient changes, and
-it does not verify the integrity of the old revision it reads. Git can't show
+encrypted and appear only as a changed `meta` blob. `murk diff` also lists recipients added and removed, signer changes, and policy, grant and group-member changes, and it verifies the old revision's MAC and signature before it shows anything from it. Git can't show
 secret reads on a developer's machine, because murk never sees them. Don't
 treat the absence of a read trail as proof a secret wasn't used. See the
 [threat model](/security/threat-model/) for the full audit boundary.
