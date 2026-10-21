@@ -623,15 +623,31 @@ pub fn check_merge_side(
     upgraded: bool,
 ) -> Result<(), String> {
     let pin = pins::read(vault_path)?;
-    let legacy = side.vault.vault_id.is_empty() && side.vault.generation == 0;
-    let pin_upgraded = pin
+    let legacy = side.vault.vault_id.is_empty() || side.vault.generation == 0;
+    let pinned_id = pin
         .as_ref()
-        .is_some_and(|p| p.v >= pins::PIN_VERSION && (!p.vault_id.is_empty() || p.generation > 0));
-    if legacy && changed && (upgraded || pin_upgraded) {
+        .filter(|p| p.v >= pins::PIN_VERSION && !p.vault_id.is_empty())
+        .map(|p| p.vault_id.as_str());
+    let pin_upgraded = pinned_id.is_some()
+        || pin
+            .as_ref()
+            .is_some_and(|p| p.v >= pins::PIN_VERSION && p.generation > 0);
+    // With a pinned vault id, only the ancestor may be pre-0.14 history: a
+    // side without an id or counter is never merged. Without one, a 0.13 side
+    // that changed the vault is refused once the other side is 0.14.
+    if legacy && (pin_upgraded || (changed && upgraded)) {
         return Err(
-            "rolled back: it is a murk 0.13 revision that changes the vault, and this vault has since been saved by murk 0.14, so its content cannot be checked for rollback or for being another vault — apply its intended change with murk after merging"
+            "rolled back: it is a murk 0.13 revision (no vault id or counter), and this vault has since been saved by murk 0.14, so it cannot be checked for rollback or for being another vault — apply its intended change with murk after merging"
                 .into(),
         );
+    }
+    if let Some(id) = pinned_id
+        && side.vault.vault_id != id
+    {
+        return Err(format!(
+            "it is a different vault (id {}, this machine pinned {id})",
+            crate::validate::show(&side.vault.vault_id)
+        ));
     }
     let env_signers = env_trusted_signers()?;
     let side_pin = pin.map(|mut p| {
