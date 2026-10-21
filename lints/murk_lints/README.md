@@ -24,8 +24,11 @@ rustc type information instead.
 
 ## Marker strategy
 
-The murk codebase wraps every piece of decrypted plaintext in
-`zeroize::Zeroizing<_>` (or, in `env.rs`, `age::secrecy::SecretString`) —
+The murk codebase wraps decrypted plaintext in `zeroize::Zeroizing<_>`, and
+key material (in `env.rs`, `init.rs` and the CLI's key resolution) in
+`age::secrecy::SecretString`. Zeroization is best-effort: see
+[THREAT_MODEL.md](../../THREAT_MODEL.md) for the buffers it cannot reach
+(age internals, serialization, FFI bindings, OS copies). The wrapper use was
 verified by grepping the crate before writing these lints; there are no
 hand-rolled `impl Zeroize` types today. So "correctly handled" is checked
 with real trait/ADT resolution against those two wrapper types, plus a
@@ -64,10 +67,9 @@ development (`init::DiscoveredKey`, which derives `Debug` over a
 - `secret_debug_leak`'s manual-impl check only recognizes the standard
   `.field(name, &self.field)` builder pattern, not `write!`/`format!`
   interpolation of a secret field. Reliably matching macro-desugared
-  argument sinks is fragile across rustc versions; every manual `Debug` impl
-  in murk_cli today (`MurkIdentity`, `MurkRecipient`, `Murk`, `DiffEntry`)
-  either uses the builder pattern or never references a secret field, so
-  this covers every real call site as of this writing.
+  argument sinks is fragile across rustc versions. As of this writing, each
+  manual `Debug` impl in `src/` either uses the builder pattern or never
+  references a secret field, so this covers every real call site.
 - `secret_field_missing_zeroize` only covers the fields in its allowlist.
 
 ## Running
