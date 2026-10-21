@@ -116,6 +116,9 @@ pub struct RevokeResult {
     pub display_name: Option<String>,
     /// Keys the revoked recipient had access to (for rotation warnings).
     pub exposed_keys: Vec<String>,
+    /// Named groups the revoked recipient belonged to, sorted. A group value of
+    /// an exposed key was readable by them only if its group is listed here.
+    pub exposed_groups: Vec<String>,
 }
 
 /// Remove a recipient from the vault. `recipient` can be a pubkey or a display name.
@@ -232,6 +235,7 @@ pub fn revoke_recipient(
     Ok(RevokeResult {
         display_name,
         exposed_keys,
+        exposed_groups: revoked_groups.into_iter().collect(),
     })
 }
 

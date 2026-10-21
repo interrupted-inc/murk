@@ -83,6 +83,7 @@ _arguments "${_arguments_options[@]}" : \
 (rotate)
 _arguments "${_arguments_options[@]}" : \
 '--length=[Length in bytes for generated values (default 32)]:LENGTH:_default' \
+'(--generate --list)--values-from=[Read new values from a dotenv file of KEY=value lines (\`-\` for stdin), matched by key name]:FILE:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '--all[Rotate all secrets in the vault]' \
 '--generate[Generate random values instead of prompting]' \
@@ -233,7 +234,7 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '--name=[Grant name (used to revoke it later)]:NAME:_default' \
 '*--only=[Keys this grant can read (required — fails closed)]:ONLY:_default' \
-'--ttl=[Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)]:TTL:_default' \
+'--ttl=[Time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)]:TTL:_default' \
 '--out=[Where to write the agent key\: a path, or \`-\` for stdout]:OUT:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '--renew[Replace a live grant with this name\: revoke its key, mint a fresh one]' \
@@ -246,7 +247,7 @@ _arguments "${_arguments_options[@]}" : \
 '--name=[Grant name (used to revoke it later)]:NAME:_default' \
 '*--only=[Keys the agent can read (required — fails closed)]:ONLY:_default' \
 '*--allow-tag=[Set the agent allow-list to these tags before granting (repeatable)]:ALLOW_TAG:_default' \
-'--ttl=[Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)]:TTL:_default' \
+'--ttl=[Time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)]:TTL:_default' \
 '--out=[Where to write the agent key\: a path, or \`-\` for stdout]:OUT:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '-h[Print help]' \
@@ -263,6 +264,7 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (revoke)
 _arguments "${_arguments_options[@]}" : \
+'--values-from=[With --rotate, read new values from a dotenv file of KEY=value lines (\`-\` for stdin)]:FILE:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '--rotate[Rotate the keys it could read in the same session]' \
 '-h[Print help]' \
@@ -274,7 +276,7 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '*--only=[Keys the agent may read (required — fails closed)]:ONLY:_default' \
 '*--allow-tag=[Set the agent allow-list to these tags before granting (repeatable)]:ALLOW_TAG:_default' \
-'--ttl=[Grant time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)]:TTL:_default' \
+'--ttl=[Grant time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)]:TTL:_default' \
 '--name=[Grant name (used to disconnect/revoke it later)]:NAME:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '--allow-exec[Also expose \`murk agent exec\` to the agent (adds --allow-exec)]' \
@@ -460,6 +462,7 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (revoke)
 _arguments "${_arguments_options[@]}" : \
+'--values-from=[With --rotate, read new values from a dotenv file of KEY=value lines (\`-\` for stdin)]:FILE:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '--rotate[Rotate the secrets they had access to in the same session]' \
 '-h[Print help]' \
@@ -512,6 +515,7 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (revoke)
 _arguments "${_arguments_options[@]}" : \
+'--values-from=[With --rotate, read new values from a dotenv file of KEY=value lines (\`-\` for stdin)]:FILE:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '--rotate[Rotate the secrets they had access to in the same session]' \
 '-h[Print help]' \

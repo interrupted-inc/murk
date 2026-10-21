@@ -173,9 +173,9 @@ Entries also carry optional lifecycle metadata:
 - `created` / `updated` — ISO-8601 UTC timestamps. `updated` is bumped on every value change (`add`, `edit`, `rotate`) and so doubles as the "last rotated" anchor.
 - `rotation_interval_days` — soft rotation policy. `doctor` flags the key as overdue when `updated + rotation_interval_days` is in the past.
 - `expires_at` — ISO-8601 UTC hard expiry for credentials with a known end-of-life (e.g. a token). `doctor` flags it as expired or expiring soon.
-- `revoked_at` — ISO-8601 UTC marker set when a recipient who could read this key is revoked and rotation is deferred. Its *presence* is the obligation: the revoked recipient can still decrypt the live value from git history until it changes. `doctor` flags it until then; any value write clears it. Omitted when there is no pending rotation.
+- `revoked_at` — ISO-8601 UTC marker set when a recipient who could read this key is revoked and rotation is deferred, or is removed from the group holding it. Its *presence* is the obligation: they can still decrypt the live value from git history until it changes. `doctor` flags it until then. A write that replaces the shared or group value (`add`, `rotate`, `import`) clears it; writing a personal override (`--group me`) does not, since that leaves the exposed value in place. Omitted when there is no pending rotation.
 
-Set the rotation/expiry fields with `murk describe KEY "desc" --rotate-every 90d --expires 2026-09-01` (`never` clears either); `revoked_at` is managed automatically by `circle revoke`. All lifecycle fields are covered by the integrity MAC (see Integrity), so rotation policy and pending-rotation flags cannot be silently weakened without a key.
+Set the rotation/expiry fields with `murk describe KEY "desc" --rotate-every 90d --expires 2026-09-01` (`never` clears either); `revoked_at` is managed automatically by `circle revoke`, `group rm --member`, and `agent revoke` / `agent grant --renew`. All lifecycle fields are covered by the integrity MAC (see Integrity), so rotation policy and pending-rotation flags cannot be silently weakened without a key.
 
 Key names must be valid shell identifiers: `[A-Za-z_][A-Za-z0-9_]*`.
 
@@ -331,7 +331,7 @@ Interactive setup. Prompts for a display name. Then:
 
 ### `murk add KEY [--group NAME] [--desc DESC] [--tag TAG] [--vault NAME]`
 
-Adds or updates a secret. Prompts for the value interactively (hidden input via rpassword) or reads from stdin when piped.
+Adds or updates a secret. Prompts for the value interactively (hidden input via rpassword) or reads it from stdin when piped. Piped input is the whole of stdin with one trailing newline removed, so a multi-line value such as a PEM key arrives intact (`cat key.pem | murk add TLS_KEY`).
 
 `--group` selects who can read it: `everyone` (the default; the shared/murk layer), `me` (only your key; the private/mote layer), or a named group (encrypted to that group's members; you must be a member). Assigning a secret to a named group makes that group its sole base tier — any existing shared value is dropped. `--scoped` is a deprecated alias for `--group me`.
 
@@ -345,11 +345,15 @@ Generates a cryptographically random value and stores it. Default length is 32 b
 
 ---
 
-### `murk rotate KEY [--generate] [--length N] [--hex] [--vault NAME]`
+### `murk rotate KEY [--generate] [--length N] [--hex] [--values-from FILE] [--vault NAME]`
 
 Replaces a secret value. Prompts for the new value interactively, or generates a random one with `--generate`. Use after revoking a recipient to ensure they can no longer use the old value.
 
+Rotation keeps each value in its tier and never widens who can read it: a shared value stays shared, a group value stays in its group (encrypted to the group's current members), and a key held only as your personal override stays your override. A personal override on top of a shared or group value is left unchanged. A key held by a group you are not a member of can't be rotated by you: `rotate KEY` refuses it, and `--all` skips it with a warning. The same goes for a key that holds only other recipients' overrides. Other recipients' overrides are never touched.
+
 `murk rotate --all` rotates every secret in the vault, prompting for each in sequence. `--generate` is not allowed with `--all` — external credentials (database passwords, API keys from third-party services) require manual rotation at the source.
+
+Piped stdin works the same way when the batch takes one value (e.g. `murk rotate KEY`): all of stdin is the value. A batch of several values reads one value per line, matched to keys by position, so values can't span lines; input with more lines than values is refused before anything is written. If anything would be skipped, or a key would take more than one value, the batch is refused before any value is read, since later values would land on the wrong keys. `--values-from FILE` (`-` for stdin) matches values by name instead: `KEY=value` lines in the `murk import` format. Every key it names must be one this command can rotate, with exactly one value to replace; otherwise the whole batch is refused before anything is written, naming the keys. Keys it doesn't name are left unrotated and reported. `--values-from` can't be combined with `--generate`. A values file that is a symlink is refused, and one readable by others gets a warning; `--values-from -` keeps the new values off disk.
 
 `murk rotate --list` reports the keys that need rotating — the same overdue/expiry/post-revoke signals `doctor` evaluates, scoped to rotation. It reads only the plaintext schema, so it works without a key. Human output exits 1 when anything needs rotating (usable as a script gate); `--list --json` emits a `reason`-tagged array (`overdue`, `no_baseline`, `expired`, `expiring_soon`, `revoke_pending`) and always exits 0.
 
@@ -357,7 +361,7 @@ Replaces a secret value. Prompts for the new value interactively, or generates a
 
 ### `murk rm KEY [--vault NAME]`
 
-Removes a key from the vault (shared value, schema entry, and all private entries). No confirmation prompt — git is your safety net.
+Removes a key from the vault (shared value, schema entry, and all private entries). No confirmation prompt — git is your safety net. Refused when the key has a value in a group you are not a member of, or holds only other recipients' personal overrides: those values would stay in the vault, so only their owners can remove them.
 
 ---
 
@@ -375,7 +379,7 @@ Lists key names, one per line. `--tag` filters by tag (repeatable). `--json` out
 
 ### `murk describe KEY "description" [--example EX] [--tag T]... [--rotate-every DAYS] [--expires DATE] [--vault NAME]`
 
-Sets metadata for a key in the plaintext schema. Does not touch encrypted values.
+Sets metadata for a key in the plaintext schema. Does not touch encrypted values. Refused for a key held by a group you are not a member of, since its tags and policy belong to that group's members.
 
 `--rotate-every` takes a day count (`90` or `90d`) and `--expires` takes a date (`2026-09-01`) or RFC-3339 timestamp; pass `never` to either to clear it. Both are sticky — a later `describe` that omits the flag leaves the existing value untouched. `doctor` reports keys that are overdue for rotation or past/near their expiry.
 
@@ -438,7 +442,7 @@ The child runs supervised, not `exec`-ed: its stdout and stderr are pipes, and e
 
 ### `murk agent grant --name NAME --only KEY [--ttl DUR] [--renew] [--out PATH] [--vault NAME]`
 
-Mints a fresh ephemeral age identity and gives it read access to exactly the `--only` keys (repeatable, required) — never the operator's own key. The agent becomes a recipient of the encrypted meta and gets a private (per-recipient) ciphertext of each `--only` key's shared value, but is excluded from the `everyone` layer. Records grant metadata (scope, TTL, issuer) in the encrypted meta. A live grant name is refused unless `--renew` is passed, which revokes the existing key and mints the replacement in one vault write. `--ttl` accepts `30m`/`2h`/`7d` (default `2h`). Reads fail closed after expiry, though the enforcement is binary-level, not cryptographic (see THREAT_MODEL.md). The agent key is written to `~/.config/murk/agent-keys/<vault-hash>-NAME` (or `--out PATH`, or `--out -` to stream it to stdout). Run the agent with `MURK_KEY_FILE` pointing at that key and `MURK_STRICT=1` so it can't fall back to the operator's stored key.
+Mints a fresh ephemeral age identity and gives it read access to exactly the `--only` keys (repeatable, required) — never the operator's own key. The agent becomes a recipient of the encrypted meta and gets a private (per-recipient) ciphertext of each `--only` key's shared value, but is excluded from the `everyone` layer. Records grant metadata (scope, TTL, issuer) in the encrypted meta. A live grant name is refused unless `--renew` is passed, which revokes the existing key and mints the replacement in one vault write. `--ttl` accepts `30m`/`2h`/`7d` (default `2h`), at most `365d`; a longer TTL is refused. Reads fail closed after expiry, though the enforcement is binary-level, not cryptographic (see THREAT_MODEL.md). The agent key is written to `~/.config/murk/agent-keys/<vault-hash>-NAME` (or `--out PATH`, or `--out -` to stream it to stdout). Run the agent with `MURK_KEY_FILE` pointing at that key and `MURK_STRICT=1` so it can't fall back to the operator's stored key.
 
 ---
 
@@ -448,9 +452,9 @@ Lists active grants: name, truncated pubkey, scope, and TTL status (time remaini
 
 ---
 
-### `murk agent revoke NAME [--rotate] [--vault NAME]`
+### `murk agent revoke NAME [--rotate] [--values-from FILE] [--vault NAME]`
 
-Removes the grant and its ephemeral recipient (clearing the agent's private ciphertexts), persisting before any rotation. Because the handed-off key can still decrypt old `.murk` versions from git history, rotation is the real close: `--rotate` (or the interactive prompt) re-prompts for new values for the grant's scope.
+Removes the grant and its ephemeral recipient (clearing the agent's private ciphertexts). Because the handed-off key can still decrypt old `.murk` versions from git history, every key it could read — its scope, any key holding a private copy for it, and keys in groups it belonged to — is marked as owing a rotation (`revoked_at`) if it still has a shared value or a value in one of those groups, as with `circle revoke`; `agent grant --renew` marks the previous key's keys the same way. Rotation is the real close: `--rotate` (or the interactive prompt) re-prompts for a new value for each of those keys, in its own tier. The revoke and the rotated values are written together in one save, so a refused, short, or aborted batch writes nothing and the grant is not revoked either; the error says how to revoke now and rotate afterwards. `--values-from FILE` supplies the values by name, as for `murk rotate`.
 
 ---
 
@@ -526,7 +530,7 @@ Adds a recipient (by pubkey or display name) to a group. You must already be a m
 
 ### `murk group rm NAME [--member RECIPIENT] [--vault NAME]`
 
-With `--member`, removes a recipient from the group and re-encrypts its secrets so the removed member loses access to current values (git history stays readable — rotate to fully close). Without `--member`, deletes the group entirely; refused if any secret is still assigned to it. You must be a member to modify a group.
+With `--member`, removes a recipient from the group and re-encrypts its secrets so the removed member loses access to current values. Git history stays readable, so each of the group's secrets is marked as owing a rotation (`revoked_at`) and listed; `murk rotate --list` and `doctor` flag them until they are rotated. Without `--member`, deletes the group entirely; refused if any secret is still assigned to it. You must be a member to modify or delete a group.
 
 ---
 
@@ -548,11 +552,11 @@ Removes the policy. Agent mode becomes unrestricted again.
 
 ---
 
-### `murk circle revoke RECIPIENT [--rotate] [--vault NAME]`
+### `murk circle revoke RECIPIENT [--rotate] [--values-from FILE] [--vault NAME]`
 
 Removes a recipient by pubkey or display name. Re-encrypts all shared secrets without their key. Removes their private entries.
 
-Lists the secrets the revoked recipient had access to. With `--rotate`, prompts for a new value for each in the same session and re-encrypts them. Without the flag on an interactive terminal, offers to rotate; otherwise prints a hint. The recipient can still decrypt previous versions from git history, so rotation is the only way to close the exposure.
+Lists the secrets the revoked recipient had access to. With `--rotate`, prompts for a new value for each value they could read, in the same session, and re-encrypts it in its own tier: the shared value stays shared, and a value in a group they belonged to stays in that group, encrypted to its remaining members. Values they could not read (other groups, your personal overrides) are not prompted for. A group value the revoked recipient could read but you can't (you are not in that group) can't be re-encrypted by you: its current ciphertext still opens with their key until a member of that group rotates it. The revoke says so, and the key keeps its pending-rotation marker. A key they reached only through their own personal override is not marked, since nothing of it is left to rotate. The revoke and the rotated values are written together in one save, so input that is refused, runs short, or is aborted writes nothing and the recipient is not revoked either; the error says how to revoke now (`murk circle revoke RECIPIENT` without `--rotate`) and rotate afterwards (`murk rotate --all --values-from FILE`). Piped values and `--values-from FILE` follow the rules of `murk rotate`. Keys `--values-from` doesn't name stay marked, and `murk rotate --list` keeps listing them. Without the flag on an interactive terminal, offers to rotate; otherwise prints a hint. The recipient can still decrypt previous versions from git history, so rotation is the only way to close the exposure.
 
 ---
 

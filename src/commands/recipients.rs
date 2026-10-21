@@ -256,8 +256,16 @@ pub(crate) fn cmd_authorize(
     }
 }
 
-pub(crate) fn cmd_revoke(recipient: &str, rotate: bool, vault_path: &str) {
-    let (mut vault, murk, _identity, _lock) = load_vault_locked(vault_path);
+pub(crate) fn cmd_revoke(
+    recipient: &str,
+    rotate: bool,
+    values_from: Option<&str>,
+    vault_path: &str,
+) {
+    let source = values_from.map_or(ValueSource::Prompt, |p| {
+        ValueSource::Named(read_values_from(p))
+    });
+    let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
     let original = murk.clone();
     let mut current = murk;
 
@@ -269,24 +277,68 @@ pub(crate) fn cmd_revoke(recipient: &str, rotate: bool, vault_path: &str) {
 
     // Record that the exposed keys now owe a rotation before persisting, so the
     // obligation survives the user declining the prompt below (or the process
-    // dying). An in-session rotation clears the marker again via `add_secret`.
-    murk_cli::mark_revoked(&mut vault, &result.exposed_keys, chrono::Utc::now());
+    // dying). An in-session rotation clears the marker again via `rotate_secret`.
+    // A key the revoked recipient reached only through their own override has
+    // nothing left to rotate once that override is removed, so it is not marked.
+    let owed: Vec<String> = result
+        .exposed_keys
+        .iter()
+        .filter(|k| {
+            vault.secrets.get(*k).is_some_and(|e| {
+                !e.shared.is_empty() || e.grouped.keys().any(|g| result.exposed_groups.contains(g))
+            })
+        })
+        .cloned()
+        .collect();
+    murk_cli::mark_revoked(&mut vault, &owed, chrono::Utc::now());
 
-    // Persist the removal first so the recipient is durably revoked even if the
-    // user aborts the rotation prompts below.
-    save_vault(vault_path, &mut vault, &original, &current);
+    // With --rotate, check the rotation batch against the post-revoke state
+    // before writing anything, so refused input leaves the vault untouched.
+    let plan = |vault: &murk_cli::types::Vault, current: &murk_cli::types::Murk| {
+        let pubkey = try_or_die(identity.pubkey_string());
+        let plans = plan_exposed(
+            vault,
+            current,
+            &pubkey,
+            &result.exposed_keys,
+            &result.exposed_groups,
+        );
+        (pubkey, plans)
+    };
+    let mut checked = rotate.then(|| plan(&vault, &current));
+    if let Some((_, plans)) = &checked {
+        let retry = format!(
+            "to revoke now and rotate afterwards, run `murk circle revoke {recipient}` without --rotate, then `murk rotate --all --values-from FILE`"
+        );
+        check_batch(&vault, plans, &source, Some(&retry));
+    }
+
+    // Group values the operator can't read can't be re-encrypted on save, so
+    // their current ciphertext still opens with the revoked key until a group
+    // member rotates them. They stay marked (above); say so.
+    let mut stale: Vec<(String, String)> = vault
+        .secrets
+        .iter()
+        .flat_map(|(k, e)| {
+            let readable = current.grouped.get(k);
+            e.grouped
+                .keys()
+                .filter(|g| result.exposed_groups.contains(g))
+                .filter(move |g| !readable.is_some_and(|m| m.contains_key(*g)))
+                .map(move |g| (g.clone(), k.clone()))
+        })
+        .collect();
+    stale.sort();
 
     let display = result.display_name.as_deref().unwrap_or(recipient);
-    eprintln!(
-        "{} removed {} from recipients",
-        "◆".magenta(),
-        display.bold(),
-    );
 
+    // Decide on and collect the rotation before writing, so one save covers
+    // the revoke and the rotated values: a refused or aborted batch writes
+    // nothing, and the command never saves twice from one loaded state.
+    let mut outcome = None;
     if !result.exposed_keys.is_empty() {
         let n = result.exposed_keys.len();
         let plural = if n == 1 { "" } else { "s" };
-        eprintln!();
         eprintln!(
             "{} {display} had access to {n} secret{plural} — rotate them:",
             "⚠".yellow(),
@@ -300,15 +352,42 @@ pub(crate) fn cmd_revoke(recipient: &str, rotate: bool, vault_path: &str) {
         let do_rotate = rotate
             || (io::stdin().is_terminal()
                 && confirm(&format!("rotate {n} exposed secret{plural} now?")));
-
         if do_rotate {
-            rotate_exposed(vault_path, &mut vault, &current, &result.exposed_keys);
-        } else {
-            eprintln!(
-                "  {}",
-                "run `murk rotate --all` to rotate each secret".dimmed()
-            );
+            let (pubkey, plans) = checked.take().unwrap_or_else(|| plan(&vault, &current));
+            outcome = Some(rotate_exposed(
+                &mut vault,
+                &mut current,
+                &pubkey,
+                &plans,
+                &source,
+            ));
         }
+    }
+
+    save_vault(vault_path, &mut vault, &original, &current);
+
+    eprintln!(
+        "{} removed {} from recipients",
+        "◆".magenta(),
+        display.bold(),
+    );
+    for (group, key) in &stale {
+        eprintln!(
+            "{} you are not in group {group}, so {} could not be re-encrypted: {display} can still decrypt its current value until a member of {group} rotates it (`murk rotate --list` keeps listing it)",
+            "⚠".yellow(),
+            key.bold(),
+        );
+    }
+    match &outcome {
+        Some(outcome) => {
+            outcome.report();
+            outcome.report_total();
+        }
+        None if !result.exposed_keys.is_empty() => eprintln!(
+            "  {}",
+            "run `murk rotate --all` to rotate each secret".dimmed()
+        ),
+        None => {}
     }
     eprintln!();
     eprintln!(
@@ -444,6 +523,16 @@ pub(crate) fn cmd_group(sub: GroupCommand) {
                         );
                         return;
                     }
+                    // The removed member could read the group's current values
+                    // and can still decrypt them from git history, so each one
+                    // owes a rotation, as after a revoke.
+                    let owed: Vec<String> = vault
+                        .secrets
+                        .iter()
+                        .filter(|(_, e)| e.grouped.contains_key(&name))
+                        .map(|(k, _)| k.clone())
+                        .collect();
+                    murk_cli::mark_revoked(&mut vault, &owed, chrono::Utc::now());
                     save_vault(&vault_path, &mut vault, &original, &current);
                     eprintln!(
                         "{} removed {} from group {}",
@@ -451,6 +540,23 @@ pub(crate) fn cmd_group(sub: GroupCommand) {
                         member.bold(),
                         name.bold()
                     );
+                    if !owed.is_empty() {
+                        let plural = if owed.len() == 1 { "" } else { "s" };
+                        eprintln!();
+                        eprintln!(
+                            "{} {member} could read {} secret{plural} in {name} — rotate them:",
+                            "⚠".yellow(),
+                            owed.len(),
+                        );
+                        for key in &owed {
+                            eprintln!("  {} {}", "▸".dimmed(), key.bold());
+                        }
+                        eprintln!(
+                            "  {}",
+                            "run `murk rotate KEY` for each; `murk rotate --list` tracks them"
+                                .dimmed()
+                        );
+                    }
                 }
                 None => {
                     try_or_die(murk_cli::delete_group(&vault, &mut current, &name, &pubkey));

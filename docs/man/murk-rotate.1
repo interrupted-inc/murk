@@ -4,7 +4,7 @@
 .SH NAME
 rotate \- Rotate secrets with new values
 .SH SYNOPSIS
-\fBmurk rotate\fR [\fB\-\-all\fR] [\fB\-\-generate\fR] [\fB\-\-length\fR] [\fB\-\-hex\fR] [\fB\-\-list\fR] [\fB\-\-json\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIKEY\fR] 
+\fBmurk rotate\fR [\fB\-\-all\fR] [\fB\-\-generate\fR] [\fB\-\-length\fR] [\fB\-\-hex\fR] [\fB\-\-values\-from\fR] [\fB\-\-list\fR] [\fB\-\-json\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIKEY\fR] 
 .SH DESCRIPTION
 Rotate secrets with new values
 .SH OPTIONS
@@ -20,6 +20,9 @@ Length in bytes for generated values (default 32)
 .TP
 \fB\-\-hex\fR
 Output generated values as hex instead of base64
+.TP
+\fB\-\-values\-from\fR \fI<FILE>\fR
+Read new values from a dotenv file of KEY=value lines (`\-` for stdin), matched by key name
 .TP
 \fB\-\-list\fR
 List keys needing rotation instead of rotating (exits 1 if any)

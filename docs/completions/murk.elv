@@ -96,6 +96,7 @@ set edit:completion:arg-completer[murk] = {|@words|
         }
         &'murk;rotate'= {
             cand --length 'Length in bytes for generated values (default 32)'
+            cand --values-from 'Read new values from a dotenv file of KEY=value lines (`-` for stdin), matched by key name'
             cand --vault 'Vault filename'
             cand --all 'Rotate all secrets in the vault'
             cand --generate 'Generate random values instead of prompting'
@@ -210,7 +211,7 @@ set edit:completion:arg-completer[murk] = {|@words|
         &'murk;agent;grant'= {
             cand --name 'Grant name (used to revoke it later)'
             cand --only 'Keys this grant can read (required — fails closed)'
-            cand --ttl 'Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)'
+            cand --ttl 'Time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)'
             cand --out 'Where to write the agent key: a path, or `-` for stdout'
             cand --vault 'Vault filename'
             cand --renew 'Replace a live grant with this name: revoke its key, mint a fresh one'
@@ -221,7 +222,7 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand --name 'Grant name (used to revoke it later)'
             cand --only 'Keys the agent can read (required — fails closed)'
             cand --allow-tag 'Set the agent allow-list to these tags before granting (repeatable)'
-            cand --ttl 'Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)'
+            cand --ttl 'Time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)'
             cand --out 'Where to write the agent key: a path, or `-` for stdout'
             cand --vault 'Vault filename'
             cand -h 'Print help'
@@ -234,6 +235,7 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand --help 'Print help'
         }
         &'murk;agent;revoke'= {
+            cand --values-from 'With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)'
             cand --vault 'Vault filename'
             cand --rotate 'Rotate the keys it could read in the same session'
             cand -h 'Print help'
@@ -242,7 +244,7 @@ set edit:completion:arg-completer[murk] = {|@words|
         &'murk;agent;connect'= {
             cand --only 'Keys the agent may read (required — fails closed)'
             cand --allow-tag 'Set the agent allow-list to these tags before granting (repeatable)'
-            cand --ttl 'Grant time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)'
+            cand --ttl 'Grant time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)'
             cand --name 'Grant name (used to disconnect/revoke it later)'
             cand --vault 'Vault filename'
             cand --allow-exec 'Also expose `murk agent exec` to the agent (adds --allow-exec)'
@@ -349,6 +351,7 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand --help 'Print help'
         }
         &'murk;circle;revoke'= {
+            cand --values-from 'With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)'
             cand --vault 'Vault filename'
             cand --rotate 'Rotate the secrets they had access to in the same session'
             cand -h 'Print help'
@@ -374,6 +377,7 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand --help 'Print help'
         }
         &'murk;revoke'= {
+            cand --values-from 'With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)'
             cand --vault 'Vault filename'
             cand --rotate 'Rotate the secrets they had access to in the same session'
             cand -h 'Print help'

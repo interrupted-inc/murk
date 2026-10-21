@@ -279,6 +279,15 @@ mod tests {
     }
 
     #[test]
+    fn delete_requires_membership() {
+        let vault = empty_vault();
+        let mut murk = empty_murk();
+        create_group(&mut murk, "prod", "age1alice").unwrap();
+        assert!(delete_group(&vault, &mut murk, "prod", "age1bob").is_err());
+        assert!(murk.groups.contains_key("prod"));
+    }
+
+    #[test]
     fn resolve_member_by_name_and_pubkey() {
         let vault = types::Vault {
             recipients: vec!["age1alice".into()],

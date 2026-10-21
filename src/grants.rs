@@ -52,32 +52,46 @@ pub fn validate_grant_name(name: &str) -> Result<(), MurkError> {
     validate_short_name(name, "grant").map_err(MurkError::Grant)
 }
 
+/// Longest accepted grant TTL. Grants are meant to be short-lived; this bound
+/// also keeps `issued_at + ttl` far inside chrono's date range.
+const MAX_TTL_DAYS: i64 = 365;
+
 /// Parse a TTL like `90s`, `30m`, `2h`, or `7d` into a [`Duration`]. A bare
 /// number is rejected — the unit must be explicit so `2` is never ambiguous.
+/// TTLs longer than [`MAX_TTL_DAYS`] are refused.
 pub fn parse_ttl(s: &str) -> Result<Duration, MurkError> {
     let s = s.trim();
     let (num, unit) = s.split_at(
         s.find(|c: char| !c.is_ascii_digit())
             .ok_or_else(|| MurkError::Grant(format!("ttl \"{s}\" needs a unit: s, m, h, or d")))?,
     );
-    let n: i64 = num
-        .parse()
-        .map_err(|_| MurkError::Grant(format!("invalid ttl \"{s}\" — use e.g. 30m, 2h, 7d")))?;
+    let too_long =
+        || MurkError::Grant(format!("ttl \"{s}\" is too long — at most {MAX_TTL_DAYS}d"));
+    let n: i64 = num.parse().map_err(|e: std::num::ParseIntError| {
+        if matches!(e.kind(), std::num::IntErrorKind::PosOverflow) {
+            too_long()
+        } else {
+            MurkError::Grant(format!("invalid ttl \"{s}\" — use e.g. 30m, 2h, 7d"))
+        }
+    })?;
     if n <= 0 {
         return Err(MurkError::Grant("ttl must be positive".into()));
     }
     let dur = match unit {
-        "s" => Duration::seconds(n),
-        "m" => Duration::minutes(n),
-        "h" => Duration::hours(n),
-        "d" => Duration::days(n),
+        "s" => Duration::try_seconds(n),
+        "m" => Duration::try_minutes(n),
+        "h" => Duration::try_hours(n),
+        "d" => Duration::try_days(n),
         other => {
             return Err(MurkError::Grant(format!(
                 "unknown ttl unit \"{other}\" — use s, m, h, or d"
             )));
         }
     };
-    Ok(dur)
+    match dur {
+        Some(d) if d <= Duration::days(MAX_TTL_DAYS) => Ok(d),
+        _ => Err(too_long()),
+    }
 }
 
 /// Create an agent grant in the working state. The caller mints the ephemeral
@@ -194,6 +208,14 @@ mod tests {
         assert!(parse_ttl("-1h").is_err()); // sign is not a digit
         assert!(parse_ttl("2y").is_err()); // unknown unit
         assert!(parse_ttl("abc").is_err());
+    }
+
+    #[test]
+    fn parse_ttl_caps_length_at_the_boundary() {
+        assert_eq!(parse_ttl("365d").unwrap(), Duration::days(365));
+        assert_eq!(parse_ttl("8760h").unwrap(), Duration::days(365));
+        assert!(parse_ttl("366d").is_err());
+        assert!(parse_ttl("8761h").is_err());
     }
 
     #[test]

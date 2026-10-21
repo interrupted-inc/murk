@@ -111,6 +111,9 @@ pub enum Command {
         /// Output generated values as hex instead of base64
         #[arg(long)]
         hex: bool,
+        /// Read new values from a dotenv file of KEY=value lines (`-` for stdin), matched by key name
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["generate", "list"])]
+        values_from: Option<String>,
         /// List keys needing rotation instead of rotating (exits 1 if any)
         #[arg(long, conflicts_with_all = ["key", "all", "generate", "hex"])]
         list: bool,
@@ -340,6 +343,9 @@ pub enum Command {
         /// Rotate the secrets they had access to in the same session
         #[arg(long)]
         rotate: bool,
+        /// With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)
+        #[arg(long, value_name = "FILE", requires = "rotate")]
+        values_from: Option<String>,
         /// Vault filename
         #[arg(long, env = "MURK_VAULT", default_value = ".murk")]
         vault: String,
@@ -501,7 +507,7 @@ pub enum AgentCommand {
         /// Keys this grant can read (required — fails closed)
         #[arg(long, required = true)]
         only: Vec<String>,
-        /// Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)
+        /// Time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)
         #[arg(long, default_value = "2h")]
         ttl: String,
         /// Replace a live grant with this name: revoke its key, mint a fresh one
@@ -527,7 +533,7 @@ pub enum AgentCommand {
         /// Set the agent allow-list to these tags before granting (repeatable)
         #[arg(long = "allow-tag")]
         allow_tag: Vec<String>,
-        /// Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)
+        /// Time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)
         #[arg(long, default_value = "2h")]
         ttl: String,
         /// Where to write the agent key: a path, or `-` for stdout
@@ -555,6 +561,9 @@ pub enum AgentCommand {
         /// Rotate the keys it could read in the same session
         #[arg(long)]
         rotate: bool,
+        /// With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)
+        #[arg(long, value_name = "FILE", requires = "rotate")]
+        values_from: Option<String>,
         /// Vault filename
         #[arg(long, env = "MURK_VAULT", default_value = ".murk")]
         vault: String,
@@ -576,7 +585,7 @@ pub enum AgentCommand {
         /// Also expose `murk agent exec` to the agent (adds --allow-exec)
         #[arg(long)]
         allow_exec: bool,
-        /// Grant time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)
+        /// Grant time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)
         #[arg(long, default_value = "2h")]
         ttl: String,
         /// Grant name (used to disconnect/revoke it later)
@@ -634,6 +643,9 @@ pub enum CircleCommand {
         /// Rotate the secrets they had access to in the same session
         #[arg(long)]
         rotate: bool,
+        /// With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)
+        #[arg(long, value_name = "FILE", requires = "rotate")]
+        values_from: Option<String>,
         /// Vault filename
         #[arg(long, env = "MURK_VAULT", default_value = ".murk")]
         vault: String,
