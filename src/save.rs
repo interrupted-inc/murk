@@ -1709,6 +1709,7 @@ mod tests {
             issued_at: "2026-01-01T00:00:00Z".into(),
             expires_at: String::new(),
             issuer: pk.clone(),
+            anchors: Vec::new(),
         };
         meta.grants.insert("old".into(), grant.clone());
         // A grant's key is minted for it: it joins the vault with the grant,
@@ -1805,6 +1806,7 @@ mod tests {
                 issued_at: "2026-01-01T00:00:00Z".into(),
                 expires_at: "2026-01-02T00:00:00Z".into(),
                 issuer: bob_pk.clone(),
+                anchors: Vec::new(),
             },
         );
         // A matching `agents` blob too, so the planted record would route

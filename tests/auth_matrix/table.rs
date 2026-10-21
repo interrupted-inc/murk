@@ -711,7 +711,9 @@ pub const ROWS: &[Row] = &[
         Check::Write {
             touches: &[],
             gains: &[],
-            losses: &[("*", "owner")],
+            // The owner minted the grant, so its key file trusts the owner as
+            // a signer: revoking the owner revokes the grant too.
+            losses: &[("*", "owner"), ("*", "grant")],
             creates: &[],
         },
         [dr(SELF_REVOKE), CUR, CUR, CUR, CUR, R, R, R, R, R],

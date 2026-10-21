@@ -159,6 +159,7 @@ pub fn create_grant(
         issued_at: fmt_ts(issued_at),
         expires_at: fmt_ts(issued_at + ttl),
         issuer: issuer_pubkey.to_string(),
+        anchors: Vec::new(),
     };
     current.grants.insert(name.to_string(), entry.clone());
     Ok(entry)

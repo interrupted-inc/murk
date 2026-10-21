@@ -946,14 +946,25 @@ fn authenticate_inputs(
             "the common ancestor failed its authenticity check, so nothing was merged or signed: {reason}"
         ),
     })?;
+    // Whether either side was written by murk 0.14: a 0.13 side that changed
+    // the vault may then not override it (see `trust::check_merge_side`).
+    let upgraded = [ours, theirs]
+        .iter()
+        .any(|v| !v.vault_id.is_empty() || v.generation > 0);
     for (side, vault) in [("ours", ours), ("theirs", theirs)] {
-        check_side(vault_path, vault, base, base_groups.as_ref(), identity).map_err(|reason| {
-            MergeConflict {
-                field: side.into(),
-                reason: format!(
-                    "{side} failed its authenticity check, so nothing was merged or signed: {reason}"
-                ),
-            }
+        check_side(
+            vault_path,
+            vault,
+            base,
+            base_groups.as_ref(),
+            identity,
+            upgraded,
+        )
+        .map_err(|reason| MergeConflict {
+            field: side.into(),
+            reason: format!(
+                "{side} failed its authenticity check, so nothing was merged or signed: {reason}"
+            ),
         })?;
     }
     if !ours.vault_id.is_empty() && !theirs.vault_id.is_empty() && ours.vault_id != theirs.vault_id
@@ -974,6 +985,7 @@ fn check_side(
     base: &Vault,
     base_groups: Option<&Groups>,
     identity: &crate::crypto::MurkIdentity,
+    upgraded: bool,
 ) -> Result<(), String> {
     let verified = crate::load::verify_side(side, identity).map_err(|e| e.to_string())?;
     let loaded = crate::trust::Loaded {
@@ -988,7 +1000,13 @@ fn check_side(
         operator_key: crate::crypto::operator_key(identity),
     };
     let changed = !same_covered_content(side, base) || side.meta != base.meta;
-    crate::trust::check_merge_side(vault_path, &loaded, Some((base, base_groups)), changed)
+    crate::trust::check_merge_side(
+        vault_path,
+        &loaded,
+        Some((base, base_groups)),
+        changed,
+        upgraded,
+    )
 }
 
 /// Authenticate the merge base: MAC and signature as a load does, and a
@@ -2841,6 +2859,7 @@ mod tests {
             issued_at: "2026-01-01T00:00:00Z".into(),
             expires_at: "2999-01-01T00:00:00Z".into(),
             issuer: op_pk.clone(),
+            anchors: Vec::new(),
         };
         let meta = crate::types::Meta {
             grants: BTreeMap::from([
