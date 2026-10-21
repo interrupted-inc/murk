@@ -557,8 +557,8 @@ fn grant_key_that_drops_its_grant_and_signs_is_refused() {
 fn grant_forgery_child() {
     let vault_path = std::env::var("FORGE_VAULT").unwrap();
     let grant_key = std::env::var("FORGE_GRANT_KEY").unwrap();
-    let key = fs::read_to_string(&grant_key).unwrap();
-    let key: String = key
+    let key_text = fs::read_to_string(&grant_key).unwrap();
+    let key: String = key_text
         .lines()
         .find(|l| l.starts_with("AGE-SECRET-KEY-"))
         .unwrap()
@@ -566,13 +566,22 @@ fn grant_forgery_child() {
     let identity = murk_cli::crypto::parse_identity(&key).unwrap();
     let grant_pk = identity.pubkey_string().unwrap();
 
-    let mut vault = murk_cli::read_vault(&vault_path).unwrap();
-    let mut original = murk_cli::decrypt_vault(&vault, &identity).unwrap();
-    // Raw tooling never runs murk's read-only gate for grants; forget who
-    // loaded the state so the library save stands in for it.
+    // The grant can't read the meta at all: no MAC key, names, groups or
+    // signers to forge from. All it has is its own view from a load.
+    let on_disk = murk_cli::read_vault(&vault_path).unwrap();
+    assert!(
+        murk_cli::decrypt_meta(&on_disk, &identity)
+            .unwrap()
+            .is_none()
+    );
+    unsafe { std::env::set_var("MURK_KEY", &key_text) };
+    let (mut vault, mut original, _) = murk_cli::load_vault(&vault_path).unwrap();
+    // Raw tooling never runs murk's read-only gate for grants; pose as an
+    // operator so the library save stands in for it.
     original.loaded_by = None;
+    original.loaded_as_grant = false;
+    original.grants.clear();
     let mut current = original.clone();
-    current.grants.clear();
     current
         .recipients
         .insert(grant_pk.clone(), "alice-laptop".into());
@@ -582,15 +591,16 @@ fn grant_forgery_child() {
         "DB_URL".into(),
         zeroize::Zeroizing::new("postgres://attacker".into()),
     );
-    // The agent knows its scoped value, so it re-shares it to everyone; murk's
-    // save would refuse to carry an unreadable value to a new recipient.
+    // The agent knows its scoped values, so it re-shares them to everyone;
+    // murk's save would refuse to carry an unreadable value to a new
+    // recipient, and every other value is unreadable to it: drop them.
     for (k, by_pk) in &original.private {
         if let Some(v) = by_pk.get(&grant_pk) {
             current.values.insert(k.clone(), v.clone());
         }
     }
+    vault.secrets.retain(|k, _| current.values.contains_key(k));
     // save_vault signs with MURK_KEY and computes a fresh MAC.
-    unsafe { std::env::set_var("MURK_KEY", &key) };
     murk_cli::save_vault(&vault_path, &mut vault, &original, &current).unwrap();
 }
 

@@ -753,10 +753,11 @@ fn merge_key_is_grant(sides: &[&Vault]) -> bool {
         return false;
     };
     sides.iter().any(|side| {
-        matches!(
-            crate::decrypt_meta(side, &identity),
-            Ok(Some(meta)) if meta.grants.values().any(|g| g.pubkey == pubkey)
-        )
+        crate::agents::blob_for(side, &pubkey).is_some()
+            || matches!(
+                crate::decrypt_meta(side, &identity),
+                Ok(Some(meta)) if meta.grants.values().any(|g| g.pubkey == pubkey)
+            )
     })
 }
 
@@ -875,13 +876,26 @@ pub fn regenerate_meta(
         .saturating_add(1);
     meta.signers = crate::save::vouched_registry(merged, &meta.signers, pin.as_ref(), &identity);
 
+    // Each grant gets its own record again; one unchanged on a side keeps
+    // that side's blob.
+    merged.agents = crate::agents::blobs_for(
+        &meta.grants,
+        &[(ours, &ours_meta.grants), (theirs, &theirs_meta.grants)],
+    )
+    .map_err(|e| e.to_string())?;
+
     let mac_key_hex = crate::generate_mac_key();
     let mac_key = crate::decode_mac_key(&mac_key_hex).unwrap();
     meta.mac = compute_mac(merged, &meta.groups, &meta.grants, Some(&mac_key));
     meta.mac_key = Some(mac_key_hex);
     meta.sig = None;
 
-    let Ok(recipients) = parse_recipients(&merged.recipients) else {
+    // The meta goes to every recipient except agent grants (see
+    // [`crate::agents`]).
+    let Ok(recipients) = parse_recipients(&crate::agents::meta_recipients(
+        &merged.recipients,
+        &meta.grants,
+    )) else {
         return Ok(None);
     };
 

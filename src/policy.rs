@@ -52,16 +52,19 @@ pub fn check_agent_keys(vault: &Vault, keys: &[String]) -> Result<(), MurkError>
 
 /// True when `pubkey` identifies a granted agent for this decrypted vault state.
 ///
-/// Agent grants live in the encrypted meta and are carried into [`Murk::grants`]
-/// after decryption, so this is the same "am I an agent" test the CLI makes when
-/// it decrypts as an agent (`lib::decrypt_vault`). An operator (or any plain
-/// recipient) is not in `grants`, so this returns `false` for them.
+/// For the key that loaded the state this is [`Murk::loaded_as_grant`]: what
+/// the key could open (its own `agents` blob, never the meta) decides, not a
+/// grant record a meta writer could bind to anyone's key. For any other key it
+/// is whether a grant record names it.
 pub fn is_agent_identity(murk: &Murk, pubkey: &str) -> bool {
+    if murk.loaded_by.as_deref() == Some(pubkey) {
+        return murk.loaded_as_grant;
+    }
     murk.grants.values().any(|g| g.pubkey == pubkey)
 }
 
 /// Whether the agent allow-tag policy governs what `pubkey` may read: always
-/// for an agent grant (decided from the decrypted meta, so unsetting
+/// for an agent grant (decided by what the key opened, so unsetting
 /// `MURK_AGENT` doesn't lift it), and for anyone under self-scope.
 pub fn agent_policy_applies(murk: &Murk, pubkey: &str) -> bool {
     is_agent_identity(murk, pubkey) || crate::hardening::self_scope()
@@ -72,16 +75,20 @@ pub fn agent_policy_applies(murk: &Murk, pubkey: &str) -> bool {
 /// Grants are read-only: an agent gets the keys in its scope and nothing else,
 /// so it must not change secrets, recipients, groups, policy or grants. Every
 /// write goes through [`crate::save_vault`], which calls this on the state as
-/// loaded, so the CLI and the bindings are both covered. The check reads the
-/// grant list from the decrypted meta, not the environment, so unsetting
-/// `MURK_AGENT` doesn't get around it.
+/// loaded, so the CLI and the bindings are both covered. It reads what the key
+/// opened at load ([`Murk::loaded_as_grant`]), not the environment, so
+/// unsetting `MURK_AGENT` doesn't get around it.
 pub fn ensure_writable(murk: &Murk) -> Result<(), MurkError> {
-    match &murk.loaded_by {
-        Some(pubkey) if is_agent_identity(murk, pubkey) => Err(MurkError::Grant(
+    let grant = match &murk.loaded_by {
+        Some(pubkey) => is_agent_identity(murk, pubkey),
+        None => false,
+    };
+    if grant {
+        return Err(MurkError::Grant(
             "agent grants are read-only; ask the operator to make this change".into(),
-        )),
-        _ => Ok(()),
+        ));
     }
+    Ok(())
 }
 
 /// Apply the agent guardrails when the caller is a granted agent, or when the
@@ -110,11 +117,12 @@ pub fn enforce_agent_policy(
     // Check every grant bound to this pubkey, not just the first: `create_grant`
     // refuses duplicate bindings, but a hand-built vault could carry them, and an
     // expired duplicate must not hide behind a valid one. Fail closed on any.
-    let mut is_agent = false;
-    let now = chrono::Utc::now();
-    for (name, grant) in murk.grants.iter().filter(|(_, g)| g.pubkey == pubkey) {
-        is_agent = true;
-        check_grant_expiry(name, grant, now)?;
+    let is_agent = is_agent_identity(murk, pubkey);
+    if is_agent {
+        let now = chrono::Utc::now();
+        for (name, grant) in murk.grants.iter().filter(|(_, g)| g.pubkey == pubkey) {
+            check_grant_expiry(name, grant, now)?;
+        }
     }
     if is_agent || crate::hardening::self_scope() {
         check_agent_keys(vault, keys)?;

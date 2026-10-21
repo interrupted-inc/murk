@@ -21,6 +21,7 @@
 
 // Domain modules — pub(crate) unless main.rs needs direct path access.
 pub(crate) mod agent;
+pub mod agents;
 pub mod cli;
 pub(crate) mod codename;
 pub mod connect;
@@ -236,9 +237,10 @@ pub use crypto::{MurkIdentity, MurkRecipient};
 /// `Ok(None)` when there is no meta or `identity` cannot decrypt it (not a
 /// recipient) — callers fall back to showing pubkeys. A meta that decrypts but
 /// is corrupt or fails [`validate::meta`] is an `Err`, never a silent `None`:
-/// treating it as absent would drop groups, grants, and GitHub pins. An expired
-/// agent grant gets an `Err` too, the same TTL gate as a full load, so it can't
-/// read recipient names or group membership after its TTL.
+/// treating it as absent would drop groups, grants, and GitHub pins. Grants
+/// are not meta recipients from 3.x on; a 2.x vault still encrypted its meta to
+/// them, so there an expired grant gets an `Err`, the same TTL gate as a full
+/// load, and can't read recipient names or group membership after its TTL.
 pub fn decrypt_meta(
     vault: &types::Vault,
     identity: &crypto::MurkIdentity,
@@ -253,10 +255,12 @@ pub fn decrypt_meta(
         .map_err(|_| "vault meta is corrupt — vault may have been tampered with".to_string())?;
     validate::meta(&meta)
         .map_err(|e| format!("vault meta is invalid ({e}) — vault may have been tampered with"))?;
-    let pubkey = identity.pubkey_string().map_err(|e| e.to_string())?;
-    let now = chrono::Utc::now();
-    for (name, grant) in meta.grants.iter().filter(|(_, g)| g.pubkey == pubkey) {
-        policy::check_grant_expiry(name, grant, now).map_err(|e| e.to_string())?;
+    if vault.version.starts_with("2.") {
+        let pubkey = identity.pubkey_string().map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now();
+        for (name, grant) in meta.grants.iter().filter(|(_, g)| g.pubkey == pubkey) {
+            policy::check_grant_expiry(name, grant, now).map_err(|e| e.to_string())?;
+        }
     }
     Ok(Some(meta))
 }

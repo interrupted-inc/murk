@@ -259,8 +259,8 @@ pub(crate) fn mint_grant(
     let agent_secret = agent_id.to_string();
     let agent_pubkey = agent_id.to_public().to_string();
 
-    // The agent becomes a recipient (so it can decrypt meta and its scoped
-    // values) named for the grant, then we stage the scoped copies + metadata.
+    // The agent becomes a recipient (for its scoped values and its own
+    // `agents` record; never the meta) named for the grant.
     vault.recipients.push(agent_pubkey.clone());
     current
         .recipients
@@ -289,11 +289,20 @@ pub(crate) fn mint_grant(
         eprintln!("  {} {}", "▸".dimmed(), key.bold());
     }
 
-    // Hand off the ephemeral key.
-    let secret = agent_secret.expose_secret();
+    // Hand off the ephemeral key, headed by the signers it may trust: a grant
+    // can't read the meta, so this anchor is how it tells a genuine vault from
+    // a forged one.
+    let anchor = try_or_die(murk_cli::agents::anchor_lines(vault_path, &identity));
+    if anchor.is_empty() {
+        eprintln!(
+            "{} your key can't sign, so the grant names no trusted signer: it reads only with MURK_TRUSTED_SIGNERS set",
+            "⚠".yellow()
+        );
+    }
+    let key_text = zeroize::Zeroizing::new(format!("{anchor}{}\n", agent_secret.expose_secret()));
     let path = match out {
         Some("-") => {
-            println!("{secret}");
+            print!("{}", key_text.as_str());
             eprintln!(
                 "{} key streamed to stdout — capture it now; it is not stored",
                 "⚠".yellow()
@@ -301,12 +310,12 @@ pub(crate) fn mint_grant(
             None
         }
         Some(path) => {
-            try_or_die(murk_cli::write_key_to_file(Path::new(path), secret));
+            try_or_die(murk_cli::write_key_to_file(Path::new(path), &key_text));
             Some(path.to_string())
         }
         None => {
             let path = try_or_die(murk_cli::agent_key_file_path(vault_path, name));
-            try_or_die(murk_cli::write_key_to_file(&path, secret));
+            try_or_die(murk_cli::write_key_to_file(&path, &key_text));
             Some(path.display().to_string())
         }
     };

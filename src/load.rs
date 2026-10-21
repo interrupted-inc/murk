@@ -38,8 +38,9 @@ struct MetaState {
 /// A vault carrying both, or either in the other's view, is refused.
 ///
 /// A signature by an agent grant is tampering too, however well it verifies:
-/// grants are read-only, and a grant key can decrypt meta, so it can re-MAC and
-/// re-sign a hand-edited vault. Only a non-grant recipient is a valid author.
+/// grants are read-only, and a 2.x vault let a grant key decrypt the meta, so
+/// it could re-MAC and re-sign a hand-edited vault. Only a non-grant recipient
+/// is a valid author.
 fn check_signature(
     vault: &types::Vault,
     meta: &types::Meta,
@@ -167,7 +168,7 @@ fn resolve_meta_state(
             return Err(not_a_recipient());
         }
     };
-    let meta: types::Meta = serde_json::from_slice(&plaintext).map_err(|_| {
+    let mut meta: types::Meta = serde_json::from_slice(&plaintext).map_err(|_| {
         MurkError::Integrity("vault meta is corrupt — vault may have been tampered with".into())
     })?;
     crate::validate::meta(&meta).map_err(|e| {
@@ -182,6 +183,7 @@ fn resolve_meta_state(
                 "vault has secrets but MAC is empty — vault may have been tampered with".into(),
             ));
         }
+        drop_ghost_grants(vault, &mut meta, identity);
         let (signature, signer_vk) = check_signature(vault, &meta)?;
         return Ok(MetaState {
             recipients: meta.recipients,
@@ -216,6 +218,7 @@ fn resolve_meta_state(
         )));
     }
     let legacy_mac = meta.mac.starts_with("sha256:") || meta.mac.starts_with("sha256v2:");
+    drop_ghost_grants(vault, &mut meta, identity);
     let (signature, signer_vk) = check_signature(vault, &meta)?;
     Ok(MetaState {
         recipients: meta.recipients,
@@ -227,6 +230,28 @@ fn resolve_meta_state(
         signature,
         signer_vk,
     })
+}
+
+/// Drop grant records bound to the key that just opened a 3.x meta. Grants
+/// get their own `agents` blob and are never meta recipients, so this key is
+/// no grant: such a record was written by a meta writer, and would make an
+/// operator read-only, expire them, or refuse their own signature. Runs after
+/// the MAC check (which covers the records as written); the next save drops
+/// them. A 2.x vault still encrypted its meta to grants, so there a matching
+/// record is the loader's real grant and stays (see `decrypt_vault`).
+fn drop_ghost_grants(
+    vault: &types::Vault,
+    meta: &mut types::Meta,
+    identity: &crypto::MurkIdentity,
+) {
+    if vault.version.starts_with("2.") {
+        return;
+    }
+    if let Ok(pubkey) = identity.pubkey_string() {
+        let me = crypto::canonical_recipient(&pubkey);
+        meta.grants
+            .retain(|_, g| crypto::canonical_recipient(&g.pubkey) != me);
+    }
 }
 
 fn not_a_recipient() -> MurkError {
@@ -307,6 +332,13 @@ fn decrypt_vault_with_signature(
     identity: &crypto::MurkIdentity,
 ) -> Result<(types::Murk, Option<String>), MurkError> {
     let pubkey = identity.pubkey_string()?;
+    if crate::agents::blob_for(vault, &pubkey).is_some() {
+        return Err(MurkError::Grant(
+            "an agent grant key reads a vault only through `load_vault`, which checks the \
+             signature against the trusted signers in the grant's key file"
+                .into(),
+        ));
+    }
 
     // Verify integrity BEFORE decrypting secrets — a tampered vault should fail
     // with an integrity error, not a misleading "you are not a recipient" message.
@@ -321,24 +353,16 @@ fn decrypt_vault_with_signature(
         signer_vk,
     } = resolve_meta_state(vault, identity)?;
 
-    // An agent grant is a recipient of the meta blob (so it can verify integrity
-    // and read its grant) but is deliberately excluded from the shared "everyone"
-    // layer. Such an identity legitimately cannot decrypt shared ciphertexts, so
-    // it skips them rather than erroring. A normal recipient that fails to decrypt
-    // shared is a genuine problem (a true outsider already failed at meta
-    // decryption above), so it still gets the clear "not a recipient" error.
-    //
-    // A granted agent past its TTL fails closed right here, before any secret is
-    // decrypted, so every command and binding that loads a vault enforces the
-    // expiry. Every grant bound to the pubkey is checked — `create_grant` refuses
-    // duplicate bindings, but a hand-built vault could carry them, and an expired
-    // duplicate must not hide behind a valid one. Long-lived holders of decrypted
-    // state (the MCP server, bindings) re-check per read in `enforce_agent_policy`.
-    let mut is_agent = false;
-    let now = chrono::Utc::now();
-    for (name, grant) in grants.iter().filter(|(_, g)| g.pubkey == pubkey) {
-        is_agent = true;
-        policy::check_grant_expiry(name, grant, now)?;
+    // This key opened the meta, so it is not an agent grant (a 3.x record
+    // bound to it was dropped as a ghost in `resolve_meta_state`). A 2.x vault
+    // still encrypted its meta to grants; a grant key reading one has no trust
+    // anchor, so it is refused until the operator re-saves.
+    if grants.values().any(|g| g.pubkey == pubkey) {
+        return Err(MurkError::Grant(
+            "this vault predates murk 0.14's agent records, so an agent grant can't read \
+             it: ask the operator to save it with murk 0.14 or later and re-mint the grant"
+                .into(),
+        ));
     }
 
     // Decrypt shared values (skip scoped-only entries with empty shared ciphertext).
@@ -347,35 +371,15 @@ fn decrypt_vault_with_signature(
         if entry.shared.is_empty() {
             continue;
         }
-        let plaintext = match decrypt_value(&entry.shared, identity) {
-            Ok(plaintext) => plaintext,
-            Err(_) if is_agent => continue,
-            Err(_) => {
-                return Err(MurkError::Crypto(crypto::CryptoError::Decrypt(
-                    "you are not a recipient of this vault. Run `murk circle` to check, or ask a recipient to authorize you".into(),
-                )));
-            }
+        let Ok(plaintext) = decrypt_value(&entry.shared, identity) else {
+            return Err(not_a_recipient());
         };
         let value = plaintext_bytes_to_zeroizing_string(&plaintext)
             .map_err(|e| MurkError::Secret(format!("invalid UTF-8 in secret {key}: {e}")))?;
         values.insert(key.clone(), value);
     }
 
-    // Decrypt our private (per-recipient) overrides — the `me` tier.
-    let mut private: HashMap<String, HashMap<String, Zeroizing<String>>> = HashMap::new();
-    for (key, entry) in &vault.secrets {
-        if let Some(encoded) = entry.private.get(&pubkey)
-            && let Ok(value) = decrypt_value(encoded, identity).and_then(|pt| {
-                plaintext_bytes_to_zeroizing_string(&pt)
-                    .map_err(|e| MurkError::Secret(e.to_string()))
-            })
-        {
-            private
-                .entry(key.clone())
-                .or_default()
-                .insert(pubkey.clone(), value);
-        }
-    }
+    let private = own_private(vault, identity, &pubkey);
 
     // Decrypt named-group values we're a member of. age tells us whether our
     // identity is a recipient, so we just try each group ciphertext and keep the
@@ -408,9 +412,103 @@ fn decrypt_vault_with_signature(
             signers,
             signature,
             loaded_by: Some(pubkey),
+            loaded_as_grant: false,
         },
         signer_vk,
     ))
+}
+
+/// Decrypt `pubkey`'s private (per-recipient) values — the `me` tier, and an
+/// agent grant's scoped copies.
+fn own_private(
+    vault: &types::Vault,
+    identity: &crypto::MurkIdentity,
+    pubkey: &str,
+) -> HashMap<String, HashMap<String, Zeroizing<String>>> {
+    let mut private: HashMap<String, HashMap<String, Zeroizing<String>>> = HashMap::new();
+    for (key, entry) in &vault.secrets {
+        if let Some(encoded) = entry.private.get(pubkey)
+            && let Ok(value) = decrypt_value(encoded, identity).and_then(|pt| {
+                plaintext_bytes_to_zeroizing_string(&pt)
+                    .map_err(|e| MurkError::Secret(e.to_string()))
+            })
+        {
+            private
+                .entry(key.clone())
+                .or_default()
+                .insert(pubkey.to_string(), value);
+        }
+    }
+    private
+}
+
+/// Load `vault` as the agent grant `identity`, whose `agents` blob is `blob`.
+///
+/// The grant can't read the meta, so nothing inside the vault is trusted
+/// first: the signature must verify under a trusted signer named in the
+/// grant's key file (`key_text`) or `MURK_TRUSTED_SIGNERS`. Only then is the
+/// grant's own record decrypted and its TTL checked, and only then its scoped
+/// values. No pin is read or written.
+fn inspect_as_grant(
+    vault: types::Vault,
+    identity: crypto::MurkIdentity,
+    key_text: &str,
+    blob: &str,
+) -> Result<InspectedVault, MurkError> {
+    let pubkey = identity.pubkey_string()?;
+    let mut anchor = crate::agents::anchor_from_key_text(key_text).map_err(MurkError::Key)?;
+    if let Some(env) = trust::env_trusted_signers().map_err(MurkError::Key)? {
+        anchor.extend(env);
+    }
+    if anchor.is_empty() {
+        return Err(MurkError::Grant(
+            "this grant key names no trusted signers, so murk can't check the vault it reads: \
+             ask the operator to re-mint the grant (`murk agent grant --renew`), or set \
+             MURK_TRUSTED_SIGNERS"
+                .into(),
+        ));
+    }
+    let signer = trust::verify_anchored(&vault, &anchor).map_err(|r| {
+        MurkError::Trust(match r {
+            trust::Refusal::Unsigned => {
+                "refusing to read: the vault is unsigned, and an agent grant trusts only a vault \
+                 signed by one of the signers in its key file"
+                    .into()
+            }
+            trust::Refusal::UntrustedSigner { signer } => format!(
+                "refusing to read: the vault is signed by {}, which is not a trusted signer in this \
+                 grant's key file. If the operator's signer changed, ask them to re-mint the grant",
+                crate::truncate_pubkey(&signer)
+            ),
+            other => format!(
+                "refusing to read: the vault signature does not verify under the trusted signer \
+                 in this grant's key file ({other:?}) — it may have been tampered with"
+            ),
+        })
+    })?;
+    let record = crate::agents::open_blob(blob, &identity, &pubkey)?;
+    policy::check_grant_expiry(&record.name, &record.grant, chrono::Utc::now())?;
+    let v = vault.sig.as_ref().map_or(0, |s| s.v);
+    let murk = types::Murk {
+        private: own_private(&vault, &identity, &pubkey),
+        grants: BTreeMap::from([(record.name, record.grant)]),
+        signature: types::SignatureState::Signed { signer, v },
+        loaded_by: Some(pubkey),
+        loaded_as_grant: true,
+        ..Default::default()
+    };
+    Ok(InspectedVault {
+        vault,
+        murk,
+        identity,
+        assessment: trust::Assessment {
+            verdict: trust::Verdict::Trusted,
+            pin: None,
+            env_signers: None,
+        },
+        signer_vk: None,
+        grant: true,
+    })
 }
 
 /// A decrypted vault and this machine's trust verdict on it, before anything
@@ -422,6 +520,9 @@ pub struct InspectedVault {
     pub identity: crypto::MurkIdentity,
     pub assessment: trust::Assessment,
     signer_vk: Option<String>,
+    /// Loaded as an agent grant ([`inspect_as_grant`]): trusted by its key
+    /// file's anchor, never by this machine's pin.
+    grant: bool,
 }
 
 impl InspectedVault {
@@ -459,6 +560,12 @@ impl InspectedVault {
     /// this vault's counter (an older revision accepted on purpose). A v1
     /// signer's verifying key is replaced by the one this vault carries.
     pub fn record_trust(&self, vault_path: &str, reset_counter: bool) -> Result<(), String> {
+        if self.grant {
+            return Err(
+                "an agent grant can't record trust: its key file names the signers it trusts"
+                    .into(),
+            );
+        }
         let mut pin = trust::accepted_pin(
             &self.loaded(),
             self.assessment.pin.as_ref(),
@@ -488,6 +595,7 @@ impl InspectedVault {
                 let msg = self.refusal_message(vault_path).unwrap_or_default();
                 return Err(MurkError::Trust(msg));
             }
+            trust::Verdict::Trusted if self.grant => {}
             trust::Verdict::Trusted => {
                 let prior = self.assessment.pin.as_ref();
                 let mut pin =
@@ -525,6 +633,9 @@ pub fn inspect_vault(vault_path: &str) -> Result<InspectedVault, MurkError> {
     })?;
 
     let vault = read_vault(vault_path)?;
+    if let Some(blob) = crate::agents::blob_for(&vault, &identity.pubkey_string()?).cloned() {
+        return inspect_as_grant(vault, identity, secret_key.expose_secret(), &blob);
+    }
     let (murk, signer_vk) = decrypt_vault_with_signature(&vault, &identity)?;
     let mut inspected = InspectedVault {
         vault,
@@ -536,6 +647,7 @@ pub fn inspect_vault(vault_path: &str) -> Result<InspectedVault, MurkError> {
             env_signers: None,
         },
         signer_vk,
+        grant: false,
     };
     inspected.assessment =
         trust::assess(vault_path, &inspected.loaded(), None).map_err(MurkError::Trust)?;

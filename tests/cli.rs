@@ -5313,7 +5313,11 @@ fn agent_grant_is_held_to_the_policy_without_murk_agent() {
 
 /// The public key of a grant key file, as it appears in the vault.
 fn grant_pubkey(agent_key: &str) -> String {
-    let id: age::x25519::Identity = agent_key.trim().parse().unwrap();
+    let secret = agent_key
+        .lines()
+        .find(|l| l.starts_with("AGE-SECRET-KEY-"))
+        .unwrap();
+    let id: age::x25519::Identity = secret.parse().unwrap();
     id.to_public().to_string()
 }
 
@@ -5453,39 +5457,94 @@ fn a_removed_then_re_added_key_is_not_handed_to_the_agent() {
         .stdout(predicate::str::contains("unrelated-new-secret").not());
 }
 
+/// Decrypt a base64 age ciphertext from the vault with a grant key file's key.
+fn decrypt_with_grant(agent_key: &str, ciphertext_b64: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    let secret = agent_key
+        .lines()
+        .find(|l| l.starts_with("AGE-SECRET-KEY-"))
+        .unwrap();
+    let id: age::x25519::Identity = secret.parse().unwrap();
+    let ct = base64::engine::general_purpose::STANDARD
+        .decode(ciphertext_b64)
+        .unwrap();
+    age::decrypt(&id, &ct).ok()
+}
+
 #[test]
-fn an_expired_grant_cannot_read_the_meta() {
-    // `circle` and `info` read the meta directly; past the TTL they must fail
-    // closed like every other read, not list recipient names.
+fn an_agent_grant_cannot_read_the_team_structure() {
+    // A grant gets its own record and its scoped values, nothing else: not the
+    // meta (MAC key, recipient names, groups, signers, other grants). On 0.13 a
+    // grant was a meta recipient and `circle`/`info` listed every name.
     let dir = TempDir::new().unwrap();
     let (key, _) = init_vault(&dir);
+    let (_, bob_pk) = init_vault(TempDir::new().unwrap());
     murk(&dir, &key)
         .args(["add", "A", "--vault", "test.murk"])
         .write_stdin("v1\n")
         .assert()
         .success();
-    let agent_key_path = dir.path().join("agent.key");
     murk(&dir, &key)
         .args([
-            "agent", "grant", "--name", "bot", "--only", "A", "--ttl", "1s",
+            "circle",
+            "authorize",
+            &bob_pk,
+            "--name",
+            "bobby",
+            "--vault",
+            "test.murk",
         ])
-        .arg("--out")
-        .arg(&agent_key_path)
-        .args(["--vault", "test.murk"])
         .assert()
         .success();
-    let agent_key = read_agent_key(&agent_key_path);
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    murk(&dir, &key)
+        .args(["group", "create", "opsteam", "--vault", "test.murk"])
+        .assert()
+        .success();
+    let bot = mint_exec_grant(&dir, &key, "bot", &["A"]);
+    mint_exec_grant(&dir, &key, "othergrant", &["A"]);
 
-    for args in [&["circle"][..], &["info"][..]] {
-        murk(&dir, &agent_key)
+    for args in [
+        &["circle"][..],
+        &["info"][..],
+        &["group", "ls"][..],
+        &["agent", "ls"][..],
+    ] {
+        let out = murk(&dir, &bot)
             .args(args)
             .args(["--vault", "test.murk"])
-            .assert()
-            .failure()
-            .stdout(predicate::str::contains("testuser").not())
-            .stderr(predicate::str::contains("grant bot expired"));
+            .output()
+            .unwrap();
+        let all = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        for secret_name in ["testuser", "bobby", "opsteam", "othergrant"] {
+            assert!(
+                !all.contains(secret_name),
+                "{args:?} showed {secret_name}: {all}"
+            );
+        }
     }
+
+    let v = vault_json(&dir);
+    assert!(
+        decrypt_with_grant(&bot, v["meta"].as_str().unwrap()).is_none(),
+        "the meta must not be encrypted to a grant"
+    );
+    let record = decrypt_with_grant(&bot, v["agents"][grant_pubkey(&bot)].as_str().unwrap())
+        .expect("the grant opens its own record");
+    let record = String::from_utf8(record).unwrap();
+    assert!(record.contains("\"bot\""), "{record}");
+    for leaked in ["othergrant", "mac_key", "bobby", "opsteam"] {
+        assert!(!record.contains(leaked), "record leaks {leaked}: {record}");
+    }
+    // It still reads its scope.
+    murk(&dir, &bot)
+        .args(["get", "A", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("v1"));
 }
 
 /// A vault with `A`, recipient `bob`, an expired grant `old` and a live grant
@@ -5553,6 +5612,115 @@ fn revoke_and_rotate_work_with_an_expired_grant_present() {
             .success()
             .stderr(predicate::str::contains("old").not());
     }
+}
+
+#[test]
+fn a_grant_trusts_only_the_signers_in_its_key_file() {
+    // A grant can't read the meta, so it trusts a vault only by its signature,
+    // and only against the signers its key file names. A vault last signed by
+    // anyone else, a teammate or the agent itself, is refused until the
+    // operator re-mints or MURK_TRUSTED_SIGNERS names the signer.
+    let dir = TempDir::new().unwrap();
+    let (alice, _) = init_vault(&dir);
+    let (bob, bob_pk) = init_vault(TempDir::new().unwrap());
+    murk(&dir, &alice)
+        .args(["add", "A", "--vault", "test.murk"])
+        .write_stdin("v1\n")
+        .assert()
+        .success();
+    murk(&dir, &alice)
+        .args([
+            "circle",
+            "authorize",
+            &bob_pk,
+            "--name",
+            "bob",
+            "--vault",
+            "test.murk",
+        ])
+        .assert()
+        .success();
+    let bot = mint_exec_grant(&dir, &alice, "bot", &["A"]);
+    murk(&dir, &bot)
+        .args(["get", "A", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("v1"));
+
+    // Bob saves: a trusted teammate on alice's machine, but not in bot's anchor.
+    murk(&dir, &bob)
+        .env("MURK_TRUSTED_SIGNERS", alice_entry(&dir, &alice))
+        .args(["add", "B", "--vault", "test.murk"])
+        .write_stdin("b\n")
+        .assert()
+        .success();
+    murk(&dir, &bot)
+        .args(["get", "A", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains(
+            "not a trusted signer in this grant's key file",
+        ));
+
+    // Naming bob in MURK_TRUSTED_SIGNERS adds him to the anchor.
+    let bob_entry = String::from_utf8(
+        murk(&dir, &bob)
+            .args(["trust", "--print-key", "--vault", "test.murk"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let bob_entry = bob_entry.lines().next().unwrap().trim().to_string();
+    murk(&dir, &bot)
+        .env("MURK_TRUSTED_SIGNERS", &bob_entry)
+        .args(["get", "A", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("v1"));
+}
+
+/// Alice's trusted-signer entry, as `murk trust --print-key` prints it.
+fn alice_entry(dir: &TempDir, alice: &str) -> String {
+    let out = murk(dir, alice)
+        .args(["trust", "--print-key", "--vault", "test.murk"])
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .trim()
+        .to_string()
+}
+
+#[test]
+fn a_grant_key_without_trusted_signers_is_told_to_re_mint() {
+    // A key file from before 0.14 (or with its anchor lines stripped) names no
+    // signer, so murk can't check the vault for it: refused, with the fix.
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    murk(&dir, &key)
+        .args(["add", "A", "--vault", "test.murk"])
+        .write_stdin("v1\n")
+        .assert()
+        .success();
+    let bot = mint_exec_grant(&dir, &key, "bot", &["A"]);
+    let bare: String = bot
+        .lines()
+        .filter(|l| l.starts_with("AGE-SECRET-KEY-"))
+        .collect();
+    murk(&dir, &bare)
+        .args(["get", "A", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(
+            predicate::str::contains("names no trusted signers")
+                .and(predicate::str::contains("--renew")),
+        );
 }
 
 #[test]
@@ -6071,7 +6239,8 @@ fn agent_init_grants_scoped_access_and_writes_key_file() {
         .success();
 
     let agent_key = read_agent_key(&agent_key_path);
-    assert!(agent_key.starts_with("AGE-SECRET-KEY-"));
+    assert!(agent_key.lines().any(|l| l.starts_with("AGE-SECRET-KEY-")));
+    assert!(agent_key.starts_with("# murk-trusted-signer: "));
 
     // The grant is recorded.
     murk(&dir, &key)
@@ -6128,7 +6297,10 @@ fn agent_init_sets_policy_and_streams_key_to_stdout() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::starts_with("AGE-SECRET-KEY-"))
+        .stdout(
+            predicate::str::starts_with("# murk-trusted-signer: ")
+                .and(predicate::str::contains("\nAGE-SECRET-KEY-")),
+        )
         .stderr(predicate::str::contains("key streamed to stdout"));
 
     // The allow-list is now set.

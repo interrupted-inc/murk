@@ -149,6 +149,18 @@ pub struct GrantEntry {
     pub issuer: String,
 }
 
+/// What an agent grant reads instead of the meta: its own grant record, in the
+/// vault's `agents` blob encrypted to the grant's key alone. It holds no MAC
+/// key, recipient names, groups, signers or other grants, so a grant can
+/// neither see the team's structure nor re-MAC a vault. The grant verifies
+/// the vault by its signature against the trusted signers in its key file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentMeta {
+    /// The grant's name (`murk agent grant --name`).
+    pub name: String,
+    pub grant: GrantEntry,
+}
+
 /// Agent access policy: machine-enforceable guardrails that travel with the
 /// vault. This is NOT access control — every recipient can read every shared
 /// secret by design, and an insider can use age directly or an old murk binary.
@@ -295,9 +307,14 @@ pub struct Murk {
     /// integrity then rests on signed git commits and the binary warns.
     pub signature: SignatureState,
     /// Pubkey of the identity that decrypted this state, or `None` for state
-    /// built by hand. The save path checks it against `grants` to refuse writes
-    /// by an agent grant (see [`crate::ensure_writable`]).
+    /// built by hand.
     pub loaded_by: Option<String>,
+    /// True when `loaded_by` is an agent grant: it opened its own `agents` blob
+    /// (or, for a 2.x vault, the meta lists it as a grant). Decided by what the
+    /// key could open, so a grant record naming an operator's key in the meta
+    /// never makes that operator a grant. The save path refuses writes by a
+    /// grant (see [`crate::ensure_writable`]).
+    pub loaded_as_grant: bool,
 }
 
 /// Manual `Debug`: prints key NAMES (schema-level metadata, not secret) but
@@ -318,6 +335,7 @@ impl std::fmt::Debug for Murk {
             .field("signers", &self.signers)
             .field("signature", &self.signature)
             .field("loaded_by", &self.loaded_by)
+            .field("loaded_as_grant", &self.loaded_as_grant)
             .finish()
     }
 }

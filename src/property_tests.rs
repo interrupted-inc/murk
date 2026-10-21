@@ -265,10 +265,10 @@ proptest! {
 
 // ── Agent-grant and partial-recipient boundaries (example-based) ──
 //
-// These pin the `is_agent` branch in `decrypt_vault`: an agent grant reads only
-// its scoped keys and never the shared tier, while a *listed* recipient that
-// cannot decrypt a shared value must fail the load rather than silently receive
-// a partial view.
+// These pin `decrypt_vault`'s side of the grant boundary (a grant never reads
+// through it; it loads only via `load_vault` and its key file's anchor), and
+// that a *listed* recipient that cannot decrypt a shared value fails the load
+// rather than silently receiving a partial view.
 
 /// Seal `vault` with a keyed MAC + a meta blob encrypted to `all`, carrying
 /// `grants` (so the MAC is the grant-aware scheme and `decrypt_vault` sees the
@@ -302,7 +302,7 @@ fn secret_entry(shared: String, private: BTreeMap<String, String>) -> types::Sec
 }
 
 #[test]
-fn agent_grant_reads_only_scoped_never_shared() {
+fn agent_grant_never_reads_through_decrypt_vault() {
     let op = make_party(); // a normal recipient
     let agent = make_party(); // the ephemeral grant identity
     let op_rec = op.recipient();
@@ -348,14 +348,28 @@ fn agent_grant_reads_only_scoped_never_shared() {
         },
     );
 
-    let all = [op_rec, agent_rec];
+    // The 3.x layout: the meta goes to the operator only, and the grant gets
+    // its own record in `agents`.
+    let record = types::AgentMeta {
+        name: "build-bot".into(),
+        grant: grants["build-bot"].clone(),
+    };
+    vault.agents.insert(
+        agent.pubkey.clone(),
+        encrypt_value(
+            &serde_json::to_vec(&record).unwrap(),
+            std::slice::from_ref(&agent_rec),
+        )
+        .unwrap(),
+    );
+    let mut legacy_shaped = vault.clone();
     seal_with_grants(
         &mut vault,
         &[
             (op.pubkey.clone(), "op".into()),
             (agent.pubkey.clone(), "build-bot".into()),
         ],
-        &all,
+        std::slice::from_ref(&op_rec),
         &grants,
     );
 
@@ -369,23 +383,27 @@ fn agent_grant_reads_only_scoped_never_shared() {
         op_view.values.get("GRANTED").map(|z| z.as_str()),
         Some("granted-value")
     );
+    assert!(!op_view.loaded_as_grant);
 
-    // Agent reads NO shared secret, and exactly its granted key via the scoped tier.
-    let agent_view = decrypt_vault(&vault, &agent.identity)
-        .expect("agent is a meta recipient + grant, so it decrypts");
+    // The grant never reads through `decrypt_vault`: it has no MAC key, and
+    // only `load_vault` checks its key file's trusted signers first.
+    assert!(decrypt_vault(&vault, &agent.identity).is_err());
     assert!(
-        agent_view.values.is_empty(),
-        "agent must not read any shared secret"
+        crate::decrypt_meta(&vault, &agent.identity)
+            .unwrap()
+            .is_none()
     );
-    assert_eq!(
-        agent_view
-            .private
-            .get("GRANTED")
-            .and_then(|m| m.get(&agent.pubkey))
-            .map(|z| z.as_str()),
-        Some("granted-value"),
-        "agent must read exactly its granted, scoped key"
+
+    // A 3.x vault that hands the grant the meta anyway (the pre-0.14 shape)
+    // does not make it a privileged reader: it fails closed.
+    legacy_shaped.agents.clear();
+    seal_with_grants(
+        &mut legacy_shaped,
+        &[(op.pubkey.clone(), "op".into())],
+        &[op.recipient(), agent.recipient()],
+        &grants,
     );
+    assert!(decrypt_vault(&legacy_shaped, &agent.identity).is_err());
 
     // Schema is covered by the grant-aware (v7) MAC too: a post-seal schema
     // insert must fail the load (exercises schema_mac_bytes on the v6+ path).

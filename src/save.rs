@@ -367,6 +367,19 @@ fn shared_recipient_change(
     (now != before, !now.is_subset(&before))
 }
 
+/// Who the meta blob is encrypted to: every recipient except agent grants. The
+/// meta holds the MAC key, names, groups and every grant; a grant gets only its
+/// own record, in its `agents` blob (see [`crate::agents`]).
+fn meta_recipients(
+    vault: &types::Vault,
+    current: &types::Murk,
+) -> Result<Vec<crypto::MurkRecipient>, MurkError> {
+    parse_recipients(&crate::agents::meta_recipients(
+        &vault.recipients,
+        &current.grants,
+    ))
+}
+
 /// Save the vault: compare against original state and only re-encrypt changed values.
 /// Unchanged values keep their original ciphertext for minimal git diffs.
 ///
@@ -391,9 +404,7 @@ pub fn save_vault(
     let pruned = prune_grants(vault, original, current, chrono::Utc::now())?;
     let current = pruned.as_ref().unwrap_or(current);
 
-    // The full recipient set encrypts the meta blob, so every recipient —
-    // including agent grants — can verify integrity and read group/grant state.
-    let recipients = parse_recipients(&vault.recipients)?;
+    let recipients = meta_recipients(vault, current)?;
 
     let prior_pin = crate::pins::read(vault_path).map_err(MurkError::Trust)?;
     advance_identity(vault, prior_pin.as_ref());
@@ -402,8 +413,7 @@ pub fn save_vault(
 
     // Agent grant pubkeys are deliberately excluded from the shared "everyone"
     // layer: a granted agent must read only the scoped values granted to it, not
-    // every shared secret. They remain meta recipients (above) but never receive
-    // the shared ciphertext.
+    // every shared secret. (Nor are they meta recipients; see above.)
     let grant_pubkeys: BTreeSet<&str> =
         current.grants.values().map(|g| g.pubkey.as_str()).collect();
     let shared_recipients: Vec<crypto::MurkRecipient> = vault
@@ -490,6 +500,7 @@ pub fn save_vault(
     }
 
     vault.secrets = new_secrets;
+    crate::agents::rebuild(vault, original, current)?;
 
     let meta = build_meta(vault, current, &saver, prior_pin.as_ref());
     crate::validate::meta(&meta)
@@ -1332,20 +1343,21 @@ mod tests {
         // First load pins the operator as this machine's trusted signer.
         load_vault(ps).unwrap();
 
-        // Add the legacy grant the way an older murk wrote it, then re-MAC and
-        // re-sign as the operator so the vault is otherwise intact.
+        // Add the legacy grant the way an older murk wrote it (no expiry), in
+        // the 3.x layout (meta to the operator only, the grant's own record in
+        // `agents`), then re-MAC and re-sign as the operator so the vault is
+        // otherwise intact.
         let operator = make_identity(&sk);
         let mut meta = decrypt_meta(&vault, &operator).unwrap().unwrap();
-        meta.grants.insert(
-            "old".into(),
-            types::GrantEntry {
-                pubkey: agent_pk.clone(),
-                scope: vec!["API_KEY".into()],
-                issued_at: "2026-01-01T00:00:00Z".into(),
-                expires_at: String::new(),
-                issuer: pk.clone(),
-            },
-        );
+        let grant = types::GrantEntry {
+            pubkey: agent_pk.clone(),
+            scope: vec!["API_KEY".into()],
+            issued_at: "2026-01-01T00:00:00Z".into(),
+            expires_at: String::new(),
+            issuer: pk.clone(),
+        };
+        meta.grants.insert("old".into(), grant.clone());
+        vault.agents = crate::agents::blobs_for(&meta.grants, &[]).unwrap();
         vault.secrets.get_mut("API_KEY").unwrap().private.insert(
             agent_pk.clone(),
             encrypt_value(b"REAL", &[make_recipient(&agent_pk)]).unwrap(),
@@ -1353,17 +1365,17 @@ mod tests {
         vault.generation += 1;
         let mac_key = decode_mac_key(meta.mac_key.as_deref().unwrap()).unwrap();
         meta.mac = compute_mac(&vault, &meta.groups, &meta.grants, Some(&mac_key));
-        vault.meta = encrypt_value(
-            &serde_json::to_vec(&meta).unwrap(),
-            &[make_recipient(&pk), make_recipient(&agent_pk)],
-        )
-        .unwrap();
+        vault.meta =
+            encrypt_value(&serde_json::to_vec(&meta).unwrap(), &[make_recipient(&pk)]).unwrap();
         vault.sig = None;
         vault.sig = sign_vault(&vault, &operator);
         vault::write(&path, &vault).unwrap();
 
         let as_operator = load_vault(ps);
-        unsafe { std::env::set_var("MURK_KEY", &agent_sk) };
+        // The agent's key file names the operator as its trusted signer.
+        let vk = operator.signing_key().unwrap().verifying_key();
+        let agent_key_file = format!("{} {pk}:{vk}\n{agent_sk}\n", crate::agents::ANCHOR_PREFIX);
+        unsafe { std::env::set_var("MURK_KEY", &agent_key_file) };
         let as_agent = load_vault(ps);
         unsafe { std::env::remove_var("MURK_KEY") };
         match prev_home {
@@ -1379,5 +1391,77 @@ mod tests {
         assert!(err.to_string().contains("grant old has no expiry"), "{err}");
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_grant_record_bound_to_the_operators_key_does_not_make_them_a_grant() {
+        // A meta writer could bind a grant record to an operator's own key (a
+        // "ghost" grant): that made the operator read-only, or, expired, locked
+        // them out. The key opened the meta, so it is no grant: it reads and
+        // writes as before, and the next save drops the record.
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (sk, pk) = generate_keypair();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.murk");
+        let ps = path.to_str().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", home.path()) };
+        unsafe { std::env::set_var("MURK_KEY", &sk) };
+        unsafe { std::env::remove_var("MURK_KEY_FILE") };
+
+        let mut vault = signed_test_vault(&pk, &make_recipient(&pk));
+        let state = types::Murk {
+            values: HashMap::from([("API_KEY".into(), secret("REAL"))]),
+            recipients: HashMap::from([(pk.clone(), "alice".to_string())]),
+            ..Default::default()
+        };
+        save_vault(ps, &mut vault, &state, &state).unwrap();
+        load_vault(ps).unwrap();
+
+        let operator = make_identity(&sk);
+        let mut meta = decrypt_meta(&vault, &operator).unwrap().unwrap();
+        meta.grants.insert(
+            "ghost".into(),
+            types::GrantEntry {
+                pubkey: pk.clone(),
+                scope: vec!["API_KEY".into()],
+                issued_at: "2026-01-01T00:00:00Z".into(),
+                expires_at: "2026-01-02T00:00:00Z".into(),
+                issuer: pk.clone(),
+            },
+        );
+        vault.generation += 1;
+        let mac_key = decode_mac_key(meta.mac_key.as_deref().unwrap()).unwrap();
+        meta.mac = compute_mac(&vault, &meta.groups, &meta.grants, Some(&mac_key));
+        vault.meta =
+            encrypt_value(&serde_json::to_vec(&meta).unwrap(), &[make_recipient(&pk)]).unwrap();
+        vault.sig = None;
+        vault.sig = sign_vault(&vault, &operator);
+        vault::write(&path, &vault).unwrap();
+
+        let loaded = load_vault(ps);
+        let saved = loaded.as_ref().ok().map(|(v, m, _)| {
+            let mut v = v.clone();
+            let mut current = m.clone();
+            current.values.insert("NEW".into(), secret("n"));
+            save_vault(ps, &mut v, m, &current)
+        });
+        let reloaded = load_vault(ps);
+        unsafe { std::env::remove_var("MURK_KEY") };
+        match prev_home {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+
+        let (_, murk, _) = loaded.expect("the operator still loads");
+        assert!(!murk.loaded_as_grant);
+        assert!(!murk.grants.contains_key("ghost"));
+        saved.unwrap().expect("the operator can still write");
+        let (_, murk, _) = reloaded.unwrap();
+        assert_eq!(murk.values["NEW"].as_str(), "n");
+        assert!(murk.grants.is_empty(), "the save drops the ghost record");
     }
 }
