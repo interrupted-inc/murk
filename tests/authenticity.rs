@@ -2524,7 +2524,8 @@ fn merging_the_removal_into_a_branch_the_removed_member_wrote_to() {
         .stderr(predicate::str::contains(
             "merge it with the murk merge driver",
         ))
-        .stderr(predicate::str::contains("drops every vault change"));
+        .stderr(predicate::str::contains("drops every vault change"))
+        .stderr(predicate::str::contains("can still carry their changes"));
 
     // The merge stops on the vault, naming Bob's side.
     let (merged, stderr) = git_merge(&alice, &repo, "feature");
@@ -2532,7 +2533,8 @@ fn merging_the_removal_into_a_branch_the_removed_member_wrote_to() {
     assert!(
         stderr.contains("ours failed its authenticity check")
             && stderr.contains("signed by bob")
-            && stderr.contains("drops every vault change"),
+            && stderr.contains("drops every vault change")
+            && stderr.contains("can still carry their changes"),
         "{stderr}"
     );
 
