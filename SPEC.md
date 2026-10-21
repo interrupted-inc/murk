@@ -339,22 +339,26 @@ An agent grant is never a recipient of the meta, which holds the MAC key, every 
 - the `scoped` copies of the keys in its scope, encrypted to its pubkey, and
 - its own record: `agents[<grant pubkey>]`, an age blob encrypted to its pubkey alone, holding `{"name": "<grant name>", "grant": {pubkey, scope, issued_at, expires_at, issuer}}` (the same fields as its `meta.grants` entry, and nothing else). murk rewrites the blob when the grant record changes and drops it with the grant.
 
-A grant cannot check the MAC, so it trusts a vault only by its signature, against signers named outside the vault: its key file's **anchor**. When `murk agent grant` (or `agent init`, `agent connect`, `--renew`) writes a key file, it puts one line per trusted signer above the key, in the trusted-signer entry format (see Trust):
+A grant cannot check the MAC, so it trusts a vault only by its signature, against signers named outside the vault: its key file's **anchor**. When `murk agent grant` (or `agent init`, `agent connect`, `--renew`) writes a key file, it puts one line per trusted signer above the key, in the trusted-signer entry format (see Trust), then the grant's name and expiry:
 
 ```
 # murk-trusted-signer: age1…:<base64 verifying key>
 # murk-trusted-signer: ssh-ed25519 AAAA…
+# murk-grant-id: <grant name>
+# murk-grant-expires: <RFC 3339 UTC, the record's expires_at>
 AGE-SECRET-KEY-1…
 ```
 
-The lines list this machine's pinned trusted signers for the vault plus the minting key; grant keys are never among them. age ignores `#` lines, so the file is still a valid age identity file. Re-minting or renewing the grant rewrites the lines. `MURK_TRUSTED_SIGNERS` adds to the anchor.
+The lines list this machine's pinned trusted signers for the vault plus the minting key; grant keys are never among them. age ignores `#` lines, so the file is still a valid age identity file. Re-minting or renewing the grant rewrites the lines, the expiry included. `MURK_TRUSTED_SIGNERS` adds to the anchor. A `murk-grant-id` or `murk-grant-expires` line that is empty, unparseable or repeated is refused, never ignored.
 
 A load whose key has an `agents` entry and cannot open the meta is a grant load, in this order, before anything is handed out:
 
 1. **Anchor.** The key-file lines plus `MURK_TRUSTED_SIGNERS`. If both are empty, the load is refused: "this grant key names no trusted signers, so murk can't check the vault it reads: ask the operator to re-mint the grant (`murk agent grant --renew`), or set MURK_TRUSTED_SIGNERS". A key file from before 0.14 gets this message.
 2. **Signature.** The top-level view-2 `sig` must be by a signer in the anchor and verify under the anchor's key for it (the `ssh-ed25519` line for SSH signers). Nothing inside the vault, the `signers` registry included, is read for this. An unsigned vault, a signer not in the anchor and a signature that doesn't verify are each refused.
-3. **Record.** The grant's own `agents` blob is decrypted and its TTL checked; an expired grant fails closed.
+3. **Record.** The grant's own `agents` blob is decrypted. If the key file names a grant (`murk-grant-id`), the record must be for that grant, or the load is refused. The grant is bounded by the earlier of the record's `expires_at` and the key file's `murk-grant-expires`; past either, it fails closed. So no record a trusted signer saves later, an extended expiry included, keeps a key file working past the expiry it was minted with. A key file without `murk-grant-expires` (minted before murk wrote it, or a bare `AGE-SECRET-KEY-1` line, as murk-action passes its `murk-key` input) is bounded by the record alone, and murk warns once per process that the key file doesn't bound the grant and should be re-minted. murk-action users bound CI through its trusted-signers input, which names who may sign the vault the key reads.
 4. **Values.** Only then are its `scoped` values decrypted.
+
+The key file's expiry bounds every copy of that key file, but not its holder: whoever can edit the file can remove the line and fall back to the record. Like the record's TTL, it is a guardrail in the murk binary, not access control (see THREAT_MODEL.md).
 
 A grant load reads and writes no trust pin, so it has no rollback check. Every write by a grant is refused ("agent grants are read-only"). A key that can open the meta always loads as an operator, even with an `agents` entry. A 2.x vault still encrypted its meta to grants: a grant key reading one is refused until the operator saves it with 0.14 or later and re-mints the grant.
 

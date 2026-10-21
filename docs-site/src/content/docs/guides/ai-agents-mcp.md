@@ -191,10 +191,16 @@ Three things to keep in mind:
 
 - **The TTL is enforced at read time — by murk, not cryptography.** Past its
   expiry a grant fails closed at every entry point (`murk get`, `agent exec`,
-  MCP, the bindings), and `agent ls` flags it. But age keys can't
-  self-destruct, and old vault versions stay readable in git, so a leaked
-  grant key still decrypts history with raw age. Revoke + rotate is the real
-  close.
+  MCP, the bindings), and `agent ls` flags it. The key file carries the
+  expiry too (`# murk-grant-expires:`, next to its trusted-signer lines), and
+  murk enforces the earlier of the key file's and the vault's, so a copy of
+  the key file stops working when its TTL ends whatever a later vault says. A
+  key file without that line (minted by an older murk, or a bare key line
+  like murk-action's `murk-key`) falls back to the vault's record, and murk
+  warns once that it should be re-minted with `--renew`; murk-action users
+  bound CI with its trusted-signers input. But age keys can't self-destruct,
+  and old vault versions stay readable in git, so a leaked grant key still
+  decrypts history with raw age. Revoke + rotate is the real close.
 - **The key is a bearer credential.** Whoever holds the key file has the
   access. Treat it like the secret it unlocks.
 - **Real isolation is the OS's job.** An agent running as you, with read

@@ -331,7 +331,9 @@ pub(crate) fn mint_grant(
     // The key file is headed by the signers the grant may trust: a grant
     // can't read the meta, so this anchor is how it tells a genuine vault from
     // a forged one. The grant record keeps the same set, so revoking one of
-    // those signers later revokes this grant (see `revoke_recipient`).
+    // those signers later revokes this grant (see `revoke_recipient`). The
+    // grant's id and expiry follow, so the key file bounds the grant by itself
+    // whatever record a later vault carries for it.
     let signers = try_or_die(murk_cli::agents::anchor_signers(
         vault_path, &vault, &identity,
     ));
@@ -340,7 +342,9 @@ pub(crate) fn mint_grant(
         g.anchors.clone_from(&entry.anchors);
     }
     let anchor = murk_cli::agents::anchor_lines(&signers);
-    let key_text = zeroize::Zeroizing::new(format!("{anchor}{}\n", agent_secret.expose_secret()));
+    let bound = murk_cli::agents::grant_lines(name, &entry.expires_at);
+    let key_text =
+        zeroize::Zeroizing::new(format!("{anchor}{bound}{}\n", agent_secret.expose_secret()));
 
     // Stage the key file before the vault records the grant, and rename it
     // into place only once the save succeeded. An unwritable destination fails
