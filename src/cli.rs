@@ -478,6 +478,9 @@ pub enum AgentCommand {
         /// Where to write the agent key: a path, or `-` for stdout
         #[arg(long)]
         out: Option<String>,
+        /// Replace a file already at --out (refused by default)
+        #[arg(long, requires = "out")]
+        force: bool,
         /// Vault filename
         #[arg(long, env = "MURK_VAULT", default_value = ".murk")]
         vault: String,
@@ -501,6 +504,9 @@ pub enum AgentCommand {
         /// Where to write the agent key: a path, or `-` for stdout
         #[arg(long)]
         out: Option<String>,
+        /// Replace a file already at --out (refused by default)
+        #[arg(long, requires = "out")]
+        force: bool,
         /// Vault filename
         #[arg(long, env = "MURK_VAULT", default_value = ".murk")]
         vault: String,

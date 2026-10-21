@@ -39,6 +39,43 @@ fn stderr_of(cmd: &mut assert_cmd::Command) -> String {
 
 // ── circle ──
 
+/// A private key pasted where a public key or member belongs is refused
+/// without being echoed into the terminal or a CI log.
+#[test]
+fn private_key_given_as_recipient_is_never_echoed() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    let secret = {
+        use age::secrecy::ExposeSecret;
+        age::x25519::Identity::generate()
+            .to_string()
+            .expose_secret()
+            .to_string()
+    };
+    murk(&dir, &key)
+        .args(["group", "create", "ops", "--vault", "test.murk"])
+        .assert()
+        .success();
+    let refusals: [&[&str]; 3] = [
+        &["circle", "authorize", &secret],
+        &["circle", "revoke", &secret],
+        &["group", "add", "ops", "--member", &secret],
+    ];
+    for args in refusals {
+        let out = murk(&dir, &key)
+            .args(args)
+            .args(["--vault", "test.murk"])
+            .assert()
+            .failure();
+        let stderr = String::from_utf8_lossy(&out.get_output().stderr).to_string();
+        assert!(stderr.contains("private key"), "{args:?}: {stderr}");
+        assert!(
+            !stderr.contains("AGE-SECRET-KEY-1"),
+            "{args:?} echoed the key: {stderr}"
+        );
+    }
+}
+
 /// `ssh:` alone reads `~/.ssh/id_ed25519.pub`, and a `~` in an explicit path
 /// expands to the same `HOME`.
 #[test]

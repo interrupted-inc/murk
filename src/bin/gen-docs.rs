@@ -89,15 +89,15 @@ const ENV_GROUPS: &[(&str, &[EnvVar])] = &[
         &[
             EnvVar {
                 name: "MURK_STRICT",
-                summary: "Truthy fails closed rather than let a secret touch disk, and disables the automatic key lookup under `~/.config/murk/keys`.",
+                summary: "Fails closed rather than let a secret touch disk, and disables the automatic key lookup under `~/.config/murk/keys`. On for any value except unset, empty, `0`, `false`, `no` and `off`, so a typo turns it on.",
             },
             EnvVar {
                 name: "MURK_AGENT",
-                summary: "Marks the process as running for an AI agent. Forces strict mode unconditionally. `murk agent exec` sets it on its child.",
+                summary: "Marks the process as running for an AI agent. Forces strict mode unconditionally. `murk agent exec` sets it on its child. Read like `MURK_STRICT`: any value except unset, empty, `0`, `false`, `no` and `off` turns it on.",
             },
             EnvVar {
                 name: "MURK_SELF_SCOPE",
-                summary: "Truthy holds your own key to the vault's agent allow-tag policy, as if you were an agent. Implied inside an agent context.",
+                summary: "Holds your own key to the vault's agent allow-tag policy, as if you were an agent. Implied inside an agent context. Read like `MURK_STRICT`.",
             },
             EnvVar {
                 name: "MURK_NO_SIGNER_PIN",

@@ -74,10 +74,7 @@ pub(crate) fn cmd_authorize(
         // runs over the full key set (including ssh-rsa) so rotation of an
         // rsa key is still detected even though we refuse to authorize it.
         let pinned = try_or_die(murk_cli::decrypt_meta(&vault, &identity))
-            .and_then(|m| {
-                let pins = m.github_pins.get(username)?.clone();
-                Some(pins)
-            })
+            .map(|m| murk_cli::github::pins_for(&m.github_pins, username))
             .unwrap_or_default();
 
         if !force && let Err(msg) = murk_cli::github::check_pins(username, &all_keys, &pinned) {
@@ -159,7 +156,7 @@ pub(crate) fn cmd_authorize(
             .iter()
             .map(|(_, k)| murk_cli::github::fingerprint(k))
             .collect();
-        current.github_pins.insert(username.to_string(), new_pins);
+        murk_cli::github::set_pins(&mut current.github_pins, username, new_pins);
 
         save_vault(vault_path, &mut vault, &original, &current);
 
@@ -527,10 +524,12 @@ pub(crate) fn cmd_recipients(json: bool, vault_path: &str) {
     let path = Path::new(vault_path);
     let vault = try_or_die(vault::read(path));
 
-    let secret_key = murk_cli::resolve_key_for_vault(vault_path)
-        .ok()
-        .map(|s| s.expose_secret().to_string());
-    let entries = try_or_die(murk_cli::list_recipients(&vault, secret_key.as_deref()));
+    // Borrowed from the SecretString, never copied into a plain String.
+    let secret_key = murk_cli::resolve_key_for_vault(vault_path).ok();
+    let entries = try_or_die(murk_cli::list_recipients(
+        &vault,
+        secret_key.as_ref().map(|s| s.expose_secret()),
+    ));
 
     if json {
         let list: Vec<serde_json::Value> = entries

@@ -152,6 +152,8 @@ impl MurkMcp {
             )]));
         }
 
+        // `ContentBlock::text` takes an owned `String`, so this one copy of the
+        // value is unavoidable: it is the response the client asked for.
         match murk_cli::get_secret(&st.murk, &key, &st.pubkey) {
             Some(value) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 value.to_string(),
@@ -188,7 +190,8 @@ impl MurkMcp {
             return Ok(tool_err(&e.to_string()));
         }
         // Resolve each key under the grant; fail closed on anything out of scope.
-        let mut secrets: Vec<(String, String)> = Vec::with_capacity(only.len());
+        // Values are borrowed from the zeroizing vault state, never copied.
+        let mut secrets: Vec<(&str, &str)> = Vec::with_capacity(only.len());
         for key in &only {
             let Some(value) = murk_cli::get_secret(&st.murk, key, &st.pubkey) else {
                 return Ok(tool_err(&format!(
@@ -210,7 +213,7 @@ impl MurkMcp {
                     "{key}: value contains a NUL byte and cannot be injected as an environment variable"
                 )));
             }
-            secrets.push((key.clone(), value.to_string()));
+            secrets.push((key, value));
         }
         run_command(&command, &secrets).await
     }
@@ -290,7 +293,7 @@ async fn read_capped<R: tokio::io::AsyncRead + Unpin>(
 /// stream past the cap, or a run past the timeout, kills the child.
 async fn run_command(
     command: &[String],
-    secrets: &[(String, String)],
+    secrets: &[(&str, &str)],
 ) -> Result<CallToolResult, McpError> {
     let mut cmd = TokioCommand::new(&command[0]);
     cmd.args(&command[1..]);

@@ -47,6 +47,7 @@ fn main() {
 
 fn run() {
     murk_cli::hardening::disable_core_dumps();
+    murk_cli::hardening::deny_same_user_inspection();
     let cli = Cli::parse();
 
     match cli.command {
@@ -285,6 +286,7 @@ fn run() {
                 ttl,
                 renew,
                 out,
+                force,
                 vault,
             } => cmd_agent_grant(
                 &name,
@@ -292,6 +294,7 @@ fn run() {
                 &ttl,
                 renew,
                 out.as_deref(),
+                force,
                 &murk_cli::resolve_vault_path(&vault),
             ),
             AgentCommand::Init {
@@ -300,6 +303,7 @@ fn run() {
                 allow_tag,
                 ttl,
                 out,
+                force,
                 vault,
             } => cmd_agent_init(
                 &name,
@@ -307,6 +311,7 @@ fn run() {
                 &allow_tag,
                 &ttl,
                 out.as_deref(),
+                force,
                 &murk_cli::resolve_vault_path(&vault),
             ),
             AgentCommand::Ls { json, vault } => {

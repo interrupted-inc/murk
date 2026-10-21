@@ -151,6 +151,7 @@ complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcomm
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l out -d 'Where to write the agent key: a path, or `-` for stdout' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l renew -d 'Replace a live grant with this name: revoke its key, mint a fresh one'
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l force -d 'Replace a file already at --out (refused by default)'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l name -d 'Grant name (used to revoke it later)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l only -d 'Keys the agent can read (required — fails closed)' -r
@@ -158,6 +159,7 @@ complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcomm
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l ttl -d 'Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l out -d 'Where to write the agent key: a path, or `-` for stdout' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l vault -d 'Vault filename' -r
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l force -d 'Replace a file already at --out (refused by default)'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from ls" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from ls" -l json -d 'Output as JSON'

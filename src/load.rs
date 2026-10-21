@@ -154,15 +154,15 @@ fn resolve_meta_state(
         });
     }
 
-    let mac_key = meta.mac_key.as_deref().and_then(decode_mac_key);
+    let mac_key = meta.mac_key.as_deref().and_then(|k| decode_mac_key(k));
     if !verify_mac(
         vault,
         &meta.groups,
         &meta.grants,
         &meta.mac,
-        mac_key.as_ref(),
+        mac_key.as_deref(),
     ) {
-        let expected = compute_mac(vault, &meta.groups, &meta.grants, mac_key.as_ref());
+        let expected = compute_mac(vault, &meta.groups, &meta.grants, mac_key.as_deref());
         return Err(MurkError::Integrity(format!(
             "vault may have been tampered with (expected {expected}, got {})",
             meta.mac
@@ -541,7 +541,7 @@ mod tests {
             ),
             (
                 "meta.mac_key: not a 64-character hex key",
-                Box::new(|m| m.mac_key = Some("zz".into())),
+                Box::new(|m| m.mac_key = Some(zeroize::Zeroizing::new("zz".into()))),
             ),
             (
                 "meta.groups key: invalid group name \\u{1b}[31mprod",

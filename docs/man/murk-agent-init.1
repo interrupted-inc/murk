@@ -4,7 +4,7 @@
 .SH NAME
 init \- One\-shot onboarding: optionally set the agent allow\-list, mint a scoped grant, and print how to run the agent safely
 .SH SYNOPSIS
-\fBmurk agent init\fR [\fB\-\-allow\-tag\fR] [\fB\-\-ttl\fR] [\fB\-\-out\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-name\fR> <\fB\-\-only\fR> 
+\fBmurk agent init\fR [\fB\-\-allow\-tag\fR] [\fB\-\-ttl\fR] [\fB\-\-out\fR] [\fB\-\-force\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-name\fR> <\fB\-\-only\fR> 
 .SH DESCRIPTION
 One\-shot onboarding: optionally set the agent allow\-list, mint a scoped grant, and print how to run the agent safely
 .SH OPTIONS
@@ -23,6 +23,9 @@ Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)
 .TP
 \fB\-\-out\fR \fI<OUT>\fR
 Where to write the agent key: a path, or `\-` for stdout
+.TP
+\fB\-\-force\fR
+Replace a file already at \-\-out (refused by default)
 .TP
 \fB\-\-vault\fR \fI<VAULT>\fR [default: .murk]
 Vault filename

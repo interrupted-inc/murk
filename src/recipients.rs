@@ -69,9 +69,13 @@ pub fn authorize_recipient(
     use crate::error::MurkError;
 
     if crypto::parse_recipient(pubkey).is_err() {
-        return Err(MurkError::Recipient(format!(
-            "invalid public key: {pubkey}"
-        )));
+        return Err(MurkError::Recipient(
+            if crate::validate::looks_like_private_key(pubkey) {
+                "that is a private key, not a public key — authorize its public key (age1… or ssh-ed25519 …) and keep the private key out of command lines".into()
+            } else {
+                format!("invalid public key: {}", crate::validate::show(pubkey))
+            },
+        ));
     }
 
     if vault.recipients.contains(&pubkey.to_string()) {
@@ -127,7 +131,8 @@ pub fn revoke_recipient(
             .collect();
         if matched.is_empty() {
             return Err(MurkError::Recipient(format!(
-                "recipient not found: {recipient}"
+                "recipient not found: {}",
+                crate::validate::show_key(recipient)
             )));
         }
         if matched.len() > 1 {

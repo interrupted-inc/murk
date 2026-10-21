@@ -165,8 +165,8 @@ murk agent grant --name codex --only DATABASE_URL --only PG_PASSWORD --ttl 30m
 ```
 
 It writes the agent key to `~/.config/murk/agent-keys/<vault-hash>-<name>`
-(or `--out PATH`, or `--out -` to stream it to stdout) and prints how to use
-it. Run the agent with that key and `MURK_AGENT=1` (agent context, strict is
+(or `--out PATH`, which refuses an existing file unless you pass `--force`, or
+`--out -` to stream it to stdout) and prints how to use it. Run the agent with that key and `MURK_AGENT=1` (agent context, strict is
 forced) so it won't fall back to your stored key:
 
 ```bash

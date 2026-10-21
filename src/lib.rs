@@ -63,10 +63,11 @@ mod property_tests;
 // Re-exports: keep the flat murk_cli::foo() API for main.rs
 pub use agent::{AgentPlan, AgentPlanKey, agent_plan, format_agent_plan_text};
 pub use env::{
-    EnvrcStatus, KeySource, agent_key_file_path, agent_keys_dir, dotenv_has_murk_key,
-    env_permission_warning, home_short, key_file_path, locate_key, parse_env, resolve_key,
-    resolve_key_for_vault, resolve_key_with_source, secret_file_loose_mode, strip_key_env,
-    write_envrc, write_key_ref_to_dotenv, write_key_to_dotenv, write_key_to_file,
+    EnvrcStatus, KeySource, StagedKeyFile, UncommittedKeyFile, agent_key_file_path, agent_keys_dir,
+    dotenv_has_murk_key, env_permission_warning, home_short, key_file_path, locate_key, parse_env,
+    resolve_key, resolve_key_for_vault, resolve_key_with_source, secret_file_loose_mode,
+    stage_key_file, strip_key_env, write_envrc, write_key_ref_to_dotenv, write_key_to_dotenv,
+    write_key_to_file,
 };
 pub use error::MurkError;
 pub use export::{

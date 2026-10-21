@@ -210,6 +210,7 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand --out 'Where to write the agent key: a path, or `-` for stdout'
             cand --vault 'Vault filename'
             cand --renew 'Replace a live grant with this name: revoke its key, mint a fresh one'
+            cand --force 'Replace a file already at --out (refused by default)'
             cand -h 'Print help'
             cand --help 'Print help'
         }
@@ -220,6 +221,7 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand --ttl 'Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)'
             cand --out 'Where to write the agent key: a path, or `-` for stdout'
             cand --vault 'Vault filename'
+            cand --force 'Replace a file already at --out (refused by default)'
             cand -h 'Print help'
             cand --help 'Print help'
         }

@@ -70,7 +70,7 @@ murk agent grant --name codex --only DATABASE_URL --only PG_PASSWORD --ttl 30m -
 
 A grant name stays unique: re-minting a live name is refused unless you pass `--renew`, which revokes the old key and mints a fresh one under the same name in a single vault write — handy when a short TTL lapses mid-session.
 
-It writes the agent key to `~/.config/murk/agent-keys/<vault-hash>-<name>` (or `--out PATH`, or `--out -` to stream it to stdout) and prints how to use it. Run the agent with that key and `MURK_AGENT=1` (agent context — strict is forced) so it won't fall back to your stored key:
+It writes the agent key to `~/.config/murk/agent-keys/<vault-hash>-<name>` (or `--out PATH`, which refuses an existing file unless you pass `--force`, or `--out -` to stream it to stdout) and prints how to use it. Run the agent with that key and `MURK_AGENT=1` (agent context — strict is forced) so it won't fall back to your stored key:
 
 ```bash
 MURK_KEY_FILE=~/.config/murk/agent-keys/<...>-codex MURK_AGENT=1 \

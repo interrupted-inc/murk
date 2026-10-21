@@ -7,6 +7,7 @@
 
 use crate::types;
 use std::collections::BTreeMap;
+use zeroize::Zeroizing;
 
 /// Compute an integrity MAC over the vault's secrets, scoped entries, grouped
 /// entries, recipients, schema, and group membership.
@@ -620,22 +621,25 @@ pub(crate) fn verify_mac(
     constant_time_eq(stored_mac.as_bytes(), expected.as_bytes())
 }
 
-/// Generate a random 32-byte BLAKE3 MAC key, returned as hex.
-pub(crate) fn generate_mac_key() -> String {
-    let key: [u8; 32] = rand::random();
-    key.iter().fold(String::new(), |mut s, b| {
+/// Generate a random 32-byte BLAKE3 MAC key, returned as hex. Both the raw
+/// bytes and the hex are wiped on drop; the hex is sized up front so writing it
+/// never reallocates.
+pub(crate) fn generate_mac_key() -> Zeroizing<String> {
+    let key: Zeroizing<[u8; 32]> = Zeroizing::new(rand::random());
+    let mut hex = Zeroizing::new(String::with_capacity(64));
+    for b in key.iter() {
         use std::fmt::Write;
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+        let _ = write!(hex, "{b:02x}");
+    }
+    hex
 }
 
-/// Decode a hex-encoded 32-byte key.
-pub(crate) fn decode_mac_key(hex: &str) -> Option<[u8; 32]> {
+/// Decode a hex-encoded 32-byte key into a buffer wiped on drop.
+pub(crate) fn decode_mac_key(hex: &str) -> Option<Zeroizing<[u8; 32]>> {
     if hex.len() != 64 {
         return None;
     }
-    let mut key = [0u8; 32];
+    let mut key = Zeroizing::new([0u8; 32]);
     for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
         key[i] = u8::from_str_radix(std::str::from_utf8(chunk).ok()?, 16).ok()?;
     }
@@ -1381,7 +1385,7 @@ mod tests {
             let _ = write!(s, "{b:02x}");
             s
         });
-        assert_eq!(hex, rehex);
+        assert_eq!(hex.as_str(), rehex);
     }
 
     #[test]

@@ -556,7 +556,7 @@ _murk() {
             return 0
             ;;
         murk__subcmd__agent__subcmd__grant)
-            opts="-h --name --only --ttl --renew --out --vault --help"
+            opts="-h --name --only --ttl --renew --out --force --vault --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -730,7 +730,7 @@ _murk() {
             return 0
             ;;
         murk__subcmd__agent__subcmd__init)
-            opts="-h --name --only --allow-tag --ttl --out --vault --help"
+            opts="-h --name --only --allow-tag --ttl --out --force --vault --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

@@ -138,6 +138,29 @@ pub(crate) fn cmd_agent_exec(
     );
 }
 
+/// Where [`mint_grant`] hands off the agent key.
+#[derive(Clone, Copy)]
+pub(crate) enum KeyOut<'a> {
+    /// murk's own per-grant key file (`agent_key_file_path`).
+    Default,
+    /// Printed to stdout (`--out -`); never stored.
+    Stdout,
+    /// An explicit `--out` path. An existing file there is replaced only with
+    /// `force`: it may be anyone's file, the operator's own key included.
+    Path { path: &'a str, force: bool },
+}
+
+impl<'a> KeyOut<'a> {
+    /// From the `--out` and `--force` flags.
+    pub(crate) fn from_flags(out: Option<&'a str>, force: bool) -> Self {
+        match out {
+            None => Self::Default,
+            Some("-") => Self::Stdout,
+            Some(path) => Self::Path { path, force },
+        }
+    }
+}
+
 /// Mint a scoped agent grant in one locked transaction and hand off the
 /// ephemeral key. When `allow_tags` is `Some`, the vault's agent allow-list is
 /// set first (so scope validation reflects it) — used by `agent init`; `None`
@@ -149,7 +172,7 @@ pub(crate) fn mint_grant(
     only: &[String],
     ttl: &str,
     renew: bool,
-    out: Option<&str>,
+    out: KeyOut<'_>,
     allow_tags: Option<&[String]>,
     vault_path: &str,
 ) -> Option<String> {
@@ -157,6 +180,20 @@ pub(crate) fn mint_grant(
 
     try_or_die(murk_cli::validate_grant_name(name));
     let ttl_dur = try_or_die(murk_cli::parse_ttl(ttl));
+
+    // Refuse an occupied --out before the vault changes: failing at the key
+    // write would leave a live grant whose key was never handed off. The write
+    // itself is exclusive too, so a file that appears in between is not replaced.
+    if let KeyOut::Path { path, force: false } = out
+        && std::fs::symlink_metadata(path).is_ok()
+    {
+        die(
+            &format_args!(
+                "{path} already exists — refusing to overwrite it (it may be a key); pass --force to replace it"
+            ),
+            1,
+        );
+    }
 
     let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
     let issuer = identity.pubkey_string().unwrap_or_else(|e| die(&e, 1));
@@ -218,7 +255,32 @@ pub(crate) fn mint_grant(
         ttl_dur,
     ));
 
-    save_vault(vault_path, &mut vault, &original, &current);
+    // Stage the key file before the vault records the grant, and rename it
+    // into place only once the save succeeded. An unwritable destination fails
+    // here, leaving no live grant whose key nobody holds; a failed save drops
+    // the staged file, leaving any existing key (the one `--renew` would
+    // replace) byte-for-byte as it was.
+    let secret = agent_secret.expose_secret();
+    let staged = match out {
+        KeyOut::Stdout => None,
+        KeyOut::Path { path, force } => Some(try_or_die(murk_cli::stage_key_file(
+            Path::new(path),
+            secret,
+            force,
+        ))),
+        // murk's own slot for this grant: whatever is there is the key of a
+        // renewed or revoked grant of the same name and vault.
+        KeyOut::Default => {
+            let path = try_or_die(murk_cli::agent_key_file_path(vault_path, name));
+            Some(try_or_die(murk_cli::stage_key_file(&path, secret, true)))
+        }
+    };
+
+    // `die` exits without running destructors, so drop the staged key first.
+    if let Err(e) = murk_cli::save_vault(vault_path, &mut vault, &original, &current) {
+        drop(staged);
+        die(&e, 1);
+    }
 
     eprintln!(
         "{} granted {} read access to {} key{} until {}",
@@ -232,25 +294,36 @@ pub(crate) fn mint_grant(
         eprintln!("  {} {}", "▸".dimmed(), key.bold());
     }
 
-    // Hand off the ephemeral key.
-    let secret = agent_secret.expose_secret();
-    match out {
-        Some("-") => {
-            println!("{secret}");
+    let Some(staged) = staged else {
+        // stdout cannot be taken back, so the key is only streamed once saved.
+        println!("{secret}");
+        eprintln!(
+            "{} key streamed to stdout — capture it now; it is not stored",
+            "⚠".yellow()
+        );
+        return None;
+    };
+    let target = staged.target().display().to_string();
+    match staged.commit() {
+        Ok(()) => Some(target),
+        // The grant is saved, so its key must not be lost: keep the staged
+        // file and hand that over instead of the destination.
+        Err(uncommitted) => {
+            let reason = uncommitted.reason.clone();
+            let kept = uncommitted.keep().unwrap_or_else(|e| {
+                die(
+                    &format_args!(
+                        "{reason}\n{e}\nthe grant is saved but its key was not written — run `murk agent revoke {name}`"
+                    ),
+                    1,
+                )
+            });
             eprintln!(
-                "{} key streamed to stdout — capture it now; it is not stored",
-                "⚠".yellow()
+                "{} {reason}; the new key is at {} instead",
+                "⚠".yellow(),
+                kept.display()
             );
-            None
-        }
-        Some(path) => {
-            try_or_die(murk_cli::write_key_to_file(Path::new(path), secret));
-            Some(path.to_string())
-        }
-        None => {
-            let path = try_or_die(murk_cli::agent_key_file_path(vault_path, name));
-            try_or_die(murk_cli::write_key_to_file(&path, secret));
-            Some(path.display().to_string())
+            Some(kept.display().to_string())
         }
     }
 }
@@ -271,8 +344,10 @@ pub(crate) fn cmd_agent_grant(
     ttl: &str,
     renew: bool,
     out: Option<&str>,
+    force: bool,
     vault_path: &str,
 ) {
+    let out = KeyOut::from_flags(out, force);
     if let Some(path) = mint_grant(name, only, ttl, renew, out, None, vault_path) {
         print_grant_handoff(only, &path);
     }
@@ -440,7 +515,7 @@ pub(crate) fn cmd_agent_connect(
         );
         p.display().to_string()
     } else {
-        let Some(p) = mint_grant(name, only, ttl, false, None, allow, vault_path) else {
+        let Some(p) = mint_grant(name, only, ttl, false, KeyOut::Default, allow, vault_path) else {
             return;
         };
         p
@@ -554,6 +629,7 @@ pub(crate) fn cmd_agent_init(
     allow_tags: &[String],
     ttl: &str,
     out: Option<&str>,
+    force: bool,
     vault_path: &str,
 ) {
     let allow = if allow_tags.is_empty() {
@@ -561,6 +637,7 @@ pub(crate) fn cmd_agent_init(
     } else {
         Some(allow_tags)
     };
+    let out = KeyOut::from_flags(out, force);
     if let Some(path) = mint_grant(name, only, ttl, false, out, allow, vault_path) {
         print_grant_handoff(only, &path);
         print_isolation_snippet();

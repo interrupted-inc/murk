@@ -175,9 +175,10 @@ pub struct Meta {
     /// or `load` fails as tampering.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sig: Option<VaultSignature>,
-    /// BLAKE3 keyed MAC key (hex-encoded, 32 bytes). Generated at init, stored encrypted.
+    /// BLAKE3 keyed MAC key (hex-encoded, 32 bytes). Generated at init, stored
+    /// encrypted, and wiped from memory when the meta is dropped.
     #[serde(default, skip_serializing_if = "Option::is_none", alias = "hmac_key")]
-    pub mac_key: Option<String>,
+    pub mac_key: Option<Zeroizing<String>>,
     /// Pinned GitHub key fingerprints: username → [SHA256:...].
     /// Used for TOFU (Trust On First Use) verification on `authorize github:user`.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -341,7 +342,7 @@ mod tests {
     #[test]
     fn meta_debug_redacts_mac_key() {
         let meta = Meta {
-            mac_key: Some("deadbeefcafef00d-sentinel-mac-key".into()),
+            mac_key: Some(Zeroizing::new("deadbeefcafef00d-sentinel-mac-key".into())),
             ..Default::default()
         };
 
