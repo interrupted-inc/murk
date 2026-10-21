@@ -626,7 +626,7 @@ impl InspectedVault {
                     readmit,
                 },
                 &trust::head_of(vault_path),
-                trust::commit_of(vault_path).as_deref(),
+                trust::accepted_commit_of(vault_path).as_deref(),
             )))
         })
     }
@@ -678,7 +678,7 @@ impl InspectedVault {
                         fresh,
                         trust::Acceptance::Load,
                         &trust::head_of(vault_path),
-                        trust::commit_of(vault_path).as_deref(),
+                        trust::accepted_commit_of(vault_path).as_deref(),
                     );
                     if self.assessment.env_signers.is_some() {
                         let prior = fresh.cloned().unwrap_or_default();
