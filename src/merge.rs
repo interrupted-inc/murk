@@ -23,6 +23,12 @@ pub struct MergeConflict {
 pub struct MergeResult {
     pub vault: Vault,
     pub conflicts: Vec<MergeConflict>,
+    /// Secrets both sides kept from the ancestor while both re-encrypted for a
+    /// recipient change. Every ciphertext then differs from the ancestor, so
+    /// only their plaintext shows which side changed the value. The merged
+    /// vault holds ours' entry for each until [`resolve_rekeyed`] decides it;
+    /// any key left here is a conflict.
+    pub rekeyed: BTreeSet<String>,
 }
 
 /// Three-way merge of vault files at the struct level.
@@ -32,6 +38,7 @@ pub struct MergeResult {
 /// On conflict, the conflicting field keeps the "ours" value.
 pub fn merge_vaults(base: &Vault, ours: &Vault, theirs: &Vault) -> MergeResult {
     let mut conflicts = Vec::new();
+    let mut rekeyed = BTreeSet::new();
 
     // -- Static fields: take ours --
     let version = ours.version.clone();
@@ -68,6 +75,7 @@ pub fn merge_vaults(base: &Vault, ours: &Vault, theirs: &Vault) -> MergeResult {
         ours_changed_recipients,
         theirs_changed_recipients,
         &mut conflicts,
+        &mut rekeyed,
     );
 
     // -- Meta: take ours for now; the CLI command handles regeneration --
@@ -99,7 +107,11 @@ pub fn merge_vaults(base: &Vault, ours: &Vault, theirs: &Vault) -> MergeResult {
         sig: None,
     };
 
-    MergeResult { vault, conflicts }
+    MergeResult {
+        vault,
+        conflicts,
+        rekeyed,
+    }
 }
 
 /// Merge the header policy three-way. The policy is a security guardrail, so a
@@ -326,18 +338,19 @@ fn merge_secrets(
     ours_changed_recipients: bool,
     theirs_changed_recipients: bool,
     conflicts: &mut Vec<MergeConflict>,
+    rekeyed: &mut BTreeSet<String>,
 ) -> BTreeMap<String, SecretEntry> {
     // If a side changed recipients, all its ciphertext differs from base, so
     // ciphertext-equality cannot detect that side's edits. Route on which
     // side(s) re-encrypted: use the re-encrypted side as the new baseline and
-    // apply the other side's key-level diffs; if both did, only additions and
-    // removals can be merged without decryption.
+    // apply the other side's key-level diffs; if both did, keys both kept are
+    // left for a plaintext comparison (`rekeyed`).
     match (ours_changed_recipients, theirs_changed_recipients) {
         (true, false) => {
             merge_secrets_with_reencrypted_side(base, ours, theirs, "theirs", conflicts)
         }
         (false, true) => merge_secrets_with_reencrypted_side(base, theirs, ours, "ours", conflicts),
-        (true, true) => merge_secrets_both_reencrypted(base, ours, theirs, conflicts),
+        (true, true) => merge_secrets_both_reencrypted(base, ours, theirs, conflicts, rekeyed),
         (false, false) => merge_secrets_normal(base, ours, theirs, conflicts),
     }
 }
@@ -603,12 +616,15 @@ fn merge_secrets_with_reencrypted_side(
 }
 
 /// Both sides changed recipients — all ciphertext on both sides differs from base.
-/// Without decryption we can only merge keys that were added/removed (not modified).
+/// Keys added or removed on both sides merge here. A key from the ancestor that
+/// either side still has keeps ours' state and goes to `rekeyed`: only its
+/// plaintext can show which side changed (or removed) it, see [`resolve_rekeyed`].
 fn merge_secrets_both_reencrypted(
     base: &Vault,
     ours: &Vault,
     theirs: &Vault,
     conflicts: &mut Vec<MergeConflict>,
+    rekeyed: &mut BTreeSet<String>,
 ) -> BTreeMap<String, SecretEntry> {
     let all_keys: BTreeSet<&str> = base
         .secrets
@@ -626,12 +642,18 @@ fn merge_secrets_both_reencrypted(
         let in_theirs = theirs.secrets.get(key);
 
         match (in_base, in_ours, in_theirs) {
-            // Both have it and it was in base — take ours.
-            (Some(_), Some(o), Some(_)) | (None, Some(o), None) => {
+            (Some(_), Some(o), _) => {
+                result.insert(key.to_string(), o.clone());
+                rekeyed.insert(key.to_string());
+            }
+            (Some(_), None, Some(_)) => {
+                rekeyed.insert(key.to_string());
+            }
+            (None, Some(o), None) => {
                 result.insert(key.to_string(), o.clone());
             }
-            // Removals — honor them.
-            (Some(_), Some(_) | None, None) | (Some(_), None, Some(_)) | (None, None, None) => {}
+            // Removed on both sides, or impossible.
+            (Some(_) | None, None, None) => {}
             (None, None, Some(t)) => {
                 result.insert(key.to_string(), t.clone());
             }
@@ -646,6 +668,129 @@ fn merge_secrets_both_reencrypted(
     }
 
     result
+}
+
+/// One ciphertext slot of a secret: the shared value, a recipient's private
+/// override, or a group's value.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Slot {
+    Shared,
+    Private(String),
+    Grouped(String),
+}
+
+impl Slot {
+    fn all(entry: &SecretEntry) -> impl Iterator<Item = Slot> + '_ {
+        let shared = (!entry.shared.is_empty()).then_some(Slot::Shared);
+        shared
+            .into_iter()
+            .chain(entry.private.keys().cloned().map(Slot::Private))
+            .chain(entry.grouped.keys().cloned().map(Slot::Grouped))
+    }
+
+    fn ciphertext<'a>(&self, entry: Option<&'a SecretEntry>) -> Option<&'a str> {
+        let entry = entry?;
+        match self {
+            Slot::Shared => (!entry.shared.is_empty()).then_some(entry.shared.as_str()),
+            Slot::Private(pk) => entry.private.get(pk).map(String::as_str),
+            Slot::Grouped(group) => entry.grouped.get(group).map(String::as_str),
+        }
+    }
+
+    fn set(&self, entry: &mut SecretEntry, ciphertext: Option<&str>) {
+        match (self, ciphertext) {
+            (Slot::Shared, ct) => entry.shared = ct.unwrap_or_default().to_string(),
+            (Slot::Private(pk), Some(ct)) => {
+                entry.private.insert(pk.clone(), ct.to_string());
+            }
+            (Slot::Private(pk), None) => {
+                entry.private.remove(pk);
+            }
+            (Slot::Grouped(group), Some(ct)) => {
+                entry.grouped.insert(group.clone(), ct.to_string());
+            }
+            (Slot::Grouped(group), None) => {
+                entry.grouped.remove(group);
+            }
+        }
+    }
+}
+
+/// Whether two slot values hold the same plaintext (absent equals absent).
+/// `None` when `identity` can't decrypt one of them.
+fn same_plaintext(
+    a: Option<&str>,
+    b: Option<&str>,
+    identity: &crate::crypto::MurkIdentity,
+) -> Option<bool> {
+    match (a, b) {
+        _ if a == b => Some(true),
+        (Some(a), Some(b)) => {
+            let a = crate::decrypt_value(a, identity).ok()?;
+            let b = crate::decrypt_value(b, identity).ok()?;
+            Some(*a == *b)
+        }
+        _ => Some(false),
+    }
+}
+
+/// Decide each secret in `rekeyed` (see [`MergeResult::rekeyed`]) by plaintext,
+/// slot by slot: a slot changed (or removed) on one side relative to the
+/// ancestor takes that side, and a slot changed differently on both sides is a
+/// conflict. A slot this key can't read is a conflict unless both sides hold
+/// the same plaintext, and so is any difference when the ancestor is not
+/// trusted (`base_trusted`), since it is then no authority on what changed.
+/// Conflicting slots keep ours. Drains `rekeyed`.
+fn resolve_rekeyed(
+    merged: &mut Vault,
+    [base, ours, theirs]: [&Vault; 3],
+    base_trusted: bool,
+    identity: &crate::crypto::MurkIdentity,
+    rekeyed: &mut BTreeSet<String>,
+    conflicts: &mut Vec<MergeConflict>,
+) {
+    for key in std::mem::take(rekeyed) {
+        let (b, o, t) = (
+            base.secrets.get(&key),
+            ours.secrets.get(&key),
+            theirs.secrets.get(&key),
+        );
+        let slots: BTreeSet<Slot> = [b, o, t]
+            .into_iter()
+            .flatten()
+            .flat_map(Slot::all)
+            .collect();
+        let mut entry = SecretEntry::default();
+        for slot in slots {
+            let (bc, oc, tc) = (slot.ciphertext(b), slot.ciphertext(o), slot.ciphertext(t));
+            let agree = same_plaintext(oc, tc, identity);
+            let changed = |side| same_plaintext(bc, side, identity).map(|same| !same);
+            let pick = match (base_trusted, changed(oc), changed(tc)) {
+                _ if agree == Some(true) => Ok(oc),
+                (true, Some(false), Some(_)) => Ok(tc),
+                (true, Some(true), Some(false)) => Ok(oc),
+                (true, Some(true), Some(true)) => {
+                    Err("changed differently on both sides while both changed recipients")
+                }
+                _ => Err(
+                    "both sides changed recipients and this key cannot tell which side changed it",
+                ),
+            };
+            let ciphertext = pick.unwrap_or_else(|reason| {
+                conflicts.push(MergeConflict {
+                    field: format!("secrets.{key}"),
+                    reason: reason.into(),
+                });
+                oc
+            });
+            slot.set(&mut entry, ciphertext);
+        }
+        if Slot::all(&entry).next().is_some() {
+            merged.secrets.insert(key, entry);
+        } else {
+            merged.secrets.remove(&key);
+        }
+    }
 }
 
 /// Output of the merge driver: the merge result and whether meta was regenerated.
@@ -711,8 +856,18 @@ pub fn run_merge_driver(
         &theirs_vault,
         vault_path,
         &mut result.conflicts,
+        &mut result.rekeyed,
     )?
     .is_some();
+    // Without a key (or before a side passed its checks), a re-keyed secret
+    // could have lost a value change on either side: never merge it silently.
+    for key in std::mem::take(&mut result.rekeyed) {
+        result.conflicts.push(MergeConflict {
+            field: format!("secrets.{key}"),
+            reason: "both sides changed recipients; only a key can tell which side changed it"
+                .into(),
+        });
+    }
     let needs_key = if meta_regenerated {
         None
     } else if !same_covered_content(&result.vault, &ours_vault) {
@@ -794,6 +949,7 @@ pub fn regenerate_meta(
     theirs: &Vault,
     vault_path: &str,
     conflicts: &mut Vec<MergeConflict>,
+    rekeyed: &mut BTreeSet<String>,
 ) -> Result<Option<String>, String> {
     use crate::{compute_mac, crypto, decrypt_meta, encrypt_value, parse_recipients, resolve_key};
     use age::secrecy::ExposeSecret;
@@ -820,6 +976,8 @@ pub fn regenerate_meta(
     } else {
         None
     };
+    let sides = [base, ours, theirs];
+    resolve_rekeyed(merged, sides, base_authentic, &identity, rekeyed, conflicts);
 
     let ours_meta = decrypt_meta(ours, &identity).map_err(|e| format!("ours: {e}"))?;
     let theirs_meta = decrypt_meta(theirs, &identity).map_err(|e| format!("theirs: {e}"))?;
@@ -2692,7 +2850,17 @@ mod tests {
 
         let mut conflicts = Vec::new();
         let out = trusting(&secret, &pubkey, || {
-            regenerate_meta(&mut merged, &ours, &ours, &theirs, ".murk", &mut conflicts).unwrap()
+            let rekeyed = &mut BTreeSet::new();
+            regenerate_meta(
+                &mut merged,
+                &ours,
+                &ours,
+                &theirs,
+                ".murk",
+                &mut conflicts,
+                rekeyed,
+            )
+            .unwrap()
         });
 
         assert!(
@@ -2762,6 +2930,7 @@ mod tests {
                 &theirs,
                 ".murk",
                 &mut result.conflicts,
+                &mut result.rekeyed,
             )
         })
         .unwrap();
@@ -2823,6 +2992,7 @@ mod tests {
                 &theirs,
                 ".murk",
                 &mut result.conflicts,
+                &mut result.rekeyed,
             )
         })
         .unwrap();
@@ -2894,6 +3064,84 @@ mod tests {
     }
 
     #[test]
+    fn rekeyed_secrets_follow_the_side_whose_plaintext_changed() {
+        use crate::testutil::{generate_keypair, make_identity, make_recipient};
+
+        let (secret, pubkey) = generate_keypair();
+        let identity = make_identity(&secret);
+        // Each call is a fresh ciphertext, as after a re-key.
+        let enc = |value: &str| SecretEntry {
+            shared: crate::encrypt_value(value.as_bytes(), &[make_recipient(&pubkey)]).unwrap(),
+            ..Default::default()
+        };
+        let vault = |entries: &[(&str, &str)]| Vault {
+            secrets: entries
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), enc(v)))
+                .collect(),
+            ..base_vault()
+        };
+        // KEEP: theirs changed. MINE: ours changed. BOTH: both, differently.
+        // GONE: theirs removed it unchanged. EDIT: theirs removed, ours changed.
+        let base = vault(&[
+            ("KEEP", "1"),
+            ("MINE", "1"),
+            ("BOTH", "1"),
+            ("GONE", "1"),
+            ("EDIT", "1"),
+        ]);
+        let ours = vault(&[
+            ("KEEP", "1"),
+            ("MINE", "2"),
+            ("BOTH", "2"),
+            ("GONE", "1"),
+            ("EDIT", "2"),
+        ]);
+        let theirs = vault(&[("KEEP", "2"), ("MINE", "1"), ("BOTH", "3")]);
+        let mut merged = ours.clone();
+        let mut rekeyed: BTreeSet<String> = base.secrets.keys().cloned().collect();
+        let mut conflicts = Vec::new();
+
+        let sides = [&base, &ours, &theirs];
+        resolve_rekeyed(
+            &mut merged,
+            sides,
+            true,
+            &identity,
+            &mut rekeyed,
+            &mut conflicts,
+        );
+
+        assert_eq!(value_of(&merged, "KEEP", &identity), "2");
+        assert_eq!(value_of(&merged, "MINE", &identity), "2");
+        assert!(!merged.secrets.contains_key("GONE"));
+        let mut fields: Vec<&str> = conflicts.iter().map(|c| c.field.as_str()).collect();
+        fields.sort_unstable();
+        assert_eq!(fields, ["secrets.BOTH", "secrets.EDIT"]);
+        assert!(rekeyed.is_empty());
+
+        // An ancestor nobody trusted decides nothing: every difference conflicts.
+        let mut merged = ours.clone();
+        let mut rekeyed: BTreeSet<String> = ["KEEP".to_string()].into();
+        let mut conflicts = Vec::new();
+        resolve_rekeyed(
+            &mut merged,
+            sides,
+            false,
+            &identity,
+            &mut rekeyed,
+            &mut conflicts,
+        );
+        assert_eq!(value_of(&merged, "KEEP", &identity), "1");
+        assert_eq!(conflicts.len(), 1);
+    }
+
+    fn value_of(vault: &Vault, key: &str, identity: &crate::crypto::MurkIdentity) -> String {
+        let ct = &vault.secrets[key].shared;
+        String::from_utf8(crate::decrypt_value(ct, identity).unwrap().to_vec()).unwrap()
+    }
+
+    #[test]
     fn regenerate_meta_refuses_invalid_meta_instead_of_dropping_it() {
         use crate::testutil::{ENV_LOCK, generate_keypair, make_recipient};
 
@@ -2920,7 +3168,16 @@ mod tests {
 
         let mut conflicts = Vec::new();
         let out = trusting(&secret, &pubkey, || {
-            regenerate_meta(&mut merged, &ours, &ours, &theirs, ".murk", &mut conflicts)
+            let rekeyed = &mut BTreeSet::new();
+            regenerate_meta(
+                &mut merged,
+                &ours,
+                &ours,
+                &theirs,
+                ".murk",
+                &mut conflicts,
+                rekeyed,
+            )
         });
 
         assert_eq!(
@@ -2983,6 +3240,7 @@ mod tests {
                 &theirs,
                 ".murk",
                 &mut result.conflicts,
+                &mut result.rekeyed,
             )
         })
         .unwrap();
@@ -3074,6 +3332,7 @@ mod tests {
             &theirs,
             vault_path,
             &mut result.conflicts,
+            &mut result.rekeyed,
         )
         .unwrap();
         unsafe { std::env::remove_var("MURK_KEY") };
@@ -3185,6 +3444,7 @@ mod tests {
             &theirs,
             vault_path,
             &mut result.conflicts,
+            &mut result.rekeyed,
         );
         // The same ancestor with a registry key this machine never pinned
         // (a forged 0.13 history) is still refused.
@@ -3199,6 +3459,7 @@ mod tests {
             &theirs,
             vault_path,
             &mut forged.conflicts,
+            &mut forged.rekeyed,
         );
         unsafe { std::env::remove_var("MURK_KEY") };
         match prev_home {
