@@ -605,14 +605,34 @@ fn verdict(
 /// compared with the common ancestor rather than the pin (merging an older
 /// branch is normal), and group changes are judged against the ancestor's
 /// membership. `changed` says whether the side differs from the ancestor.
+/// `upgraded` says whether the merge has a side written by murk 0.14 (one
+/// with a vault id or a counter).
+///
+/// A side written by murk 0.13 carries no authenticated identity or order,
+/// so its content cannot be checked for rollback or for being another vault.
+/// Once this vault has 0.14 state — in the pin, or on the other side — such
+/// a side may only stand for history it shares with the ancestor: if it
+/// changed anything it is refused, rather than letting an old signed
+/// revision (or another 0.13 vault of the team) override newer content.
 /// Returns the reason a side is refused.
 pub fn check_merge_side(
     vault_path: &str,
     side: &Loaded<'_>,
     base: Option<(&types::Vault, Option<&Groups>)>,
     changed: bool,
+    upgraded: bool,
 ) -> Result<(), String> {
     let pin = pins::read(vault_path)?;
+    let legacy = side.vault.vault_id.is_empty() && side.vault.generation == 0;
+    let pin_upgraded = pin
+        .as_ref()
+        .is_some_and(|p| p.v >= pins::PIN_VERSION && (!p.vault_id.is_empty() || p.generation > 0));
+    if legacy && changed && (upgraded || pin_upgraded) {
+        return Err(
+            "rolled back: it is a murk 0.13 revision that changes the vault, and this vault has since been saved by murk 0.14, so its content cannot be checked for rollback or for being another vault — apply its intended change with murk after merging"
+                .into(),
+        );
+    }
     let env_signers = env_trusted_signers()?;
     let side_pin = pin.map(|mut p| {
         p.generation = 0;
@@ -621,8 +641,8 @@ pub fn check_merge_side(
             if let Some(groups) = groups {
                 p.groups = canonical_groups(groups);
             }
-            // A branch that forked before the vault got its id (murk 0.13)
-            // carries none; that is the ancestor's state, not another vault.
+            // A side that forked before the vault got its id (murk 0.13) and
+            // changed nothing is the ancestor's state, not another vault.
             if side.vault.vault_id.is_empty() && base.vault_id.is_empty() {
                 p.vault_id.clear();
             }

@@ -1192,3 +1192,174 @@ fn a_vault_cannot_set_murk_settings() {
         .failure()
         .stderr(predicate::str::contains("refusing to set MURK_STRICT"));
 }
+
+// ── Rollback through a merge of 0.13-era history ──
+
+const ROLLBACK_ALICE_KEY: &str = include_str!("fixtures/v0_13_rollback_alice.test-only.key");
+const ROLLBACK_LEAKED: &str = include_str!("fixtures/v0_13_rollback_leaked.murk");
+const ROLLBACK_ROTATED: &str = include_str!("fixtures/v0_13_rollback_rotated.murk");
+const ROLLBACK_STAGING: &str = include_str!("fixtures/v0_13_rollback_staging.murk");
+
+/// A repo whose `.murk` has 0.13-era history: `DB_URL` leaked, then rotated
+/// (two alice-signed 0.13 revisions), the merge driver configured. A branch
+/// `side` forks from the rotation commit and commits `side_file`, if given,
+/// as `.murk`.
+/// On `main`, alice then trusts the vault with 0.14 and saves (adds `EXTRA`).
+/// Returns alice's machine, the repo and the path of her key file.
+fn legacy_history_repo(base: &Path, side_file: Option<&str>) -> (Machine, PathBuf, PathBuf) {
+    let alice = Machine::new(base, "alice");
+    let key = base.join("alice.key");
+    fs::write(&key, ROLLBACK_ALICE_KEY).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let repo = base.join("repo");
+    fs::create_dir_all(&repo).unwrap();
+    git_ok(&repo, &["init", "-q", "-b", "main"]);
+    let driver = assert_cmd::cargo::cargo_bin("murk");
+    git_ok(
+        &repo,
+        &[
+            "config",
+            "merge.murk.driver",
+            &format!("'{}' merge-driver %O %A %B %P", driver.display()),
+        ],
+    );
+    fs::write(repo.join(".gitattributes"), ".murk merge=murk\n").unwrap();
+    fs::write(repo.join(".murk"), ROLLBACK_LEAKED).unwrap();
+    commit(&repo, "0.13: DB_URL set (later leaked)");
+    fs::write(repo.join(".murk"), ROLLBACK_ROTATED).unwrap();
+    commit(&repo, "0.13: DB_URL rotated");
+
+    git_ok(&repo, &["checkout", "-q", "-b", "side"]);
+    if let Some(file) = side_file {
+        fs::write(repo.join(".murk"), file).unwrap();
+        commit(&repo, "side branch");
+    }
+    git_ok(&repo, &["checkout", "-q", "main"]);
+
+    let as_alice = |args: &[&str]| {
+        let mut cmd = alice.murk(&repo);
+        cmd.env("MURK_KEY_FILE", &key).args(args);
+        cmd
+    };
+    as_alice(&["trust", "--yes"]).assert().success();
+    as_alice(&["add", "EXTRA"])
+        .write_stdin("extra\n")
+        .assert()
+        .success();
+    commit(&repo, "0.14: add EXTRA");
+    (alice, repo, key)
+}
+
+/// `git merge side` as alice, with the driver; returns (success, stderr).
+fn merge_side(alice: &Machine, repo: &Path, key: &Path) -> (bool, String) {
+    let mut merge = std::process::Command::new("git");
+    merge
+        .args(["-c", "commit.gpgsign=false", "merge", "--no-edit", "side"])
+        .current_dir(repo)
+        .env("HOME", &alice.home)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "t@t")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "t@t");
+    for var in common::MURK_CONTEXT_VARS {
+        merge.env_remove(var);
+    }
+    merge.env("MURK_KEY_FILE", key);
+    let out = merge.output().unwrap();
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// An attacker branch forks from the 0.13 rotation commit and commits the
+/// older, leaked revision (genuinely signed by alice, public in history).
+/// Merging it after the vault was saved by 0.14 must not roll `DB_URL` back.
+#[test]
+fn a_merge_cannot_roll_back_to_an_older_0_13_revision() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo, key) = legacy_history_repo(base.path(), Some(ROLLBACK_LEAKED));
+    let (merged, stderr) = merge_side(&alice, &repo, &key);
+    assert!(!merged, "the merge must not complete: {stderr}");
+    assert!(
+        stderr.contains("theirs failed its authenticity check") && stderr.contains("0.13"),
+        "{stderr}"
+    );
+    alice
+        .murk(&repo)
+        .env("MURK_KEY_FILE", &key)
+        .args(["get", "DB_URL"])
+        .assert()
+        .stdout(predicate::str::contains("LEAKED").not());
+}
+
+/// The cross-vault variant: the attacker branch commits another 0.13 vault of
+/// the team (same recipients, signed by a trusted teammate) as `.murk`.
+#[test]
+fn a_merge_cannot_substitute_another_0_13_vault() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo, key) = legacy_history_repo(base.path(), Some(ROLLBACK_STAGING));
+    let (merged, stderr) = merge_side(&alice, &repo, &key);
+    assert!(!merged, "the merge must not complete: {stderr}");
+    assert!(
+        stderr.contains("theirs failed its authenticity check") && stderr.contains("0.13"),
+        "{stderr}"
+    );
+    alice
+        .murk(&repo)
+        .env("MURK_KEY_FILE", &key)
+        .args(["get", "DB_URL"])
+        .assert()
+        .stdout(predicate::str::contains("STAGING").not());
+}
+
+/// The legitimate case next to them: a branch forked in the 0.13 era and
+/// saved by 0.14 since (by bob, on his machine) merges cleanly with a main
+/// also saved by 0.14.
+#[test]
+fn branches_upgraded_separately_from_0_13_history_merge_cleanly() {
+    const BOB_KEY: &str = include_str!("fixtures/v0_13_rollback_bob.test-only.key");
+    let base = TempDir::new().unwrap();
+    let (alice, repo, key) = legacy_history_repo(base.path(), None);
+    let bob = Machine::new(base.path(), "bob");
+    let bob_key = base.path().join("bob.key");
+    fs::write(&bob_key, BOB_KEY).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&bob_key, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    git_ok(&repo, &["checkout", "-q", "side"]);
+    let as_bob = |args: &[&str]| {
+        let mut cmd = bob.murk(&repo);
+        cmd.env("MURK_KEY_FILE", &bob_key).args(args);
+        cmd
+    };
+    as_bob(&["trust", "--yes"]).assert().success();
+    as_bob(&["add", "FEATURE"])
+        .write_stdin("feature\n")
+        .assert()
+        .success();
+    commit(&repo, "0.14 on side: add FEATURE");
+    git_ok(&repo, &["checkout", "-q", "main"]);
+    let (merged, stderr) = merge_side(&alice, &repo, &key);
+    assert!(merged, "{stderr}");
+    for (k, v) in [
+        ("DB_URL", "ROTATED-db-value\n"),
+        ("EXTRA", "extra\n"),
+        ("FEATURE", "feature\n"),
+    ] {
+        alice
+            .murk(&repo)
+            .env("MURK_KEY_FILE", &key)
+            .args(["get", k])
+            .assert()
+            .success()
+            .stdout(v);
+    }
+}
