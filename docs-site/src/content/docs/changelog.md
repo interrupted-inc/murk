@@ -25,18 +25,16 @@ newer murk reads vaults written by older 0.x versions, but a vault written by a
 newer murk may not open in an older one. The [roadmap](/roadmap/) lists the
 format guarantee 1.0 will add.
 
-## Installing a specific version
+## Installing a specific version of the CLI
 
-Pick a version from the releases page, then install it through your channel of
-choice:
+Pick a version from the releases page, then install it:
 
 ```bash
 cargo install murk-cli --version X.Y.Z
 ```
 
-```bash
-pip install murk-secrets==X.Y.Z
-```
+To pin the separate Python library instead, run
+`pip install murk-secrets==X.Y.Z`. It does not include the CLI.
 
 Pre-built binaries for each release are attached to its GitHub release. Recent
 releases carry signed build provenance on every channel (the crates.io package
