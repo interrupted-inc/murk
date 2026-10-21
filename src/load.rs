@@ -638,6 +638,7 @@ impl InspectedVault {
                         pin.trusted = prior.trusted;
                         pin.ever_trusted = prior.ever_trusted;
                         pin.signers = prior.signers;
+                        pin.added_by = prior.added_by;
                         pin.removed = prior.removed;
                         pin.groups = prior.groups;
                     }

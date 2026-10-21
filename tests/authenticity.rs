@@ -1448,6 +1448,25 @@ fn set_pin_generation(holder: &Machine, repo: &Path, generation: u64) {
     edit_pin(holder, repo, |pin| pin["generation"] = generation.into());
 }
 
+/// Re-sign the vault at `path` as `as_signer` with `holder`'s age signing key:
+/// a valid signature by whoever holds the verifying key the registry gives
+/// for `as_signer`.
+fn resign_as(path: &Path, as_signer: &str, holder: &Machine) {
+    let id = murk_cli::crypto::parse_identity(&holder.secret_key()).unwrap();
+    let sk = id.signing_key().unwrap();
+    let mut vault: murk_cli::types::Vault =
+        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    vault.sig = None;
+    let mut msg = b"murk.vault.sig.v2\n".to_vec();
+    msg.extend(serde_json::to_vec(&vault).unwrap());
+    vault.sig = Some(murk_cli::types::VaultSignature {
+        signer: as_signer.to_string(),
+        v: 2,
+        sig: sk.sign(&msg),
+    });
+    fs::write(path, serde_json::to_string_pretty(&vault).unwrap()).unwrap();
+}
+
 /// Rule: removal is permanent in the pin. After machine A (Alice's) accepts a
 /// vault that removes Bob, nothing re-trusts Bob there: an older revision
 /// listing him (alice-signed) loaded from a branch, his own older signed
@@ -1604,6 +1623,91 @@ fn removal_is_permanent_on_the_machine_that_accepted_it() {
         .assert()
         .success()
         .stdout("back\n");
+}
+
+/// Rule: a key-registry entry counts only while whoever added it is trusted.
+/// Mallory, a trusted signer, registers her own signing key under Bob's name
+/// before Bob ever signs; Alice's machine pins it on Mallory's word, and even
+/// accepts a vault "signed by Bob" with it — which proves only that Mallory
+/// holds that key. Once Alice removes Mallory, the entry stops counting: a
+/// vault signed as Bob with Mallory's key is refused as unconfirmed.
+#[test]
+fn a_registry_entry_stops_counting_once_whoever_added_it_is_removed() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo) = alice_repo(base.path());
+    let bob = Machine::new(base.path(), "bob");
+    bob.init(&base.path().join("bob-scratch"), "bob");
+    let mallory = Machine::new(base.path(), "mallory");
+    mallory.init(&base.path().join("mallory-scratch"), "mallory");
+    let mallory_key = mallory.key_file();
+    authorize(&alice, &repo, &bob, "bob");
+    authorize(&alice, &repo, &mallory, "mallory");
+
+    // Mallory's machine binds her signing key to Bob; her saves vouch for it.
+    mallory
+        .with_key(&repo, &mallory_key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    let (entry, _) = mallory.signer_entry(&repo);
+    let mallory_vk = entry.rsplit_once(':').unwrap().1.to_string();
+    edit_pin(&mallory, &repo, |pin| {
+        pin["signers"][bob.pubkey()] = mallory_vk.clone().into();
+    });
+    mallory
+        .with_key(&repo, &mallory_key)
+        .args(["add", "M1"])
+        .write_stdin("m1\n")
+        .assert()
+        .success();
+    alice.murk(&repo).args(["get", "M1"]).assert().failure();
+    alice
+        .murk(&repo)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+
+    // While Mallory is trusted, a vault "by Bob" under her key loads.
+    mallory
+        .with_key(&repo, &mallory_key)
+        .args(["add", "M2"])
+        .write_stdin("m2\n")
+        .assert()
+        .success();
+    resign_as(&repo.join(".murk"), &bob.pubkey(), &mallory);
+    alice
+        .murk(&repo)
+        .args(["get", "M2"])
+        .assert()
+        .success()
+        .stdout("m2\n");
+    let accepted = fs::read(repo.join(".murk")).unwrap();
+
+    // Mallory prepares a later vault as Bob, numbered past the removal.
+    set_pin_generation(&mallory, &repo, 40);
+    mallory
+        .with_key(&repo, &mallory_key)
+        .args(["add", "EVIL"])
+        .write_stdin("evil\n")
+        .assert()
+        .success();
+    resign_as(&repo.join(".murk"), &bob.pubkey(), &mallory);
+    let forged = fs::read(repo.join(".murk")).unwrap();
+    fs::write(repo.join(".murk"), &accepted).unwrap();
+
+    alice
+        .murk(&repo)
+        .args(["circle", "revoke", "mallory"])
+        .assert()
+        .success();
+    fs::write(repo.join(".murk"), &forged).unwrap();
+    alice
+        .murk(&repo)
+        .args(["get", "EVIL"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("has not confirmed yet"));
 }
 
 /// Rule: a save never writes a removed recipient back. Alice's machine

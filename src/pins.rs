@@ -17,7 +17,9 @@
 //!   counter accepted, so another vault's file or an older revision is refused;
 //! - `was_signed`: whether a signed version was ever accepted, so a stripped
 //!   signature is refused;
-//! - `signers`: confirmed verifying keys of age signers;
+//! - `signers`: confirmed verifying keys of age signers, and `added_by`: for
+//!   an entry pinned on another signer's word, that signer — the entry stops
+//!   counting once they are removed;
 //! - `removed`: keys removed from the vault, with the generation they were
 //!   removed at, so an older revision cannot bring them back.
 //!
@@ -69,6 +71,13 @@ pub struct TrustPin {
     /// Canonical pubkey → base64 verifying key of an age signer.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub signers: BTreeMap<String, String>,
+    /// For a `signers` entry this machine pinned from a signer registry on
+    /// another signer's word: canonical recipient → that signer. The entry
+    /// counts only while that signer is trusted (see [`TrustPin::pinned_key`]).
+    /// An entry without one was confirmed here: with `murk trust`, or as this
+    /// machine's own key.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub added_by: BTreeMap<String, String>,
     /// Keys an accepted vault removed: canonical key → the generation of the
     /// vault that removed it. A vault listing the key at that generation or
     /// below, or signed by it, is refused; a newer vault from a trusted signer
@@ -85,6 +94,25 @@ impl TrustPin {
     /// load, or an own save), as opposed to a legacy or empty record.
     pub fn has_trust(&self) -> bool {
         self.v >= PIN_VERSION && !self.trusted.is_empty()
+    }
+
+    /// The verifying key pinned for `key` (canonical), if it still counts: an
+    /// entry pinned on another signer's word counts only while that signer is
+    /// trusted here.
+    pub fn pinned_key(&self, key: &str) -> Option<&String> {
+        let vk = self.signers.get(key)?;
+        match self.added_by.get(key) {
+            Some(adder) if !self.trusted.contains(adder) => None,
+            _ => Some(vk),
+        }
+    }
+
+    /// The `signers` entries that still count (see [`TrustPin::pinned_key`]).
+    pub fn standing_signers(&self) -> BTreeMap<String, String> {
+        self.signers
+            .keys()
+            .filter_map(|k| self.pinned_key(k).map(|vk| (k.clone(), vk.clone())))
+            .collect()
     }
 }
 

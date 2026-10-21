@@ -40,7 +40,7 @@
 //! own, and raises the counter. Its registry entries for trusted
 //! recipients are pinned where no key was pinned before — believed because the
 //! vault carrying them was signed by an already-trusted signer (or confirmed by
-//! `murk trust`). A pinned key is
+//! `murk trust`), and only while that signer stays trusted. A pinned key is
 //! never replaced. `murk trust` accepts a refused vault on the user's say-so
 //! after showing what changed.
 
@@ -292,7 +292,7 @@ pub fn pinned_trusted_signers(vault_path: &str) -> Result<TrustedSigners, String
             if k.starts_with("ssh-ed25519 ") {
                 Some((k.clone(), None))
             } else {
-                pin.signers.get(k).map(|vk| (k.clone(), Some(vk.clone())))
+                pin.pinned_key(k).map(|vk| (k.clone(), Some(vk.clone())))
             }
         })
         .collect())
@@ -521,7 +521,7 @@ fn signer_key_refusal(
     let signer_c = canonical_recipient(signer).into_owned();
     let expected = match external_signers {
         Some(external) => external.get(&signer_c).cloned().flatten(),
-        None => trusted_pin.and_then(|p| p.signers.get(&signer_c).cloned()),
+        None => trusted_pin.and_then(|p| p.pinned_key(&signer_c).cloned()),
     };
     match expected {
         Some(expected) if expected == vk => None,
@@ -885,7 +885,10 @@ pub enum Acceptance<'a> {
 /// generation — when the vault is this branch's next accepted state (a
 /// branch seen here before, or outside git), the user's decision, or this
 /// machine's own save — and leaves it only when a newer accepted vault lists
-/// it again, or the user re-adds it.
+/// it again, or the user re-adds it. A registry entry for a recipient with
+/// no pinned key is pinned on the signer's word and recorded in `added_by`;
+/// when that signer leaves the trusted set the entry is dropped (see SPEC,
+/// Trust: "independently confirmed").
 pub fn accepted_pin(
     loaded: &Loaded<'_>,
     prior: Option<&TrustPin>,
@@ -1024,23 +1027,41 @@ fn replace_trusted(
     dropped
 }
 
-/// Update the verifying keys for an accepted vault: pin the signer's own key
-/// and the registry entries of the vault's trusted recipients where none is
-/// pinned — believed because the vault carrying them is accepted. A pinned
+/// Update the verifying keys for an accepted vault. An entry pinned on a
+/// signer's word (`added_by`) goes when that signer is no longer trusted, so
+/// a key they bound to a teammate's name stops counting. The acceptance
+/// then pins the signer's own key and the registry entries of the vault's
+/// trusted recipients where none is pinned — believed because the vault
+/// carrying them is accepted, and recorded as added by the signer. A pinned
 /// key is never replaced, and is kept after its owner is revoked so their old
 /// revisions still verify.
 fn pin_signing_keys(pin: &mut TrustPin, loaded: &Loaded<'_>) {
     let TrustPin {
         trusted,
         signers,
+        added_by,
         groups: pinned_groups,
         ..
     } = pin;
+    // Dropped here for good: the vault that removes the adder may still carry
+    // the entry (its writer vouched for it while the adder was trusted), and
+    // that must not pin it again under a new name.
+    let mut dropped = BTreeSet::new();
+    added_by.retain(|pk, adder| {
+        let stands = trusted.contains(adder);
+        if !stands {
+            signers.remove(pk);
+            dropped.insert(pk.clone());
+        }
+        stands
+    });
     let types::SignatureState::Signed { signer, .. } = loaded.signature else {
         return;
     };
     let signer = canonical_recipient(signer).into_owned();
-    if let Some(vk) = loaded.signer_vk {
+    if let Some(vk) = loaded.signer_vk
+        && !dropped.contains(&signer)
+    {
         signers
             .entry(signer.clone())
             .or_insert_with(|| vk.to_string());
@@ -1060,8 +1081,14 @@ fn pin_signing_keys(pin: &mut TrustPin, loaded: &Loaded<'_>) {
     };
     for (pk, vk) in loaded.registry {
         let pk = canonical_recipient(pk).into_owned();
-        if trusted.contains(&pk) && (pk == signer || may_bind(&pk)) {
-            signers.entry(pk).or_insert_with(|| vk.clone());
+        if !trusted.contains(&pk) || signers.contains_key(&pk) || dropped.contains(&pk) {
+            continue;
+        }
+        if pk == signer {
+            signers.insert(pk, vk.clone());
+        } else if may_bind(&pk) {
+            signers.insert(pk.clone(), vk.clone());
+            added_by.insert(pk, signer.clone());
         }
     }
 }
