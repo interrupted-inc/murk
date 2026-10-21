@@ -38,11 +38,19 @@ cargo install murk-cli
 
 ## install.sh
 
-Downloads a pre-built binary for your platform:
+Downloads a pre-built binary for Linux or macOS:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/interrupted-sh/murk/main/install.sh | sh
 ```
+
+The script checks the archive against the release's `SHA256SUMS`. If `gh` is
+installed, it also verifies the build attestation, so `gh` must be logged in
+(`gh auth login`). A failed check aborts the install. Without `gh`, the script
+prints a warning and continues. Set `MURK_REQUIRE_ATTESTATION=1` to refuse to
+install without verification. Set `MURK_TAG=v0.13.0` to install a specific
+release. `MURK_SKIP_ATTESTATION=1` skips the attestation check. It is not
+recommended.
 
 It installs to `/usr/local/bin/murk` by default, using `sudo` only when that
 directory is not writable. The location follows the standard conventions:
@@ -67,12 +75,13 @@ murk provides pre-built binaries for Linux (x86_64, aarch64, armhf), macOS
 (x86_64, Apple Silicon), and Windows on the
 [releases page](https://github.com/interrupted-sh/murk/releases).
 
-murk is also published to npm as
-[`@interrupted/murk-secrets`](https://www.npmjs.com/package/@interrupted/murk-secrets) and
-to PyPI as [`murk-secrets`](https://pypi.org/project/murk-secrets/), if either
-fits your project's toolchain better than a system-wide binary. Both read
-vault secrets from your code, and the Node package can store them too — see
-[Library bindings](/reference/bindings/) for the API and usage.
+## Language bindings
+
+[`@interrupted/murk-secrets`](https://www.npmjs.com/package/@interrupted/murk-secrets)
+on npm and [`murk-secrets`](https://pypi.org/project/murk-secrets/) on PyPI
+let a program read a vault from code. The Node package can also store
+secrets. Neither package includes the `murk` command. Install the CLI first
+and use it to create the vault. See [Library bindings](/reference/bindings/).
 
 ## Verify your download
 
@@ -81,25 +90,27 @@ Binary releases carry signed build provenance
 backed by Sigstore/Fulcio). Verify a downloaded artifact with the GitHub CLI:
 
 ```bash
-gh attestation verify murk-<version>-<target>.tar.gz --owner interrupted-sh
+gh attestation verify murk-v0.13.0-aarch64-apple-darwin.tar.gz \
+  --repo interrupted-sh/murk \
+  --signer-workflow interrupted-sh/murk/.github/workflows/release.yaml
 ```
 
-This confirms the artifact was produced by this repository's release
-workflow: a builder you can inspect, with a signing identity an attacker
-cannot forge.
+File names include the tag with its `v`. The Windows file is a `.zip`. This
+checks that the release workflow in this repository built the file. `gh` must
+be logged in (`gh auth login`). The same check works for `SHA256SUMS`.
 
 Releases up to and including 0.11.0 were signed as `interrupted-inc/murk`,
 before the organization rename; see
 [Verifying releases](/security/verifying/#github-release-binaries) for the
 command that verifies them.
 
-npm, PyPI, and crates.io releases each have their own verification path (npm
-provenance, PEP 740 attestations, and an attested `.crate` respectively), and
-release tags are SSH-signed. See [Verifying releases](/security/verifying/)
-for the full walkthrough across every distribution channel, including where to
+The npm, PyPI and crates.io packages are verified differently: npm provenance
+for the npm package, PEP 740 attestations for PyPI, and an attested `.crate`
+for crates.io (0.13.0 and later). Release tags are SSH-signed.
+[Verifying releases](/security/verifying/) covers each channel and where to
 get the tag-signing key.
 
 ## Next steps
 
-Once murk is installed, run through the [quick start](/quick-start/) to
-generate a key and create your first vault.
+Once murk is installed, follow the [quick start](/quick-start/) to join an
+existing project, or [start a new vault](/quick-start/#start-a-new-vault).
