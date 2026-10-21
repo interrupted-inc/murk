@@ -1704,9 +1704,12 @@ fn known_sequences() -> Vec<(&'static str, Vec<Scripted>)> {
             ],
         ),
         (
+            // CI keeps no counter, so only the cap refuses there; on a
+            // machine the jump bound refuses it too.
             "a generation above the cap is accepted",
             vec![
                 accepts(load_main.clone()),
+                accepts(Op::CiLoad { at: Ref::Main }),
                 runs(Op::Forge {
                     by: Attacker::Person(bob),
                     base: Base::NewestOpenable,
@@ -1714,7 +1717,8 @@ fn known_sequences() -> Vec<(&'static str, Vec<Scripted>)> {
                     sign: Sign::Own,
                     to: Dest::Main,
                 }),
-                runs(Op::Sync { m: alice }),
+                refuses(Op::CiLoad { at: Ref::Main }).decisive(),
+                accepts(Op::Sync { m: alice }),
                 refuses(load_main.clone()).decisive(),
             ],
         ),
