@@ -24,14 +24,14 @@ For a detailed analysis of what murk protects and what it doesn't, see [THREAT_M
 
 ## Supply Chain
 
-Every release artifact is built and published from GitHub Actions on hosted runners, and most carry signed provenance. Release binaries include [Sigstore artifact attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations). Verify a downloaded binary:
+Every release artifact is built and published from GitHub Actions on hosted runners, and most carry signed provenance. Release binaries include [Sigstore artifact attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations). Verify one downloaded binary at a time:
 
 ```bash
-gh attestation verify murk-v*.tar.gz --repo interrupted-sh/murk \
+gh attestation verify murk-v<version>-<target>.tar.gz --repo interrupted-sh/murk \
   --signer-workflow interrupted-sh/murk/.github/workflows/release.yaml
 ```
 
-This covers murk 0.12.0 and later. Releases up to and including 0.11.0 were signed as `interrupted-inc/murk`, before the organization rename; [VERIFYING.md](VERIFYING.md) shows how to verify them.
+This covers murk 0.12.0 and later. Earlier releases name an older repository in their provenance. That is `interrupted-inc/murk` for 0.10.2 to 0.11.0 and `iicky/murk` for 0.3.1 to 0.10.1. [VERIFYING.md](VERIFYING.md) shows how to verify them.
 
 Release tags are signed with SSH. Verify a tag (replace `vX.Y.Z` with the release tag) after adding the maintainer's signing key to your allowed signers, as described in [VERIFYING.md](VERIFYING.md#release-tag):
 
