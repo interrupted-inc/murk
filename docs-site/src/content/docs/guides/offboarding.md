@@ -89,7 +89,10 @@ could read.
 `murk circle revoke` removes every spelling of the key, and murk refuses an
 `age1...` key with a non-canonical encoding, so an alias form of
 it can't survive the revocation. Once a machine has accepted the revoking
-vault, it refuses any vault the revoked key signs, on every branch. An older
+vault, it refuses any vault the revoked key signs, on every branch. The only
+exception is their own history from before the revoke, at an older commit
+(see [the removal rule](/concepts/recipients-signatures/#trusting-a-signer)),
+and it never makes them trusted again. An older
 revision that still lists them, replayed to re-enrol them or put back rotated
 values, is refused as a rollback wherever the revoke has reached: the branch
 it was made on, and the branches it was merged or pulled into.
