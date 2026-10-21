@@ -876,9 +876,14 @@ pub fn check_merge_side(
 }
 
 /// Rules 8 and 9 for a merge side. A side signed by a removed key is refused.
-/// The counter may be at most [`MAX_GENERATION_STEP`] above both the mark and
-/// the ancestor; unlike a load it may be below the mark, since a merged branch
-/// is legitimately older.
+/// A side that lists a removed key the ancestor did not, numbered at or below
+/// the removal, is an older revision re-adding them: refused as a rollback. A
+/// side that merely still lists such a key (a branch forked before the
+/// removal) passes here: the merge takes the removal from the other side, and
+/// [`removed_key_kept_by_merge`] refuses a result that keeps the key. The
+/// counter may be at most [`MAX_GENERATION_STEP`] above both the mark and the
+/// ancestor; unlike a load it may be below the mark, since a merged branch is
+/// legitimately older.
 fn merge_side_counter_or_removal(
     side: &Loaded<'_>,
     base: Option<&types::Vault>,
@@ -886,6 +891,14 @@ fn merge_side_counter_or_removal(
 ) -> Option<String> {
     let pin = pin.filter(|p| p.v >= pins::PIN_VERSION)?;
     let found = side.vault.generation;
+    let in_base: BTreeSet<String> = base
+        .map(|b| {
+            b.recipients
+                .iter()
+                .map(|r| canonical_recipient(r).into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
     if let types::SignatureState::Signed { signer, .. } = side.signature
         && let Some(at) = pin.removed.get(canonical_recipient(signer).as_ref())
     {
@@ -894,11 +907,48 @@ fn merge_side_counter_or_removal(
             label(side.names, signer)
         ));
     }
+    for r in &side.vault.recipients {
+        let canonical = canonical_recipient(r).into_owned();
+        if let Some(&at) = pin.removed.get(&canonical)
+            && found <= at
+            && !in_base.contains(&canonical)
+        {
+            return Some(format!(
+                "rolled back: it adds {} again, who was removed from this vault at generation {at} on this machine, in a revision numbered {found}, not newer",
+                label(side.names, r)
+            ));
+        }
+    }
     let mark = pin.generation.max(base.map_or(0, |b| b.generation));
     (mark > 0 && found > mark.saturating_add(MAX_GENERATION_STEP)).then(|| {
         format!(
             "its generation {found} jumps more than {MAX_GENERATION_STEP} past {mark}, the highest this machine accepted or the common ancestor's"
         )
+    })
+}
+
+/// Rule 8 for a merge result: a removed key the merged recipients still list
+/// must be re-added by a side numbered above the removal (one that passed
+/// [`check_merge_side`], so its signer is trusted). Otherwise the result would
+/// bring them back from older revisions alone. Returns the key and the
+/// generation it was removed at.
+pub fn removed_key_kept_by_merge(
+    pin: Option<&TrustPin>,
+    merged: &types::Vault,
+    sides: &[&types::Vault],
+) -> Option<(String, u64)> {
+    let pin = pin.filter(|p| p.v >= pins::PIN_VERSION)?;
+    merged.recipients.iter().find_map(|r| {
+        let canonical = canonical_recipient(r).into_owned();
+        let at = *pin.removed.get(&canonical)?;
+        let readded = sides.iter().any(|side| {
+            side.generation > at
+                && side
+                    .recipients
+                    .iter()
+                    .any(|s| canonical_recipient(s) == canonical)
+        });
+        (!readded).then(|| (r.clone(), at))
     })
 }
 

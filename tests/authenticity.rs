@@ -1951,6 +1951,56 @@ fn reading_history_never_adds_trust() {
         .stderr(predicate::str::contains("not a trusted signer"));
 }
 
+/// Rule: merge sides follow removal. After Alice's machine accepts Bob's
+/// removal, two branches forked while Bob was a member and saved before his
+/// removal still list him; merging them with each other must not keep him,
+/// since neither re-adds him in a newer revision. And an older alice-signed
+/// revision that adds Bob, committed on a branch forked from before he was
+/// added, is refused as a rollback when merged into a branch that also
+/// added him (so the recipient merge itself sees no conflict).
+#[test]
+fn a_merge_side_never_brings_a_removed_recipient_back() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo) = alice_repo(base.path());
+    use_merge_driver(&repo);
+    let bob = Machine::new(base.path(), "bob");
+    bob.init(&base.path().join("bob-scratch"), "bob");
+    authorize(&alice, &repo, &bob, "bob");
+    commit(&repo, "add bob");
+    let with_bob = fs::read(repo.join(".murk")).unwrap();
+    for branch in ["f1", "f2"] {
+        git_ok(&repo, &["checkout", "-q", "-b", branch, "main"]);
+        alice.add(&repo, &branch.to_uppercase(), branch);
+        commit(&repo, branch);
+    }
+    git_ok(&repo, &["checkout", "-q", "main"]);
+    alice
+        .murk(&repo)
+        .args(["circle", "revoke", "bob"])
+        .assert()
+        .success();
+    commit(&repo, "remove bob");
+
+    git_ok(&repo, &["checkout", "-q", "f1"]);
+    let (merged, stderr) = git_merge(&alice, &repo, "f2");
+    assert!(!merged, "the merge must not complete: {stderr}");
+    assert!(stderr.contains("neither side re-adds them"), "{stderr}");
+    git_ok(&repo, &["merge", "--abort"]);
+
+    git_ok(&repo, &["checkout", "-q", "-b", "side", "main~2"]);
+    fs::write(repo.join(".murk"), &with_bob).unwrap();
+    commit(&repo, "replay the revision that added bob");
+    git_ok(&repo, &["checkout", "-q", "f1"]);
+    let (merged, stderr) = git_merge(&alice, &repo, "side");
+    assert!(!merged, "the merge must not complete: {stderr}");
+    // Both sides are older revisions that add Bob relative to the ancestor.
+    assert!(
+        stderr.contains("failed its authenticity check")
+            && stderr.contains("rolled back: it adds bob"),
+        "{stderr}"
+    );
+}
+
 /// Rule: a save never writes a removed recipient back. Alice's machine
 /// recorded Bob's removal; her working vault is then an older revision that
 /// still lists him — the remote tip she checked out predates the removal, on
