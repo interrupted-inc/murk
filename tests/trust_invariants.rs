@@ -58,6 +58,8 @@ const MACHINES: [(&str, usize); 5] = [
     ("dave-1", 3),
 ];
 const KEYS: [&str; 3] = ["K1", "K2", "K3"];
+/// The largest vault generation murk accepts: 2^53 - 1.
+const GENERATION_CAP: u64 = (1 << 53) - 1;
 
 #[derive(Clone, Copy)]
 struct P(usize);
@@ -178,8 +180,11 @@ enum Gen {
     Next,
     /// A thousand past the base revision's.
     Jump,
-    /// `u64::MAX`.
+    /// The largest generation murk accepts (2^53 - 1, exact in a JSON
+    /// number), so the counter cannot move past it.
     Max,
+    /// `u64::MAX`, above what murk accepts.
+    AboveCap,
 }
 
 /// Where an attacker pushes.
@@ -325,7 +330,12 @@ fn op() -> impl Strategy<Value = Op> {
         3 => (
             prop_oneof![1 => p().prop_map(Attacker::Person), 2 => Just(Attacker::Revoked)],
             prop_oneof![1 => (0..8usize).prop_map(Base::Nth), 2 => Just(Base::NewestOpenable)],
-            prop_oneof![3 => Just(Gen::Next), 1 => Just(Gen::Jump), 1 => Just(Gen::Max)],
+            prop_oneof![
+                3 => Just(Gen::Next),
+                1 => Just(Gen::Jump),
+                1 => Just(Gen::Max),
+                1 => Just(Gen::AboveCap),
+            ],
             prop_oneof![
                 3 => Just(Sign::Own),
                 1 => Just(Sign::AsPlanted(Planted::Sock)),
@@ -665,6 +675,16 @@ impl<'f> World<'f> {
             return Ok(());
         };
         let listed = self.listed(bytes);
+        let generation = serde_json::from_slice::<serde_json::Value>(bytes)
+            .ok()
+            .and_then(|v| v["generation"].as_u64())
+            .unwrap_or(0);
+        if generation > GENERATION_CAP {
+            return Err(format!(
+                "{obs:?} {how} a vault with generation {generation}, above the cap \
+                 {GENERATION_CAP}"
+            ));
+        }
         // CI's secret drops a revoked signer as soon as the revoke is made,
         // so CI must refuse their later vaults whether or not it has loaded
         // the revoke yet.
@@ -1145,7 +1165,9 @@ impl<'f> World<'f> {
                 let claimed = match generation {
                     Gen::Next => base_gen,
                     Gen::Jump => base_gen.saturating_add(999),
-                    Gen::Max => u64::MAX,
+                    // The save moves the counter one past the claim.
+                    Gen::Max => GENERATION_CAP - 1,
+                    Gen::AboveCap => u64::MAX,
                 };
                 let mut vars = vec![
                     ("FORGE_KEY", self.fx.people[by].secret.clone()),
@@ -1399,6 +1421,20 @@ fn known_sequences() -> Vec<(&'static str, Vec<Op>)> {
                     by: Attacker::Revoked,
                     base: Base::NewestOpenable,
                     generation: Gen::Max,
+                    sign: Sign::Own,
+                    to: Dest::Main,
+                },
+                Op::Sync { m: alice },
+                load_main.clone(),
+            ],
+        ),
+        (
+            "a generation above the cap is accepted",
+            vec![
+                Op::Forge {
+                    by: Attacker::Person(bob),
+                    base: Base::NewestOpenable,
+                    generation: Gen::AboveCap,
                     sign: Sign::Own,
                     to: Dest::Main,
                 },
