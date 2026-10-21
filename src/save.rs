@@ -1397,12 +1397,15 @@ mod tests {
     fn a_grant_record_bound_to_the_operators_key_does_not_make_them_a_grant() {
         // A meta writer could bind a grant record to an operator's own key (a
         // "ghost" grant): that made the operator read-only, or, expired, locked
-        // them out. The key opened the meta, so it is no grant: it reads and
-        // writes as before, and the next save drops the record.
+        // them out. Here bob, a second recipient and trusted signer, writes one
+        // for alice's key and signs it. Alice's key opened the meta, so it is
+        // no grant: she reads and writes as before, her own signature on the
+        // next save is accepted, and that save drops the record.
         let _lock = ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (sk, pk) = generate_keypair();
+        let (bob_sk, bob_pk) = generate_keypair();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.murk");
         let ps = path.to_str().unwrap();
@@ -1411,18 +1414,31 @@ mod tests {
         unsafe { std::env::set_var("HOME", home.path()) };
         unsafe { std::env::set_var("MURK_KEY", &sk) };
         unsafe { std::env::remove_var("MURK_KEY_FILE") };
+        let operator = make_identity(&sk);
+        let bob = make_identity(&bob_sk);
+        let entry = |id: &crypto::MurkIdentity, pk: &str| {
+            crate::trust::format_trusted_signer(
+                pk,
+                Some(&id.signing_key().unwrap().verifying_key()),
+            )
+        };
+        let signers = format!("{},{}", entry(&operator, &pk), entry(&bob, &bob_pk));
+        unsafe { std::env::set_var("MURK_TRUSTED_SIGNERS", &signers) };
 
         let mut vault = signed_test_vault(&pk, &make_recipient(&pk));
+        vault.recipients.push(bob_pk.clone());
         let state = types::Murk {
             values: HashMap::from([("API_KEY".into(), secret("REAL"))]),
-            recipients: HashMap::from([(pk.clone(), "alice".to_string())]),
+            recipients: HashMap::from([
+                (pk.clone(), "alice".to_string()),
+                (bob_pk.clone(), "bob".to_string()),
+            ]),
             ..Default::default()
         };
         save_vault(ps, &mut vault, &state, &state).unwrap();
         load_vault(ps).unwrap();
 
-        let operator = make_identity(&sk);
-        let mut meta = decrypt_meta(&vault, &operator).unwrap().unwrap();
+        let mut meta = decrypt_meta(&vault, &bob).unwrap().unwrap();
         meta.grants.insert(
             "ghost".into(),
             types::GrantEntry {
@@ -1430,16 +1446,23 @@ mod tests {
                 scope: vec!["API_KEY".into()],
                 issued_at: "2026-01-01T00:00:00Z".into(),
                 expires_at: "2026-01-02T00:00:00Z".into(),
-                issuer: pk.clone(),
+                issuer: bob_pk.clone(),
             },
         );
+        // A matching `agents` blob too, so the planted record would route
+        // alice into the grant path if that were decided before the meta.
+        vault.agents = crate::agents::blobs_for(&meta.grants, &[]).unwrap();
+        crate::register_signer(&vault, &mut meta.signers, &bob);
         vault.generation += 1;
         let mac_key = decode_mac_key(meta.mac_key.as_deref().unwrap()).unwrap();
         meta.mac = compute_mac(&vault, &meta.groups, &meta.grants, Some(&mac_key));
-        vault.meta =
-            encrypt_value(&serde_json::to_vec(&meta).unwrap(), &[make_recipient(&pk)]).unwrap();
+        vault.meta = encrypt_value(
+            &serde_json::to_vec(&meta).unwrap(),
+            &[make_recipient(&pk), make_recipient(&bob_pk)],
+        )
+        .unwrap();
         vault.sig = None;
-        vault.sig = sign_vault(&vault, &operator);
+        vault.sig = sign_vault(&vault, &bob);
         vault::write(&path, &vault).unwrap();
 
         let loaded = load_vault(ps);
@@ -1451,6 +1474,7 @@ mod tests {
         });
         let reloaded = load_vault(ps);
         unsafe { std::env::remove_var("MURK_KEY") };
+        unsafe { std::env::remove_var("MURK_TRUSTED_SIGNERS") };
         match prev_home {
             Some(v) => unsafe { std::env::set_var("HOME", v) },
             None => unsafe { std::env::remove_var("HOME") },
