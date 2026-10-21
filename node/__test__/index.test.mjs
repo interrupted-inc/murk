@@ -325,6 +325,33 @@ test('agent add and describe are refused and leave the vault unchanged', () => {
   assert.strictEqual(get('AGENT_DB', agentVault), 'postgres://agent')
 })
 
+test('an expired grant key is refused by the binding', () => {
+  runMurk(
+    agent.dir,
+    [
+      'agent',
+      'grant',
+      '--name',
+      'short',
+      '--only',
+      'AGENT_DB',
+      '--ttl',
+      '1s',
+      '--out',
+      'short.key',
+      '--vault',
+      '.murk',
+    ],
+    '',
+    { MURK_KEY: agent.opKey },
+  )
+  const shortKey = readFileSync(join(agent.dir, 'short.key'), 'utf8')
+  assert.match(shortKey, /^# murk-trusted-signer: /)
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1100)
+  process.env.MURK_KEY = shortKey
+  assert.throws(() => get('AGENT_DB', agentVault), /grant short expired/)
+})
+
 test('tightening the policy retroactively blocks the agent get', () => {
   agent.tightenPolicy()
   process.env.MURK_KEY = agent.agentKey

@@ -117,3 +117,36 @@ async fn mcp_client_lists_and_calls_tools() {
 
     client.cancel().await.unwrap();
 }
+
+#[test]
+fn mcp_refuses_to_start_with_an_expired_grant() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    murk(&dir, &key)
+        .args(["add", "API_KEY", "--vault", "test.murk"])
+        .write_stdin("interop-secret\n")
+        .assert()
+        .success();
+    let grant = dir.path().join("grant.key");
+    murk(&dir, &key)
+        .args([
+            "agent", "grant", "--name", "mcp", "--only", "API_KEY", "--ttl", "1s",
+        ])
+        .arg("--out")
+        .arg(&grant)
+        .args(["--vault", "test.murk"])
+        .assert()
+        .success();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+
+    common::murk_bin(dir.path())
+        .current_dir(dir.path())
+        .env("MURK_KEY_FILE", &grant)
+        .env("MURK_AGENT", "1")
+        .args(["mcp", "--vault", "test.murk"])
+        .write_stdin("")
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicates::str::contains("grant mcp expired"));
+}
