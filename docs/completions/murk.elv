@@ -203,7 +203,7 @@ set edit:completion:arg-completer[murk] = {|@words|
         &'murk;agent;exec'= {
             cand --only 'Inject these specific keys (required — agent mode fails closed)'
             cand --vault 'Vault filename'
-            cand --allow-operator-key 'Decrypt with your own stored key from ~/.config/murk/keys. Without this, agent exec needs an explicit MURK_KEY or MURK_KEY_FILE'
+            cand --allow-operator-key 'Decrypt with a key that is not an agent grant: your own stored key from ~/.config/murk/keys, or a full recipient''s MURK_KEY or MURK_KEY_FILE. Without this, agent exec needs an agent grant key'
             cand --allow-reserved 'Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)'
             cand -h 'Print help'
             cand --help 'Print help'

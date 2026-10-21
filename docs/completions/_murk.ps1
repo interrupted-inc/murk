@@ -226,7 +226,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
         'murk;agent;exec' {
             [CompletionResult]::new('--only', '--only', [CompletionResultType]::ParameterName, 'Inject these specific keys (required — agent mode fails closed)')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
-            [CompletionResult]::new('--allow-operator-key', '--allow-operator-key', [CompletionResultType]::ParameterName, 'Decrypt with your own stored key from ~/.config/murk/keys. Without this, agent exec needs an explicit MURK_KEY or MURK_KEY_FILE')
+            [CompletionResult]::new('--allow-operator-key', '--allow-operator-key', [CompletionResultType]::ParameterName, 'Decrypt with a key that is not an agent grant: your own stored key from ~/.config/murk/keys, or a full recipient''s MURK_KEY or MURK_KEY_FILE. Without this, agent exec needs an agent grant key')
             [CompletionResult]::new('--allow-reserved', '--allow-reserved', [CompletionResultType]::ParameterName, 'Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')

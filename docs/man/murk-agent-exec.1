@@ -13,7 +13,7 @@ Run a command with strict agent\-safe defaults (experimental; keeps only PATH, H
 Inject these specific keys (required — agent mode fails closed)
 .TP
 \fB\-\-allow\-operator\-key\fR
-Decrypt with your own stored key from ~/.config/murk/keys. Without this, agent exec needs an explicit MURK_KEY or MURK_KEY_FILE
+Decrypt with a key that is not an agent grant: your own stored key from ~/.config/murk/keys, or a full recipient\*(Aqs MURK_KEY or MURK_KEY_FILE. Without this, agent exec needs an agent grant key
 .TP
 \fB\-\-allow\-reserved\fR
 Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)

@@ -460,7 +460,7 @@ Run a command with strict agent-safe defaults (experimental; keeps only PATH, HO
 ###### **Options:**
 
 * `--only <ONLY>` — Inject these specific keys (required — agent mode fails closed)
-* `--allow-operator-key` — Decrypt with your own stored key from ~/.config/murk/keys. Without this, agent exec needs an explicit MURK_KEY or MURK_KEY_FILE
+* `--allow-operator-key` — Decrypt with a key that is not an agent grant: your own stored key from ~/.config/murk/keys, or a full recipient's MURK_KEY or MURK_KEY_FILE. Without this, agent exec needs an agent grant key
 * `--allow-reserved` — Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)
 * `--vault <VAULT>` — Vault filename
 
