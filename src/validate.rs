@@ -93,7 +93,9 @@ pub(crate) fn meta(m: &Meta) -> Result<(), String> {
     }
     for (pk, vk) in &m.signers {
         recipient("meta.signers key", pk)?;
-        base64(&format!("meta.signers[{}]", show(pk)), vk)?;
+        if let Err(why) = crate::signing::check_verifying_key(vk) {
+            return Err(format!("meta.signers[{}]: {why}", show(pk)));
+        }
     }
     if let Some(sig) = &m.sig {
         recipient("meta.sig.signer", &sig.signer)?;

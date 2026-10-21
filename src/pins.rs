@@ -202,7 +202,52 @@ pub fn read(vault_path: &str) -> Result<Option<TrustPin>, String> {
             ..TrustPin::default()
         };
     }
+    drop_unusable_signer_keys(&mut pin, &path);
     Ok(Some(pin))
+}
+
+/// Drop from `pin` every 32-byte signing key [`crate::signing::checked_verifying_key`]
+/// refuses (weak, non-canonical or off the curve: a pinned verifying key, or
+/// an ssh-ed25519 signer, whose key is its own verifying key), warning once
+/// per pin file. murk never pins such a key, so one here was written by
+/// something else; trusting it would let a forged signature verify. The next
+/// pin write leaves it out. A value that is not a 32-byte key at all is left
+/// alone: it never verifies a signature.
+fn drop_unusable_signer_keys(pin: &mut TrustPin, path: &std::path::Path) {
+    use crate::signing::is_refused_signing_key as refused;
+    static WARNED: std::sync::Mutex<BTreeSet<PathBuf>> = std::sync::Mutex::new(BTreeSet::new());
+
+    let refused_ssh = |k: &String| k.starts_with("ssh-ed25519 ") && refused(k);
+    let mut dropped: BTreeSet<String> = pin
+        .trusted
+        .iter()
+        .chain(&pin.ever_trusted)
+        .filter(|k| refused_ssh(k))
+        .cloned()
+        .collect();
+    pin.trusted.retain(|k| !refused_ssh(k));
+    pin.ever_trusted.retain(|k| !refused_ssh(k));
+    pin.signers.retain(|k, vk| {
+        let bad = refused(vk);
+        if bad {
+            dropped.insert(k.clone());
+        }
+        !bad
+    });
+    if dropped.is_empty() {
+        return;
+    }
+    let first = WARNED
+        .lock()
+        .map_or(true, |mut w| w.insert(path.to_path_buf()));
+    if first {
+        let keys: Vec<String> = dropped.iter().map(|k| crate::truncate_pubkey(k)).collect();
+        eprintln!(
+            "warn trust pin {} holds a weak or invalid signing key for {}; ignoring it — run `murk trust` to re-pin",
+            path.display(),
+            keys.join(", ")
+        );
+    }
 }
 
 /// Write the pin for `vault_path`. Errors when pinning is unavailable or the
