@@ -2841,6 +2841,7 @@ mod tests {
             issued_at: "2026-01-01T00:00:00Z".into(),
             expires_at: "2999-01-01T00:00:00Z".into(),
             issuer: op_pk.clone(),
+            anchors: Vec::new(),
         };
         let meta = crate::types::Meta {
             grants: BTreeMap::from([

@@ -302,6 +302,26 @@ pub(crate) fn cmd_revoke(
             die(&"aborted", 1);
         }
     }
+    // Each revoked key's trusted-signer entry, for the external-anchor warning:
+    // its verifying key comes from the loaded registry (an age key that never
+    // signed has none, and was never anyone's anchor).
+    let signer_entries: Vec<String> = targets
+        .iter()
+        .flatten()
+        .map(|pk| murk_cli::canonical_recipient(pk).into_owned())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .filter_map(|key| {
+            if key.starts_with("ssh-ed25519 ") {
+                Some(murk_cli::trust::format_trusted_signer(&key, None))
+            } else {
+                current.signers.iter().find_map(|(s, vk)| {
+                    murk_cli::same_recipient(s, &key)
+                        .then(|| murk_cli::trust::format_trusted_signer(&key, Some(vk)))
+                })
+            }
+        })
+        .collect();
     let result = try_or_die(murk_cli::revoke_recipient(
         &mut vault,
         &mut current,
@@ -324,6 +344,14 @@ pub(crate) fn cmd_revoke(
         .cloned()
         .collect();
     murk_cli::mark_revoked(&mut vault, &owed, chrono::Utc::now());
+    // A grant revoked because it trusted the revoked signer: the agent's key
+    // can still decrypt its copies from git history, as after `agent revoke`.
+    let grant_owed: Vec<String> = result
+        .revoked_grants
+        .iter()
+        .flat_map(|(_, g)| g.scope.iter().cloned())
+        .collect();
+    murk_cli::mark_revoked(&mut vault, &grant_owed, chrono::Utc::now());
 
     // With --rotate, check the rotation batch against the post-revoke state
     // before writing anything, so refused input leaves the vault untouched.
@@ -423,6 +451,61 @@ pub(crate) fn cmd_revoke(
             "run `murk rotate --all` to rotate each secret".dimmed()
         ),
         None => {}
+    }
+    for (name, grant) in &result.revoked_grants {
+        eprintln!(
+            "{} revoked agent grant {} ({}): its key file trusts {display} as a signer",
+            "⚠".yellow(),
+            name.bold(),
+            grant.scope.join(", "),
+        );
+        // The revoked key file still trusts the removed signer, who can sign a
+        // vault from before this revoke in which the grant is live. Delete it,
+        // so an agent pointed at it fails closed until the grant is re-minted.
+        let path = murk_cli::agent_key_file_path(vault_path, name).ok();
+        let ours = path.as_ref().is_some_and(|p| {
+            std::fs::read_to_string(p).is_ok_and(|text| {
+                murk_cli::crypto::parse_identity(&text)
+                    .and_then(|id| id.pubkey_string())
+                    .is_ok_and(|pk| murk_cli::same_recipient(&pk, &grant.pubkey))
+            })
+        });
+        match path {
+            Some(p) if ours => match std::fs::remove_file(&p) {
+                Ok(()) => eprintln!(
+                    "  {}",
+                    format!(
+                        "deleted its key file {}",
+                        murk_cli::home_short(&p.display().to_string())
+                    )
+                    .dimmed()
+                ),
+                Err(e) => eprintln!(
+                    "{} could not delete its key file {}: {e} — delete it by hand",
+                    "✗".red(),
+                    p.display()
+                ),
+            },
+            _ => eprintln!(
+                "  {}",
+                "delete every copy of its key file (one written with --out, or copied to the agent)"
+                    .dimmed()
+            ),
+        }
+    }
+    if !result.revoked_grants.is_empty() {
+        eprintln!(
+            "  {}",
+            "re-mint each with `murk agent grant --name NAME --only KEY… --renew` (or `murk agent connect`); the new key file no longer trusts them"
+                .dimmed()
+        );
+    }
+    if !signer_entries.is_empty() {
+        eprintln!(
+            "{} update every external trust anchor naming {display}: remove {} from MURK_TRUSTED_SIGNERS in CI and anywhere else it is set",
+            "⚠".yellow(),
+            signer_entries.join(", "),
+        );
     }
     eprintln!();
     eprintln!(

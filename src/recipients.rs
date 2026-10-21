@@ -212,6 +212,10 @@ pub struct RevokeResult {
     /// Named groups the revoked recipient belonged to, sorted. A group value of
     /// an exposed key was readable by them only if its group is listed here.
     pub exposed_groups: Vec<String>,
+    /// Agent grants revoked with the recipient because their key file trusts
+    /// it as a signer (or records no anchor): name and the grant record. Their
+    /// recipient entries and scoped copies are gone too.
+    pub revoked_grants: Vec<(String, types::GrantEntry)>,
 }
 
 /// Resolve `recipient` (a pubkey, a display name, or `github:<user>`) to the
@@ -363,10 +367,51 @@ pub fn revoke_recipient(
     // orphaned grant record pointing at a pubkey that is no longer a recipient.
     murk.grants.retain(|_, grant| !revoked(&grant.pubkey));
 
+    // A grant's key file trusts the signers in its anchor, and nothing updates
+    // a key file, so a revoked signer could still sign a vault that grant
+    // accepts. Revoke every grant whose anchor names a revoked key. A grant
+    // with no recorded anchor (minted before anchors were recorded) is revoked
+    // whenever the revoked key could have been in one: an ssh-ed25519 key, or
+    // an age key with a verifying key in the signer registry.
+    let could_sign = keys.iter().any(|k| k.starts_with("ssh-ed25519 "))
+        || murk.signers.keys().any(|s| revoked(s));
+    let anchored: Vec<String> = murk
+        .grants
+        .iter()
+        .filter(|(_, g)| {
+            if g.anchors.is_empty() {
+                could_sign
+            } else {
+                g.anchors.iter().any(|a| revoked(a))
+            }
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    let mut revoked_grants = Vec::new();
+    for name in anchored {
+        if let Some(grant) = murk.grants.remove(&name) {
+            let gone = canonical_recipient(&grant.pubkey).into_owned();
+            let is_grant = |pk: &str| canonical_recipient(pk) == gone.as_str();
+            vault.recipients.retain(|pk| !is_grant(pk));
+            murk.recipients.retain(|pk, _| !is_grant(pk));
+            for scoped_map in murk.private.values_mut() {
+                scoped_map.retain(|pk, _| !is_grant(pk));
+            }
+            for entry in vault.secrets.values_mut() {
+                entry.private.retain(|pk, _| !is_grant(pk));
+            }
+            for members in murk.groups.values_mut() {
+                members.retain(|pk| !is_grant(pk));
+            }
+            revoked_grants.push((name, grant));
+        }
+    }
+
     Ok(RevokeResult {
         display_name,
         exposed_keys,
         exposed_groups: revoked_groups.into_iter().collect(),
+        revoked_grants,
     })
 }
 

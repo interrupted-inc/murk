@@ -961,6 +961,7 @@ mod tests {
             issued_at: "2026-01-01T00:00:00Z".into(),
             expires_at: expires_at.into(),
             issuer: pubkey.clone(),
+            anchors: Vec::new(),
         };
         let cases: Vec<(&str, Mutate)> = vec![
             (
@@ -1812,6 +1813,7 @@ mod tests {
             issued_at: "2026-01-01T00:00:00Z".into(),
             expires_at: "2099-01-01T00:00:00Z".into(),
             issuer: issuer.into(),
+            anchors: Vec::new(),
         }
     }
 

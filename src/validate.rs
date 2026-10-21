@@ -140,6 +140,9 @@ pub(crate) fn meta(m: &Meta) -> Result<(), String> {
         let g = show(name);
         recipient(&format!("meta.grants[{g}].pubkey"), &grant.pubkey)?;
         recipient(&format!("meta.grants[{g}].issuer"), &grant.issuer)?;
+        for key in &grant.anchors {
+            recipient(&format!("meta.grants[{g}].anchors"), key)?;
+        }
         for key in &grant.scope {
             key_name(&format!("meta.grants[{g}].scope"), key)?;
         }

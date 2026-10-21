@@ -318,7 +318,7 @@ pub(crate) fn mint_grant(
     current
         .recipients
         .insert(agent_pubkey.clone(), format!("agent:{name}"));
-    let entry = try_or_die(murk_cli::create_grant(
+    let mut entry = try_or_die(murk_cli::create_grant(
         &mut current,
         name,
         &agent_pubkey,
@@ -330,8 +330,16 @@ pub(crate) fn mint_grant(
 
     // The key file is headed by the signers the grant may trust: a grant
     // can't read the meta, so this anchor is how it tells a genuine vault from
-    // a forged one.
-    let anchor = try_or_die(murk_cli::agents::anchor_lines(vault_path, &identity));
+    // a forged one. The grant record keeps the same set, so revoking one of
+    // those signers later revokes this grant (see `revoke_recipient`).
+    let signers = try_or_die(murk_cli::agents::anchor_signers(
+        vault_path, &vault, &identity,
+    ));
+    entry.anchors = signers.keys().cloned().collect();
+    if let Some(g) = current.grants.get_mut(name) {
+        g.anchors.clone_from(&entry.anchors);
+    }
+    let anchor = murk_cli::agents::anchor_lines(&signers);
     let key_text = zeroize::Zeroizing::new(format!("{anchor}{}\n", agent_secret.expose_secret()));
 
     // Stage the key file before the vault records the grant, and rename it
