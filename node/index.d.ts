@@ -123,11 +123,15 @@ export declare function exportAll(vaultPath?: string | undefined | null): Record
 export declare function get(key: string, vaultPath?: string | undefined | null): string | null
 
 /**
- * Whether a decryption identity (`MURK_KEY` / `MURK_KEY_FILE`) is available in
- * the environment — i.e. whether `load` can decrypt. This does not check
- * whether a secret exists; use `Vault.has` / `Vault.keys` for that.
+ * Whether murk can find a key for `./.murk`: `MURK_KEY`, `MURK_KEY_FILE` or
+ * the key file `murk init` stored. This does not read the vault, so `true`
+ * does not mean `load` succeeds. It does not check whether a secret exists;
+ * use `Vault.has` / `Vault.keys` for that.
  */
 export declare function hasIdentity(): boolean
 
-/** Load a murk vault. Reads MURK_KEY from the environment. */
+/**
+ * Load a murk vault. Finds the key the same way the CLI does: `MURK_KEY`,
+ * `MURK_KEY_FILE`, or the key file `murk init` stored.
+ */
 export declare function load(vaultPath?: string | undefined | null): Vault

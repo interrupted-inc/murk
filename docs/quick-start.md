@@ -60,7 +60,7 @@ git pull                    # get the updated .murk file
 murk trust                  # once per machine: review the signer, then accept
 ```
 
-`murk trust` prints who signed the vault (their full key and its signing-key fingerprint) and every recipient, then asks before it records anything. Check the signer's fingerprint with the person who invited you, over something other than the repo. Run `murk diff` and `git log -p -- .murk` first if you want to see what changed. Skip this step and the first load on a machine is refused with "not trusted on this machine yet". murk remembers your answer on this machine, not in the repo, and asks again only if a later vault looks wrong: unsigned, signed by an unfamiliar key, or older than one you've already accepted.
+`murk trust` prints who signed the vault (their full key and its signing-key fingerprint) and every recipient, then asks before it records anything. Check the signer's fingerprint with the person who invited you, over something other than the repo. Run `git log -p -- .murk` first if you want to see what changed. On a machine that already trusts the vault, `murk diff 'HEAD@{1}'` shows what a pull changed. Skip this step and the first load on a machine is refused with "not trusted on this machine yet". murk remembers your answer on this machine, not in the repo, and asks again only if a later vault looks wrong: unsigned, signed by an unfamiliar key, or older than one you've already accepted.
 
 Do this once on every machine, after every fresh clone (the trust pin lives outside the repo). A CI runner has no pin and nobody to run `murk trust`: set `MURK_TRUSTED_SIGNERS` instead, with the entry each signer's `murk trust --print-key` prints (comma or newline separated), next to the key.
 

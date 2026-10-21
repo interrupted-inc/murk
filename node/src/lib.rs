@@ -6,7 +6,7 @@
 //! ```typescript
 //! import { load, get, exportAll, hasIdentity } from '@interrupted/murk-secrets'
 //!
-//! const vault = load()              // reads MURK_KEY from env, .murk from cwd
+//! const vault = load()              // finds your key like the CLI, .murk from cwd
 //! vault.get('DATABASE_URL')         // decrypt a single value
 //! vault.export()                    // Record<string, string> of all secrets
 //! get('DATABASE_URL')               // one-liner convenience
@@ -276,7 +276,8 @@ impl Vault {
     }
 }
 
-/// Load a murk vault. Reads MURK_KEY from the environment.
+/// Load a murk vault. Finds the key the same way the CLI does: `MURK_KEY`,
+/// `MURK_KEY_FILE`, or the key file `murk init` stored.
 #[napi]
 pub fn load(vault_path: Option<String>) -> Result<Vault> {
     let path = vault_path.as_deref().unwrap_or(".murk");
@@ -313,9 +314,10 @@ pub fn add(
     load(vault_path)?.add(key, value, options)
 }
 
-/// Whether a decryption identity (`MURK_KEY` / `MURK_KEY_FILE`) is available in
-/// the environment — i.e. whether `load` can decrypt. This does not check
-/// whether a secret exists; use `Vault.has` / `Vault.keys` for that.
+/// Whether murk can find a key for `./.murk`: `MURK_KEY`, `MURK_KEY_FILE` or
+/// the key file `murk init` stored. This does not read the vault, so `true`
+/// does not mean `load` succeeds. It does not check whether a secret exists;
+/// use `Vault.has` / `Vault.keys` for that.
 #[napi]
 pub fn has_identity() -> bool {
     murk_cli::resolve_key().is_ok()

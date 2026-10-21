@@ -238,17 +238,20 @@ put the same text in `vault.warnings`, which is empty for a clean load.
 
 When the loaded key is an [agent grant](/concepts/grants/) (from
 `murk agent grant`), the bindings enforce the vault's agent policy on every
-read and write, the same gate as `murk agent exec`:
+read, the same gate as `murk agent exec`:
 
 - `get()` raises or throws if the grant can read the key but the policy
   forbids it. For a key the grant cannot read, it returns `None` or `null`.
 - `export()` checks the whole readable set first and rejects the call if any
   key is out of policy. It never returns partial results.
-- `add()` and `describe()` (Node) check the resulting key before saving. A
-  forbidden write fails and leaves the vault on disk unchanged.
-- Once the grant's TTL has passed, `export()`, `add()`, `describe()` and
-  `get()` of a readable key fail. `keys()`, `len()`/`length` and `in`/`has()`
-  read only the schema and never check the policy.
+- A grant key can't write at all. `add()` and `describe()` (Node) throw
+  `agent grants are read-only` and leave the vault on disk unchanged, whatever
+  the policy says. For an operator key under `MURK_SELF_SCOPE` or `MURK_AGENT`,
+  they check the resulting key against the policy before saving. A forbidden
+  write fails the same way.
+- Once the grant's TTL has passed, `export()` and `get()` of a readable key
+  fail. `keys()`, `len()`/`length` and `in`/`has()` read only the schema and
+  never check the policy.
 
 Python raises `RuntimeError`. Node throws. A plain operator key skips the
 check unless `MURK_SELF_SCOPE` or `MURK_AGENT` is set, which holds your own

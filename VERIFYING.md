@@ -92,8 +92,10 @@ gh attestation verify murk-v<version>-<target>.tar.gz \
   --signer-workflow iicky/murk/.github/workflows/release.yaml
 ```
 
-For 0.3.1 itself, the workflow file is `release.yml`. No attestation was found
-for releases before 0.3.1.
+For the 0.3.x releases (0.3.1, 0.3.2 and 0.3.4), the workflow file is
+`release.yml`, so pass
+`--signer-workflow iicky/murk/.github/workflows/release.yml`. No attestation
+was found for releases before 0.3.1.
 
 `gh attestation download` prints the bundle file name it wrote.
 

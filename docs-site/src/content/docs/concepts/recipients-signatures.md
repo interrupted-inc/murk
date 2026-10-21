@@ -6,7 +6,7 @@ sidebar:
 ---
 
 :::caution[Experimental]
-Signatures, the trust pin and `murk trust` are new in 0.14 and experimental: their rules and file layout may still change in a minor release. Keys that cannot sign (hardware and `ssh-rsa`) leave a vault unsigned, and an age signer's key is trusted only once `murk trust` has confirmed it. See [Feature status](/reference/feature-status/).
+The trust pin, `murk trust` and the signed format 0.14 writes are new and experimental: their rules and file layout may still change in a minor release. Keys that cannot sign (hardware and `ssh-rsa`) leave a vault unsigned, and an age signer's key is trusted only once `murk trust` has confirmed it. See [Feature status](/reference/feature-status/).
 :::
 
 Three mechanisms protect a `.murk` file: the **recipient list** controls who can decrypt it, the **integrity MAC and signature** detect whether it's been tampered with, and a **trust check** on each machine decides whether the signer is someone that machine accepts.
@@ -15,7 +15,7 @@ Three mechanisms protect a `.murk` file: the **recipient list** controls who can
 
 `murk circle authorize PUBKEY --name NAME` adds a recipient and re-encrypts every shared secret so the new key can read it. PUBKEY can be an `age1...` key, an `ssh-ed25519 ...` key, `ssh:PATH` (a public key file; `ssh:` alone reads `~/.ssh/id_ed25519.pub`) or `github:USERNAME`. murk refuses `ssh-rsa` keys unless you pass `--allow-ssh-rsa`. For `github:USERNAME`, it skips them with a warning instead. murk fetches that user's keys from `https://github.com/USERNAME.keys` and records their fingerprints in `github_pins` in the encrypted meta. If the account's keys change later, the next `authorize github:USERNAME` stops and shows what was added or removed. Pass `--force` to accept the change. Pass `--group NAME` to add the recipient to a group in the same step.
 
-Keys are compared by their canonical spelling: lowercase for `age1...` and plugin keys, `type blob` without the comment for SSH keys. `authorize` refuses a second spelling of a key that is already a recipient, and stores age keys in lowercase. An `age1...` key whose encoding isn't canonical (the high bit of its 32-byte value is set, or the value is out of range) names the same key under another string, so murk refuses it. `revoke` removes every spelling, and a vault header that lists one key twice fails validation. Without this, an alias spelling of a revoked key could outlive the revocation.
+Keys are compared by their canonical spelling: lowercase for `age1...` and plugin keys, `type blob` without the comment for SSH keys. `authorize` refuses a second spelling of a key that is already a recipient, and stores age keys in lowercase. An `age1...` key whose encoding isn't canonical (the high bit of its 32-byte value is set, or the value is out of range) names the same key under another string, so murk refuses it. `revoke` removes every spelling. Without this, an alias spelling of a revoked key could outlive the revocation. A 3.x vault header that lists one key twice fails validation. A 2.x header written by murk 0.13 that does so still loads, and the next save lists the key once.
 
 Display names are stored only inside the encrypted `meta` blob, never in the plaintext `recipients` list, so the pubkey-to-person mapping is itself protected, even though the existence of a pubkey isn't.
 
@@ -23,7 +23,7 @@ Display names are stored only inside the encrypted `meta` blob, never in the pla
 
 ## The integrity MAC
 
-Every save computes a BLAKE3 keyed hash over the vault's key names, per-key ciphertexts, recipient list, schema, group and grant definitions, policy, and any pending-rotation markers, storing the digest as `mac` alongside its key (`mac_key`) in the encrypted meta. On load, murk recomputes and checks it, catching accidental corruption or a non-recipient's tampering immediately.
+Every save computes a BLAKE3 keyed hash over the vault's key names, per-key ciphertexts, recipient list, schema, group and grant definitions, policy, and any pending-rotation markers, storing the digest as `mac` alongside its key (`mac_key`) in the encrypted meta. On load, murk recomputes the hash and refuses the vault if it differs. That catches accidental corruption and naive tampering, meaning an edit that doesn't recompute the MAC.
 
 It is **not** a defense against a malicious recipient or anyone else with write access to the repo. age only needs recipients' *public* keys (which sit in the plaintext header) to re-encrypt content, so a repo-writer can mint a fresh `mac_key`, recompute a valid MAC over tampered content, and re-encrypt `meta` to match. Authorship integrity comes from the signature below, not the MAC.
 
@@ -38,7 +38,7 @@ Two identity types can sign:
 
 `ssh-rsa` keys and hardware/plugin identities can't sign, so a save made with one of them is written unsigned. See [Hardware-backed keys](/guides/hardware-keys/) for what a mixed team does about that.
 
-The signature covers the vault id, the save counter, the recipients, the schema, every secret, the policy, groups, grants and GitHub pins. Verification is strict: it rejects small-order keys and non-canonical encodings. A present-but-invalid signature fails the load as tampering.
+The signature covers the vault id, the save counter, the recipients, the schema, every secret, the policy, groups, grants and GitHub pins. A present-but-invalid signature fails the load as tampering.
 
 ## Trusting a signer
 
@@ -70,11 +70,11 @@ Each refusal says what happened, shows the signer's key next to its name (the na
 
 ### `murk trust`
 
-`murk trust` is that step. Review `git log -p -- .murk` and `murk diff` first. `murk diff` runs on a vault this machine refuses, warns that it isn't trusted, and lists recipient and signer changes next to the value changes. Then run `murk trust`. It prints the vault id, the counter (and the highest one trusted here), the signer's name and full key, the signer's signing-key fingerprint, and every recipient, marked `+` when it's new since this machine last trusted the vault. The fingerprint is marked "trust on first use" when this machine hasn't confirmed that key before. Grant keys are labelled "agent grant, never a signer", and trusted keys that are gone are marked `-`. Then it asks. `--yes` skips the question for scripts; without a terminal and without `--yes`, it refuses.
+`murk trust` is that step. Review `git log -p -- .murk` and `murk diff 'HEAD@{1}'` first. A plain `murk diff` compares with `HEAD`, so after a pull it shows nothing. A fresh clone has no `HEAD@{1}`, and a newly authorized teammate's key can't open the revisions from before they were authorized. In that case, rely on the log and on what `murk trust` prints. `murk diff` runs on a vault this machine refuses, warns that it isn't trusted, and lists recipient and signer changes next to the value changes. Then run `murk trust`. It prints the vault id, the counter (and the highest one trusted here), the signer's name and full key, the signer's signing-key fingerprint, and every recipient, marked `+` when it's new since this machine last trusted the vault. The fingerprint is marked "trust on first use" when this machine hasn't confirmed that key before. Grant keys are labelled "agent grant, never a signer", and trusted keys that are gone are marked `-`. Then it asks. `--yes` skips the question for scripts; without a terminal and without `--yes`, it refuses.
 
 What accepting does depends on the vault:
 
-- An unsigned or stripped vault, with a key that can sign: murk re-signs it with your key. That is a save, so commit the result.
+- An unsigned or stripped vault, or a vault with a 0.13 signature that murk refused as rolled back, with a key that can sign: murk re-signs it with your key. That is a save, so commit the result.
 - A stripped vault, with a key that can't sign: murk forgets that a signed version was seen, and the vault loads with the warning.
 - Anything else: murk pins the vault as shown. For a rollback or another vault, the counter resets.
 
@@ -101,7 +101,7 @@ A CI runner has no pin. Set `MURK_TRUSTED_SIGNERS` to the people who write the v
 
 ### Rollback and deliberate reverts
 
-Every save writes a counter one above the highest this machine has seen, and a keyed merge writes one above both sides. The pin keeps the highest counter per git branch, so a branch that went backwards is refused, while switching to an older branch is fine: that branch has its own mark. On a detached HEAD, or a branch this machine has never seen, there is no counter check.
+Every save writes a counter one above the highest this machine has seen, and a keyed merge writes one above both sides. The pin keeps the highest counter per git branch, so a branch that went backwards is refused, while switching to an older branch has no counter check, because that branch has its own mark. The trusted signer set still follows the last vault you loaded. So switching back to a branch signed by a teammate that the older branch doesn't list can be refused until you run `murk trust`. On a detached HEAD, or a branch this machine has never seen, there is no counter check.
 
 To revert a branch on purpose, restore the older file, run `murk trust` (it shows the counter going back), then make any write. The write is numbered above everything this machine accepted, so teammates accept it as newer.
 

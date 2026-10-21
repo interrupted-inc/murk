@@ -102,8 +102,14 @@ step's `env:`:
       MURK_TRUSTED_SIGNERS: ${{ secrets.MURK_TRUSTED_SIGNERS }}
 ```
 
-This applies to a scoped grant key too: a grant can't run `murk trust`, so
-give the grant's runner `MURK_TRUSTED_SIGNERS` as well.
+A scoped grant key is the exception. It never reads the pin. It trusts the
+signers named in its key file, which are the `# murk-trusted-signer:` lines that
+`murk agent grant` writes above the key, plus any in `MURK_TRUSTED_SIGNERS`. So
+the whole key file works on a runner with no pin and no variable. `murk-action`
+takes only the bare key line, which names no signer, so a grant run through the
+action needs `MURK_TRUSTED_SIGNERS`. A signer added after you minted the grant
+isn't in its key file. The grant then refuses the vault until you re-mint it
+with `--renew` or list that signer in `MURK_TRUSTED_SIGNERS`.
 
 Two limits to know. A runner with no pin can't detect rollback: an older,
 validly signed revision on the checked-out branch loads. Protect the branch
@@ -150,16 +156,20 @@ credentials, not every key in the vault), consider a narrowly scoped
 **agent grant** instead:
 
 ```bash
-murk agent grant --name ci-deploy --only DEPLOY_TOKEN --ttl 30d --out - | gh secret set MURK_KEY
+murk agent grant --name ci-deploy --only DEPLOY_TOKEN --ttl 30d --out - | grep AGE-SECRET-KEY | gh secret set MURK_KEY
 git commit -am "grant ci-deploy" && git push
 ```
 
-`--out -` writes the grant key to stdout and stores no copy, so it goes
-straight into the Actions secret. The key is a drop-in for murk-action's
-`murk-key` input; no other workflow change is needed. It's the same mechanism
-murk uses to scope AI agent access. See [AI agents &
-MCP](/guides/ai-agents-mcp/) for the full grant/revoke lifecycle and the
-[CLI reference](/reference/cli/#murk-agent-grant) for the flag surface.
+`--out -` writes the grant key file to stdout and stores no copy, so it goes
+straight into the Actions secret. The file has `# murk-trusted-signer:` lines
+above the key, and `murk-action` takes only the bare key line, so the `grep`
+keeps just that line. A bare key names no signer, so also give the job
+`MURK_TRUSTED_SIGNERS`, as described above. If you run `murk` yourself, drop the
+`grep` and keep both lines in `MURK_KEY`, and the grant needs no
+`MURK_TRUSTED_SIGNERS`. It's the same mechanism murk uses to scope AI agent
+access. See [AI agents & MCP](/guides/ai-agents-mcp/) for the full grant/revoke
+lifecycle and the [CLI reference](/reference/cli/#murk-agent-grant) for the flag
+surface.
 
 The grant lives in `.murk`, so CI can only use the key once the vault
 containing the grant is on the branch it checks out. `murk export` under the
@@ -171,15 +181,16 @@ grant yields only the granted keys; a `murk get` of anything else fails with
 Before the grant expires, run the same two lines with `--renew`:
 
 ```bash
-murk agent grant --name ci-deploy --only DEPLOY_TOKEN --ttl 30d --renew --out - | gh secret set MURK_KEY
+murk agent grant --name ci-deploy --only DEPLOY_TOKEN --ttl 30d --renew --out - | grep AGE-SECRET-KEY | gh secret set MURK_KEY
 git commit -am "grant ci-deploy" && git push
 ```
 
 `--renew` revokes the old key as it mints the new one, in a single vault
 write. Update the Actions secret and push the vault together: a job that runs
 between the two fails loudly with `not a recipient`, never silently. If you
-miss the renewal, the job fails with `grant ci-deploy expired`; that's the
-intended fail-closed behavior.
+miss the renewal, the job fails with `grant ci-deploy expired`. If anyone writes
+the vault first, that write removes the expired grant and the job fails with
+`not a recipient` instead. Either way it fails closed, as intended.
 
 ![A CI grant piped into the CI secret input (gh shimmed locally for the recording) exports only DEPLOY_TOKEN, fails loudly once expired, and comes back after --renew](/demos/ci-grant.gif)
 

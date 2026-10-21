@@ -21,11 +21,14 @@ invalidate it first).
 murk circle revoke carol --rotate
 ```
 
-`carol` can be a display name or a public key. A name that matches several
-recipients is rejected (`ambiguous name "carol@github" matches 5
-recipients`). This happens for teammates added with `github:`, which adds
-every key on the account under one name. List the full keys with `murk
-circle --json`, then revoke each one by public key.
+`carol` can be a display name, a public key or `github:carol`. A display name
+that matches several different keys is rejected (`ambiguous name "carol"
+matches 2 recipients`). List the full keys with `murk circle --json`, then
+revoke each one by public key. A teammate added with `github:` has one
+recipient per key on their account, all named `carol@github`. Revoking
+`carol@github` or `github:carol` removes all of those keys. With more than
+one key, murk lists them and asks you to confirm. Without a terminal it
+refuses unless you pass `--force`.
 
 Another recipient runs this command. murk refuses to revoke your own key, so
 a member who is leaving cannot remove themselves: ask a teammate to run `murk

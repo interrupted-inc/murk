@@ -50,11 +50,13 @@ can't read is merged conservatively: any difference in the encrypted meta is
 a conflict. An ancestor that fails its checks is refused.
 
 If the ancestor or a side fails, the merge is a conflict that names it, and
-nothing is merged, re-MACed, or signed. Otherwise the driver writes the
+the driver writes no fresh MAC or signature. Otherwise the driver writes the
 merged vault with a fresh MAC and signs it with your key (it stays unsigned
 only if your key can't sign), numbered above both sides and everything this
 machine has accepted. Without a key it can't verify or sign, so it refuses
-any merge that would need new integrity data.
+any merge that would need new integrity data. It exits 1 and git reports a
+conflict. Abort the merge (`git merge --abort`) and run it again with your
+key available.
 
 Because the merged vault is signed by your key, it has to pass the group
 rule a load applies: a change to a group's membership needs a signature from
@@ -124,8 +126,10 @@ The driver reports a conflict, and git stops the merge, when:
   trusted signer, grant key, vault id, save counter),
 - the merge changes a group's membership and your key is not in that group.
 
-The driver lists each conflicting field and leaves `.murk` unmerged. The file
-keeps our side's metadata, so it verifies only where it still equals ours.
+The driver lists each conflicting field and exits 1. The `.murk` it leaves
+holds the merge of both sides' secrets and recipients, keeps our side's
+metadata and has no signature. Don't commit it, and don't accept it with
+`murk trust`.
 Take one side (`git checkout --ours .murk` or `--theirs`) and redo the other
 side's changes with murk (`murk add KEY`, `murk circle authorize` or
 `murk circle revoke`, checking the result with `murk circle`). Then

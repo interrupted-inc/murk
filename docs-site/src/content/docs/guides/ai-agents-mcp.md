@@ -6,7 +6,7 @@ sidebar:
 ---
 
 :::caution[Experimental]
-Agent grants, `murk agent exec`, `murk mcp`, `murk agent connect`/`disconnect` and the agent policy are experimental. They are new and their access rules changed in 0.13.1. A running `murk mcp` server does not see a revocation or policy change until it restarts, so restart it after you revoke. Treat them as a guardrail, not a security boundary.
+Agent grants, `murk agent exec`, `murk mcp`, `murk agent connect`/`disconnect` and the agent policy are experimental. They are new and their access rules changed in 0.14. A running `murk mcp` server does not see a revocation or policy change until it restarts, so restart it after you revoke. Treat them as a guardrail, not a security boundary.
 :::
 
 AI coding agents need secrets to do real work: an API key to call a service, a
@@ -63,15 +63,15 @@ or in a container.
    the secrets you named and a nested `murk` won't fall back to your stored
    key.
 
-   `agent exec` needs a key handed to it: `MURK_KEY` or `MURK_KEY_FILE`,
-   normally pointing at a scoped [grant](/concepts/grants/) key. It refuses to
-   decrypt with your personal key that murk would otherwise find on its own in
-   `~/.config/murk/keys`, because an agent shell with no `MURK_*` set would
-   get it silently. When you are the one running it and mean to use your own
-   key, say so with `--allow-operator-key`. murk then prints a one-line
-   warning on every run that uses the auto-discovered key. An explicit
-   `MURK_KEY` or `MURK_KEY_FILE` is accepted without the flag and without a
-   warning:
+   `agent exec` needs an agent [grant](/concepts/grants/) key: point `MURK_KEY`
+   or `MURK_KEY_FILE` at one. It refuses every other key. It refuses your
+   personal key from `~/.config/murk/keys` before it loads the vault, because an
+   agent shell with no `MURK_*` set would get it silently. It refuses a personal
+   key handed over through `MURK_KEY` or `MURK_KEY_FILE` once the vault is open,
+   before it reads any secret. When you are the one running it and mean to use
+   your own key, say so with `--allow-operator-key`. murk then prints a one-line
+   warning on every run that decrypts with a non-grant key. A grant key needs no
+   flag and prints no warning:
 
    ```bash
    MURK_KEY_FILE=~/.config/murk/agent-keys/<...>-codex murk agent exec --only DATABASE_URL -- npm test
@@ -126,11 +126,11 @@ directly. For real containment, run agents under a separate user or in a
 container (see below). If you want a non-strict shell yourself, just don't
 set `MURK_AGENT`. In CI, murk stays out of the way but prints a short hint
 toward a scoped grant key when it sees a pipeline decrypting with your
-personal key. `murk agent exec` does not wait for CI to object: it refuses a
-personal key it discovers on its own unless you pass `--allow-operator-key`,
-and then it prints a warning, in CI or not. It accepts any identity you
-supply through `MURK_KEY` or `MURK_KEY_FILE`, so supply a scoped grant key,
-not your personal key.
+personal key. `murk agent exec` does not wait for CI to object: it refuses any
+key that is not an agent grant (your stored key, or a personal key you supply
+through `MURK_KEY` or `MURK_KEY_FILE`) unless you pass `--allow-operator-key`,
+and then it prints a warning, in CI or not. Supply a scoped grant key, not your
+personal key.
 
 **Self-scoping your own key.** The allow-tag policy (see [Restricting which
 secrets agents can touch](#restricting-which-secrets-agents-can-touch),
@@ -230,14 +230,23 @@ read-only: a vault signed by a grant key is refused, and `murk trust`
 refuses to run under a grant identity. `murk trust` is the human review
 step. Don't hand an agent `murk trust --yes`.
 
-**A fresh environment needs `MURK_TRUSTED_SIGNERS`.** murk checks every
-vault against the trust pin of the machine it runs on. An agent in a
-container, a CI job or any other place with no pin gets "not trusted on this
-machine yet", and a grant can't run `murk trust` to fix that. Set
-`MURK_TRUSTED_SIGNERS` to the entries of the people who write the vault
-(`murk trust --print-key` prints one, as `age1...:<verifying key>` or an
-`ssh-ed25519` public key line), from outside the repo. See
-[CI/CD](/guides/cicd/#telling-ci-who-may-sign-the-vault).
+**A fresh environment needs a trust anchor.** murk checks every vault against
+the trust pin of the machine it runs on. A full-recipient key in a container, a
+CI job or any other place with no pin gets "not trusted on this machine yet",
+and `murk trust` is a human step. A grant key is different. It never reads or
+writes the pin. It trusts only the signers named in the `# murk-trusted-signer:`
+lines at the top of its key file, plus any in `MURK_TRUSTED_SIGNERS`.
+`murk agent grant` writes those lines when it mints or renews the key. They name
+the signers this machine's pin trusts, plus your key if it can sign. So a grant
+key works as it is on a machine with no pin, as long as you keep the lines with
+the key. A signer added after the grant was minted isn't in the key file. The
+grant then refuses the vault until you re-mint it with `--renew` or list that
+signer in `MURK_TRUSTED_SIGNERS`. A key file with no such lines, such as one
+from before 0.14, needs `MURK_TRUSTED_SIGNERS`. Where there is no pin and the
+key is not an anchored grant, set `MURK_TRUSTED_SIGNERS` to the entries of the
+people who write the vault (`murk trust --print-key` prints one, as
+`age1...:<verifying key>` or an `ssh-ed25519` public key line), from outside the
+repo. See [CI/CD](/guides/cicd/#telling-ci-who-may-sign-the-vault).
 
 **The vault can't pick the agent's environment.** Whoever last wrote the
 vault chose its key names, so `murk agent exec` refuses to inject a key
