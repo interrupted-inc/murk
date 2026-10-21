@@ -2429,3 +2429,171 @@ fn both_branches_revoke_the_same_member_on_one_machine() {
     );
     assert!(all.contains("vault integrity verified"), "{all}");
 }
+
+/// Rule: a removal on a feature branch never deadlocks main. Alice revokes
+/// Bob on `feature`; before that is merged, Bob signs a new vault on main.
+/// Alice's machine refuses it (Bob signed it after his removal), and the
+/// refusal says how to recover: merge the removal. The merge stops on the
+/// vault, naming Bob's side; Alice keeps the side that removed him (`git
+/// checkout --theirs`), commits, and main carries the removal and loads,
+/// without Bob ever being trusted again.
+#[test]
+fn merging_the_removal_into_a_branch_the_removed_member_wrote_to() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo) = alice_repo(base.path());
+    use_merge_driver(&repo);
+    let bob = Machine::new(base.path(), "bob");
+    bob.init(&base.path().join("bob-scratch"), "bob");
+    let bob_key = bob.key_file();
+    authorize(&alice, &repo, &bob, "bob");
+    bob.with_key(&repo, &bob_key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    bob.with_key(&repo, &bob_key)
+        .args(["add", "FROM_BOB"])
+        .write_stdin("bob\n")
+        .assert()
+        .success();
+    alice
+        .murk(&repo)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    alice.add(&repo, "A0", "a0");
+    commit(&repo, "bob is a member");
+
+    git_ok(&repo, &["checkout", "-q", "-b", "feature"]);
+    alice
+        .murk(&repo)
+        .args(["circle", "revoke", "bob"])
+        .assert()
+        .success();
+    commit(&repo, "revoke bob");
+
+    git_ok(&repo, &["checkout", "-q", "main"]);
+    bob.with_key(&repo, &bob_key)
+        .args(["add", "BOB_AFTER"])
+        .write_stdin("after\n")
+        .assert()
+        .success();
+    commit(&repo, "bob writes on main");
+
+    // Alice pulls main: Bob's vault is refused, and the hint names the merge.
+    alice
+        .murk(&repo)
+        .args(["get", "DB_URL"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("signed by bob"))
+        .stderr(predicate::str::contains(
+            "merge it with the murk merge driver",
+        ));
+
+    // The merge stops on the vault, naming Bob's side.
+    let (merged, stderr) = git_merge(&alice, &repo, "feature");
+    assert!(!merged, "the merge must stop: {stderr}");
+    assert!(
+        stderr.contains("ours failed its authenticity check") && stderr.contains("signed by bob"),
+        "{stderr}"
+    );
+
+    // Alice keeps the side that removed Bob and commits.
+    git_ok(&repo, &["checkout", "--theirs", "--", ".murk"]);
+    git_ok(&repo, &["add", ".murk"]);
+    git_ok(
+        &repo,
+        &["-c", "commit.gpgsign=false", "commit", "-q", "--no-edit"],
+    );
+
+    alice
+        .murk(&repo)
+        .args(["get", "DB_URL"])
+        .assert()
+        .success()
+        .stdout("prod-db\n");
+    let header: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(repo.join(".murk")).unwrap()).unwrap();
+    assert!(
+        !header["recipients"]
+            .as_array()
+            .unwrap()
+            .contains(&bob.pubkey().into()),
+        "main carries the removal"
+    );
+    // Alice keeps working on main after the merge.
+    alice.add(&repo, "AFTER_MERGE", "ok");
+}
+
+/// Rule: a fresh clone can read main after revoking on a branch. Alice
+/// clones the team repo on a new laptop, branches at once, trusts the vault
+/// there (Bob wrote main's tip), and revokes Bob on the branch. Back on main,
+/// which this laptop never loaded, the vault Bob signed before his removal
+/// loads. Once Bob signs a new vault on main after the removal, main is
+/// refused on the laptop.
+#[test]
+fn a_fresh_clone_reads_main_after_revoking_on_a_branch() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo) = alice_repo(base.path());
+    let bob = Machine::new(base.path(), "bob");
+    bob.init(&base.path().join("bob-scratch"), "bob");
+    let bob_key = bob.key_file();
+    authorize(&alice, &repo, &bob, "bob");
+    bob.with_key(&repo, &bob_key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    bob.with_key(&repo, &bob_key)
+        .args(["add", "FROM_BOB"])
+        .write_stdin("bob\n")
+        .assert()
+        .success();
+    alice
+        .murk(&repo)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    commit(&repo, "bob wrote main's tip");
+
+    let clone = base.path().join("laptop-repo");
+    git_ok(
+        base.path(),
+        &[
+            "clone",
+            "-q",
+            repo.to_str().unwrap(),
+            clone.to_str().unwrap(),
+        ],
+    );
+    let laptop = Machine::new(base.path(), "alice-laptop");
+    let key = alice.key_file();
+    let on_laptop = |args: &[&str]| {
+        let mut cmd = laptop.with_key(&clone, &key);
+        cmd.args(args);
+        cmd
+    };
+    git_ok(&clone, &["checkout", "-q", "-b", "feature"]);
+    on_laptop(&["trust", "--yes"]).assert().success();
+    on_laptop(&["circle", "revoke", "bob"]).assert().success();
+    commit(&clone, "revoke bob");
+
+    git_ok(&clone, &["checkout", "-q", "main"]);
+    on_laptop(&["get", "FROM_BOB"])
+        .assert()
+        .success()
+        .stdout("bob\n");
+
+    bob.with_key(&repo, &bob_key)
+        .args(["add", "BOB_AFTER"])
+        .write_stdin("after\n")
+        .assert()
+        .success();
+    commit(&repo, "bob writes after his removal");
+    git_ok(&clone, &["pull", "-q", "--ff-only", "origin", "main"]);
+    on_laptop(&["get", "BOB_AFTER"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("signed by bob"));
+}

@@ -343,9 +343,9 @@ pub fn vault_fingerprint(vault: &types::Vault) -> String {
         })
 }
 
-/// Where a load happens, as the removal rule sees it: the git HEAD state,
-/// and — on a branch this machine has never accepted — the branches a removal
-/// was made or accepted on whose history contains the commit checked out.
+/// Where a load happens, as the removal rule sees it: the git HEAD state, and
+/// the branches a removal was made or accepted on whose history already
+/// contains the commit checked out, with the vault file as committed there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Checkout {
     pub head: HeadState,
@@ -363,12 +363,12 @@ impl Checkout {
     }
 
     /// The checkout holding `vault_path`, judged against `pin`. Asks git only
-    /// on a branch this machine has no mark for, and only about the branches
-    /// a removal is recorded on.
+    /// on a branch, and only about the other branches a removal is recorded
+    /// on.
     pub fn of(vault_path: &str, pin: Option<&TrustPin>) -> Self {
         let head = head_of(vault_path);
         let behind = match (&head, pin) {
-            (HeadState::Branch(b), Some(pin)) if !pin.branches.contains_key(b) => {
+            (HeadState::Branch(b), Some(pin)) => {
                 let abs = absolute(vault_path);
                 pin.removed_on
                     .values()
@@ -395,8 +395,8 @@ impl Checkout {
 /// the history of a branch the removal was made on and the vault is the one
 /// committed there — then it is that branch as it was before the removal. On
 /// a branch this machine accepted before the removal reached it, the vault
-/// may still list the key. A vault signed by a removed key is refused
-/// everywhere, whatever this says.
+/// may still list the key. A vault signed by a removed key is judged by
+/// [`signed_before_removal`] instead.
 pub fn removal_applies(pin: &TrustPin, key: &str, checkout: &Checkout) -> bool {
     let on = pin.removed_on.get(key);
     match &checkout.head {
@@ -408,10 +408,28 @@ pub fn removal_applies(pin: &TrustPin, key: &str, checkout: &Checkout) -> bool {
     }
 }
 
+/// Whether a vault signed by removed key `key` (canonical) is still that
+/// key's own history at `checkout`: the commit checked out is already in the
+/// history of a branch the removal was made or accepted on, with the vault
+/// file as committed there, and the removal has not reached this branch. Such
+/// a vault was written before the removal, so it loads like any other; a
+/// vault the key signs after its removal is never in that history. Everywhere
+/// else a vault signed by a removed key is refused.
+pub fn signed_before_removal(pin: &TrustPin, key: &str, checkout: &Checkout) -> bool {
+    let HeadState::Branch(b) = &checkout.head else {
+        return false;
+    };
+    pin.removed_on
+        .get(key)
+        .is_some_and(|on| !on.contains(b) && !on.is_disjoint(&checkout.behind))
+}
+
 /// The removed keys (canonical, with the generation each was removed at)
-/// that `loaded` is signed by, or lists where the removal applies at
-/// `checkout` (see [`removal_applies`]), whatever its generation. `murk trust`
-/// re-trusts a vault carrying any of them only when the user names each one.
+/// that `loaded` is signed by (unless it is that key's history from before
+/// the removal, see [`signed_before_removal`]), or lists where the removal
+/// applies at `checkout` (see [`removal_applies`]), whatever its generation.
+/// `murk trust` re-trusts a vault carrying any of them only when the user
+/// names each one.
 pub fn removed_keys_in(
     loaded: &Loaded<'_>,
     pin: Option<&TrustPin>,
@@ -422,7 +440,9 @@ pub fn removed_keys_in(
     };
     let canonical = |k: &String| canonical_recipient(k).into_owned();
     let signer = match loaded.signature {
-        types::SignatureState::Signed { signer, .. } => Some(canonical(signer)),
+        types::SignatureState::Signed { signer, .. } => {
+            Some(canonical(signer)).filter(|k| !signed_before_removal(pin, k, checkout))
+        }
         types::SignatureState::Unsigned => None,
     };
     let listed = loaded
@@ -439,10 +459,11 @@ pub fn removed_keys_in(
 }
 
 /// Rule 8 for a load: the vault is signed by a removed key (refused on every
-/// branch), or lists one at or below the generation it was removed at where
-/// the removal applies (see [`removal_applies`]). A newer vault listing it
-/// again is how a trusted signer re-adds someone, so it passes (its signer is
-/// checked like any other).
+/// branch, unless it is that key's own history from before the removal, see
+/// [`signed_before_removal`]), or lists one at or below the generation it was
+/// removed at where the removal applies (see [`removal_applies`]). A newer
+/// vault listing it again is how a trusted signer re-adds someone, so it
+/// passes (its signer is checked like any other).
 fn removal_refusal(
     loaded: &Loaded<'_>,
     pin: Option<&TrustPin>,
@@ -451,7 +472,9 @@ fn removal_refusal(
     let pin = pin.filter(|p| p.v >= pins::PIN_VERSION)?;
     let found = loaded.vault.generation;
     if let types::SignatureState::Signed { signer, .. } = loaded.signature
-        && let Some(&removed_at) = pin.removed.get(canonical_recipient(signer).as_ref())
+        && let key = canonical_recipient(signer)
+        && let Some(&removed_at) = pin.removed.get(key.as_ref())
+        && !signed_before_removal(pin, &key, checkout)
     {
         return Some(Refusal::RemovedKey {
             key: signer.clone(),
@@ -511,7 +534,21 @@ fn load_verdict(
     checkout: &Checkout,
 ) -> Verdict {
     let head = &checkout.head;
-    let core = verdict(loaded, pin, external_signers, head);
+    // A vault a removed key signed before its removal (see
+    // `signed_before_removal`) is judged as signed by the member it was then.
+    // Only this verdict sees it: the pin's trusted set is never changed by it.
+    let before = pin.and_then(|p| match loaded.signature {
+        types::SignatureState::Signed { signer, .. } => {
+            let key = canonical_recipient(signer).into_owned();
+            (p.removed.contains_key(&key) && signed_before_removal(p, &key, checkout)).then(|| {
+                let mut view = p.clone();
+                view.trusted.insert(key);
+                view
+            })
+        }
+        types::SignatureState::Unsigned => None,
+    });
+    let core = verdict(loaded, before.as_ref().or(pin), external_signers, head);
     if let Verdict::Refused(r) = &core
         && !r.acceptable()
     {
@@ -986,7 +1023,7 @@ fn merge_side_counter_or_removal(
         && let Some(at) = pin.removed.get(canonical_recipient(signer).as_ref())
     {
         return Some(format!(
-            "rolled back: it is signed by {}, who was removed from this vault at generation {at} on this machine",
+            "rolled back: it is signed by {}, who was removed from this vault at generation {at} on this machine — keep the other side's vault, which carries the removal (`git checkout --ours` or `--theirs` on the vault file), and redo with murk any change from this side you still want",
             label(side.names, signer)
         ));
     }
@@ -1619,7 +1656,7 @@ fn removed_key_message(
     let who = label(loaded.names, key);
     let what = if signer {
         format!(
-            "it is signed by {who}, who was removed from this vault at generation {removed_at} on this machine\nrestore {vault_path} from git"
+            "it is signed by {who}, who was removed from this vault at generation {removed_at} on this machine\nif the branch that removed them is not merged here yet, merge it with the murk merge driver; when the merge stops on this vault, keep the side that removed them (`git checkout --theirs -- {vault_path}` when you merged that branch in), `git add {vault_path}` and commit, then redo with murk any change of theirs you still want; otherwise restore {vault_path} from git"
         )
     } else {
         format!(
