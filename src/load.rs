@@ -626,6 +626,7 @@ impl InspectedVault {
                     readmit,
                 },
                 &trust::head_of(vault_path),
+                trust::commit_of(vault_path).as_deref(),
             )))
         })
     }
@@ -677,6 +678,7 @@ impl InspectedVault {
                         fresh,
                         trust::Acceptance::Load,
                         &trust::head_of(vault_path),
+                        trust::commit_of(vault_path).as_deref(),
                     );
                     if self.assessment.env_signers.is_some() {
                         let prior = fresh.cloned().unwrap_or_default();
@@ -686,6 +688,7 @@ impl InspectedVault {
                         pin.added_by = prior.added_by;
                         pin.removed = prior.removed;
                         pin.removed_on = prior.removed_on;
+                        pin.removed_at_commit = prior.removed_at_commit;
                         pin.groups = prior.groups;
                     }
                     Ok((fresh != Some(&pin)).then_some(pin))
