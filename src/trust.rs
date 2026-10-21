@@ -31,23 +31,24 @@
 //!    vault this machine has seen in 0.14 form is a rollback.
 //! 7. A group membership change must be signed by a member of that group as
 //!    pinned (removing a member who left the vault entirely is exempt).
-//! 8. A key an accepted vault removed stays removed: a vault signed by it, or
-//!    listing it at the generation it was removed at or below, is refused. A
-//!    newer vault from a trusted signer that lists it again, or `murk trust
-//!    --re-add`, brings it back.
+//! 8. A key an accepted vault removed stays removed where the removal applies
+//!    (see [`removal_applies`]): a vault signed by it, or listing it at the
+//!    generation it was removed at or below, is refused. A newer vault from a
+//!    trusted signer that lists it again there, or `murk trust --re-add`,
+//!    brings it back.
 //! 9. The generation may rise at most [`MAX_GENERATION_STEP`] above the mark
 //!    and never past [`MAX_GENERATION`]; a different vault with the counter
 //!    this machine accepted on the branch is a fork.
 //!
-//! An accepted vault that is the newest this machine has seen, on a checked-
-//! out branch, replaces the pin's trusted set, grants and groups with its
-//! own, and raises the counter; any other accepted load is history and only
-//! narrows the pin (see [`Acceptance`]). Its registry entries for trusted
-//! recipients are pinned where no key was pinned before — believed because the
-//! vault carrying them was signed by an already-trusted signer (or confirmed by
-//! `murk trust`), and only while that signer stays trusted. A pinned key is
-//! never replaced. `murk trust` accepts a refused vault on the user's say-so
-//! after showing what changed.
+//! An accepted vault that is the newest this machine has seen, on a branch it
+//! accepted before (or outside git), replaces the pin's trusted set, grants
+//! and groups with its own, and raises the counter; any other accepted load
+//! is history and only narrows the pin (see [`Acceptance`]). Its registry
+//! entries for trusted recipients are pinned where no key was pinned before —
+//! believed because the vault carrying them was signed by an already-trusted
+//! signer (or confirmed by `murk trust`), and only while that signer stays
+//! trusted. A pinned key is never replaced. `murk trust` accepts a refused
+//! vault on the user's say-so after showing what changed.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -348,14 +349,99 @@ pub fn vault_fingerprint(vault: &types::Vault) -> String {
         })
 }
 
+/// Where a load happens, as the removal rule sees it: the git HEAD state,
+/// and — on a branch this machine has never accepted — the branches a removal
+/// was made or accepted on whose history contains the commit checked out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checkout {
+    pub head: HeadState,
+    behind: BTreeSet<String>,
+}
+
+impl Checkout {
+    /// `head` with no branch-history information: on a branch this machine
+    /// never accepted, every removal applies.
+    pub fn at(head: HeadState) -> Self {
+        Self {
+            head,
+            behind: BTreeSet::new(),
+        }
+    }
+
+    /// The checkout holding `vault_path`, judged against `pin`. Asks git only
+    /// on a branch this machine has no mark for, and only about the branches
+    /// a removal is recorded on.
+    pub fn of(vault_path: &str, pin: Option<&TrustPin>) -> Self {
+        let head = head_of(vault_path);
+        let behind = match (&head, pin) {
+            (HeadState::Branch(b), Some(pin)) if !pin.branches.contains_key(b) => {
+                let abs = absolute(vault_path);
+                pin.removed_on
+                    .values()
+                    .flatten()
+                    .filter(|r| *r != b)
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .filter(|r| crate::git::head_in_history_of(&abs, r))
+                    .cloned()
+                    .collect()
+            }
+            _ => BTreeSet::new(),
+        };
+        Self { head, behind }
+    }
+}
+
+/// Whether the removal of `key` (canonical) applies to a load at `checkout`:
+/// on a branch whose accepted history contains the removal (see
+/// [`TrustPin::removed_on`]), on a detached HEAD, outside git, and on a branch
+/// this machine has no mark for (its history is unknown, so it may be a
+/// replay) unless its commit is already in the history of a branch the
+/// removal was made on — then it is that branch as it was before the
+/// removal. On a branch this machine accepted before the removal reached it,
+/// the key is still a member there.
+pub fn removal_applies(pin: &TrustPin, key: &str, checkout: &Checkout) -> bool {
+    let on = pin.removed_on.get(key);
+    match &checkout.head {
+        HeadState::Branch(b) if pin.branches.contains_key(b) => {
+            on.is_none_or(|branches| branches.contains(b))
+        }
+        HeadState::Branch(_) => on.is_none_or(|branches| branches.is_disjoint(&checkout.behind)),
+        HeadState::Detached | HeadState::NotARepo => true,
+    }
+}
+
+/// `pin` as it applies at `checkout`: a removal that does not apply there
+/// (see [`removal_applies`]) is set aside, and its key counts as the trusted
+/// signer it was until the removal. The pin is never written from this view.
+pub fn scoped_pin(pin: &TrustPin, checkout: &Checkout) -> TrustPin {
+    let mut scoped = pin.clone();
+    let set_aside: Vec<String> = pin
+        .removed
+        .keys()
+        .filter(|k| !removal_applies(pin, k, checkout))
+        .cloned()
+        .collect();
+    for key in set_aside {
+        scoped.removed.remove(&key);
+        scoped.trusted.insert(key);
+    }
+    scoped
+}
+
 /// The removed keys (canonical, with the generation each was removed at)
-/// that `loaded` is signed by or lists, whatever its generation. `murk
-/// trust` re-trusts a vault carrying any of them only when the user names
-/// each one.
-pub fn removed_keys_in(loaded: &Loaded<'_>, pin: Option<&TrustPin>) -> BTreeMap<String, u64> {
+/// that `loaded` is signed by or lists, whatever its generation, where the
+/// removal applies at `checkout`. `murk trust` re-trusts a vault carrying
+/// any of them only when the user names each one.
+pub fn removed_keys_in(
+    loaded: &Loaded<'_>,
+    pin: Option<&TrustPin>,
+    checkout: &Checkout,
+) -> BTreeMap<String, u64> {
     let Some(pin) = pin.filter(|p| p.v >= pins::PIN_VERSION) else {
         return BTreeMap::new();
     };
+    let pin = scoped_pin(pin, checkout);
     let signer = match loaded.signature {
         types::SignatureState::Signed { signer, .. } => Some(signer.as_str()),
         types::SignatureState::Unsigned => None,
@@ -437,8 +523,11 @@ fn load_verdict(
     loaded: &Loaded<'_>,
     pin: Option<&TrustPin>,
     external_signers: Option<&TrustedSigners>,
-    head: &HeadState,
+    checkout: &Checkout,
 ) -> Verdict {
+    let head = &checkout.head;
+    let scoped = pin.map(|p| scoped_pin(p, checkout));
+    let pin = scoped.as_ref();
     let core = verdict(loaded, pin, external_signers, head);
     if let Verdict::Refused(r) = &core
         && !r.acceptable()
@@ -552,12 +641,12 @@ pub fn assess(
                 .collect(),
         ),
     };
-    let head = head_of(vault_path);
+    let checkout = Checkout::of(vault_path, pin.as_ref());
     let judged = pin.clone().map(|mut p| {
         p.removed.retain(|k, _| !readmit.contains(k));
         p
     });
-    let verdict = load_verdict(loaded, judged.as_ref(), external.as_ref(), &head);
+    let verdict = load_verdict(loaded, judged.as_ref(), external.as_ref(), &checkout);
     Ok(Assessment {
         verdict,
         pin,
@@ -580,17 +669,22 @@ pub fn reassess(
         loaded,
         pin,
         assessment.external.as_ref(),
-        &head_of(vault_path),
+        &Checkout::of(vault_path, pin),
     )
+}
+
+/// `vault_path` made absolute against the working directory.
+fn absolute(vault_path: &str) -> std::path::PathBuf {
+    let p = std::path::Path::new(vault_path);
+    match std::env::current_dir() {
+        Ok(cwd) if !p.is_absolute() => cwd.join(p),
+        _ => p.to_path_buf(),
+    }
 }
 
 /// The git HEAD state of the checkout holding `vault_path`.
 pub fn head_of(vault_path: &str) -> HeadState {
-    let p = std::path::Path::new(vault_path);
-    match std::env::current_dir() {
-        Ok(cwd) if !p.is_absolute() => crate::git::head_state(&cwd.join(p)),
-        _ => crate::git::head_state(p),
-    }
+    crate::git::head_state(&absolute(vault_path))
 }
 
 /// Rule 4: an age signer's registry key must be the one pinned for it (or
@@ -810,7 +904,10 @@ pub fn check_merge_side(
     changed: bool,
     upgraded: bool,
 ) -> Result<(), String> {
+    // Removals apply as they do to a load of the branch being merged into.
     let pin = pins::read(vault_path)?;
+    let checkout = Checkout::of(vault_path, pin.as_ref());
+    let pin = pin.map(|p| scoped_pin(&p, &checkout));
     let legacy = side.vault.vault_id.is_empty() || side.vault.generation == 0;
     let pinned_id = pin
         .as_ref()
@@ -1013,11 +1110,13 @@ pub fn group_change_violation(
 pub enum Acceptance<'a> {
     /// A load the trust rules accepted. It is the vault's current state, and
     /// replaces the trusted set, groups and registry, only when it is newer
-    /// than everything this machine accepted and checked out on a branch (or
-    /// outside git). Any other accepted load — a detached HEAD, a branch
-    /// behind the mark, the vault already accepted, or a different vault with
-    /// that counter — is history: it only narrows the pin (marks, grants seen,
-    /// the signed bit), so reading history never adds trust.
+    /// than everything this machine accepted and checked out on a branch this
+    /// machine accepted before (or outside git). Any other accepted load — a
+    /// branch never accepted here (an unmerged pull request), a detached HEAD,
+    /// a branch behind the mark, the vault already accepted, or a different
+    /// vault with that counter — is history: it only narrows the pin (marks
+    /// of branches accepted before, grants seen, the signed bit), so reading
+    /// history never adds trust.
     Load,
     /// The user's decision: `murk trust`, or `murk init` creating the vault.
     /// `reset_counter` lowers this branch's mark to the vault's counter (a
@@ -1064,18 +1163,41 @@ pub fn accepted_pin(
         }
     );
     let found = loaded.vault.generation;
-    // Generation 0 is murk ≤ 0.13: no order, so every such load is current.
-    let current = match how {
-        Acceptance::Load => prior_v2.filter(|p| p.has_trust()).is_none_or(|p| {
-            *head != HeadState::Detached
-                && (found > p.generation || (found == 0 && p.generation == 0))
-        }),
-        Acceptance::Trust { .. } | Acceptance::OwnSave { .. } => true,
-    };
     let branch_seen = match head {
         HeadState::Branch(b) => prior_v2.is_some_and(|p| p.branches.contains_key(b)),
         _ => false,
     };
+    // Only the next state of a branch this machine accepted before (or of
+    // the vault outside git) is current: a branch it has never accepted —
+    // an unmerged pull request, say — is read as history and only narrows
+    // the pin, like a detached HEAD. Generation 0 is murk ≤ 0.13: no order,
+    // so every such load is current.
+    let current = match how {
+        Acceptance::Load => prior_v2.filter(|p| p.has_trust()).is_none_or(|p| {
+            let newer = found > p.generation || (found == 0 && p.generation == 0);
+            newer
+                && match head {
+                    HeadState::NotARepo => true,
+                    HeadState::Branch(_) => branch_seen,
+                    HeadState::Detached => false,
+                }
+        }),
+        Acceptance::Trust { .. } | Acceptance::OwnSave { .. } => true,
+    };
+    // Removals that do not apply on this branch (see `removal_applies`):
+    // their keys are still members here. A branch with no mark is judged
+    // without its git history: its loads are history, so this only decides
+    // what a save or `murk trust` there records.
+    let checkout = Checkout::at(head.clone());
+    let set_aside: BTreeSet<String> = prior_v2
+        .map(|p| {
+            p.removed
+                .keys()
+                .filter(|k| !removal_applies(p, k, &checkout))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
 
     let mut pin = prior_v2.cloned().unwrap_or_default();
     pin.v = pins::PIN_VERSION;
@@ -1098,30 +1220,33 @@ pub fn accepted_pin(
     let other_vault = !prior_id.is_empty() && prior_id != pin.vault_id;
     if other_vault {
         pin.removed.clear();
+        pin.removed_on.clear();
+    } else {
+        pin.trusted.extend(set_aside.iter().cloned());
     }
 
     let dropped = replace_trusted(&mut pin, loaded.vault, how, had_trust, current);
-    // A load on a branch never seen here may be a stale branch numbered past
-    // the mark: what it lacks is not recorded as removed.
     let record_removals = !other_vault
         && match how {
-            Acceptance::Load => current && (*head == HeadState::NotARepo || branch_seen),
+            Acceptance::Load => current,
             Acceptance::Trust { .. } | Acceptance::OwnSave { .. } => true,
         };
     if record_removals {
         for k in dropped {
-            let at = pin.removed.entry(k).or_insert(found);
+            let at = pin.removed.entry(k.clone()).or_insert(found);
             *at = (*at).max(found);
+            pin.removed_on.entry(k).or_default();
         }
     }
-    // Who comes back: a newer accepted vault listing the key (its signer was
-    // trusted, or this load is history and changes nothing), the user naming
-    // it, or this machine's own save adding it.
+    // Who comes back: a newer accepted vault listing the key where the
+    // removal applies (its signer was trusted, or this load is history and
+    // changes nothing), the user naming it, or this machine's own save adding
+    // it.
     let trusted = std::mem::take(&mut pin.trusted);
     match how {
         Acceptance::Load if current => pin
             .removed
-            .retain(|k, at| !(trusted.contains(k) && found > *at)),
+            .retain(|k, at| !(trusted.contains(k) && found > *at && !set_aside.contains(k))),
         Acceptance::Load => {}
         Acceptance::Trust { readmit, .. } => pin.removed.retain(|k, _| !readmit.contains(k)),
         Acceptance::OwnSave { before } => pin
@@ -1129,6 +1254,7 @@ pub fn accepted_pin(
             .retain(|k, _| !(trusted.contains(k) && before.is_none_or(|b| !b.contains(k)))),
     }
     pin.trusted = trusted;
+    record_removal_reach(&mut pin, loaded.vault, head);
     let removed = pin.removed.clone();
     pin.trusted.retain(|k| !removed.contains_key(k));
 
@@ -1141,6 +1267,35 @@ pub fn accepted_pin(
     pin.was_signed = matches!(loaded.signature, types::SignatureState::Signed { .. })
         || prior.is_some_and(|p| p.was_signed);
     pin
+}
+
+/// Keep `removed_on` in step with `removed`, and mark the removals the vault
+/// just accepted on branch `head` shows: a vault at or after a removal that
+/// does not list the key means the removal has reached this branch (it was
+/// made here, or merged or pulled into it).
+fn record_removal_reach(pin: &mut TrustPin, vault: &types::Vault, head: &HeadState) {
+    let TrustPin {
+        removed,
+        removed_on,
+        ..
+    } = pin;
+    removed_on.retain(|k, _| removed.contains_key(k));
+    let HeadState::Branch(branch) = head else {
+        return;
+    };
+    let listed: BTreeSet<String> = vault
+        .recipients
+        .iter()
+        .map(|r| canonical_recipient(r).into_owned())
+        .collect();
+    for (key, &at) in removed.iter() {
+        if vault.generation >= at && !listed.contains(key) {
+            removed_on
+                .entry(key.clone())
+                .or_default()
+                .insert(branch.clone());
+        }
+    }
 }
 
 /// Raise the counters for an accepted `vault`: the overall mark (and the
@@ -1164,6 +1319,11 @@ fn advance_marks(
     }
     if let HeadState::Branch(b) = head {
         let old = pin.branches.get(b).copied();
+        // History never gives a branch its first mark: the mark is what
+        // makes the branch's next state current.
+        if old.is_none() && !current {
+            return;
+        }
         let mark = match old {
             Some(m) if !reset_counter => m.max(found),
             _ => found,
@@ -1527,9 +1687,14 @@ mod tests {
         let main = HeadState::Branch("main".into());
         let feature = HeadState::Branch("feature".into());
         let at = |g| Case::new(&[A], g, A);
-        // main accepted at 5, then feature moved to 6.
+        // main accepted at 5, then this machine saved feature at 6.
         let pin = super::accepted_pin(&at(5).loaded(), None, Acceptance::Load, &main);
-        let pin = super::accepted_pin(&at(6).loaded(), Some(&pin), Acceptance::Load, &feature);
+        let pin = super::accepted_pin(
+            &at(6).loaded(),
+            Some(&pin),
+            Acceptance::OwnSave { before: None },
+            &feature,
+        );
         // Switching back to main (still 5) is fine; main going back to 4 is not.
         assert_eq!(
             super::verdict(&at(5).loaded(), Some(&pin), None, &main),
