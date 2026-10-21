@@ -27,40 +27,53 @@ struct MetaState {
     signature: types::SignatureState,
 }
 
-/// Determine the signature state of a decrypted meta, treating a present-but-
-/// invalid signature as tampering (hard error). An absent signature is
-/// `Unsigned` — integrity then rests on git, and the caller warns.
+/// Determine the signature state of a vault and its decrypted meta, treating a
+/// present-but-invalid signature as tampering (hard error). An absent signature
+/// is `Unsigned` — integrity then rests on git, and the caller warns.
+///
+/// Where a signature lives fixes its view: the top-level `Vault::sig` is always
+/// view 2, a signature inside the meta always view 1 (vaults from before 3.0).
+/// A vault carrying both, or either in the other's view, is refused.
 fn check_signature(
     vault: &types::Vault,
     meta: &types::Meta,
 ) -> Result<types::SignatureState, MurkError> {
-    match &meta.sig {
-        Some(sig) => {
-            if verify_vault_signature(
-                vault,
-                &meta.groups,
-                &meta.grants,
-                &meta.github_pins,
-                &meta.signers,
-                sig,
-            ) {
-                Ok(types::SignatureState::Signed {
-                    signer: sig.signer.clone(),
-                    // ssh-ed25519 keys are self-authenticating (vk in the recipient
-                    // string). age keys are anchored only by a matching local pin,
-                    // which `load_vault` confirms; default to not-yet-anchored here.
-                    anchored: sig.signer.starts_with("ssh-ed25519 "),
-                })
-            } else {
-                Err(MurkError::Integrity(
-                    "vault signature is invalid — it may have been tampered with, or a signer's \
-                     verifying key changed. Run `murk verify` for details"
-                        .into(),
-                ))
-            }
+    let invalid = || {
+        MurkError::Integrity(
+            "vault signature is invalid — it may have been tampered with, or a signer's \
+             verifying key changed. Run `murk verify` for details"
+                .into(),
+        )
+    };
+    let sig = match (&vault.sig, &meta.sig) {
+        (None, None) => return Ok(types::SignatureState::Unsigned),
+        (Some(sig), None) if sig.v > crate::signature::SIGNED_VIEW_VERSION => {
+            return Err(newer_murk(&format!(
+                "its signature format (signed view v{})",
+                sig.v
+            )));
         }
-        None => Ok(types::SignatureState::Unsigned),
+        (Some(sig), None) if sig.v == 2 => sig,
+        (None, Some(sig)) if sig.v == 1 => sig,
+        _ => return Err(invalid()),
+    };
+    if !verify_vault_signature(
+        vault,
+        &meta.groups,
+        &meta.grants,
+        &meta.github_pins,
+        &meta.signers,
+        sig,
+    ) {
+        return Err(invalid());
     }
+    Ok(types::SignatureState::Signed {
+        signer: sig.signer.clone(),
+        // ssh-ed25519 keys are self-authenticating (vk in the recipient
+        // string). age keys are anchored only by a matching local pin,
+        // which `load_vault` confirms; default to not-yet-anchored here.
+        anchored: sig.signer.starts_with("ssh-ed25519 "),
+    })
 }
 
 /// Decrypt the meta blob and verify the vault's integrity MAC, returning the
@@ -75,6 +88,16 @@ fn resolve_meta_state(
 ) -> Result<MetaState, MurkError> {
     if vault.meta.is_empty() {
         if vault.secrets.is_empty() {
+            // An empty-meta vault proves nothing about who may write to it: anyone
+            // with repo write can publish one listing only their own key. Unless
+            // the header lists our key, treat it like any vault we can't open, so
+            // a write can't encrypt our secrets to recipients someone else chose.
+            if !identity
+                .pubkey_string()
+                .is_ok_and(|pk| is_listed_recipient(vault, &pk))
+            {
+                return Err(not_a_recipient());
+            }
             return Ok(MetaState {
                 recipients: HashMap::new(),
                 groups: BTreeMap::new(),
@@ -122,9 +145,7 @@ fn resolve_meta_state(
                     "your key is listed as a recipient but cannot decrypt the vault meta — vault may have been tampered with".into(),
                 ));
             }
-            return Err(MurkError::Crypto(crypto::CryptoError::Decrypt(
-                "you are not a recipient of this vault. Run `murk circle` to check, or ask a recipient to authorize you".into(),
-            )));
+            return Err(not_a_recipient());
         }
     };
     let meta: types::Meta = serde_json::from_slice(&plaintext).map_err(|_| {
@@ -162,6 +183,12 @@ fn resolve_meta_state(
         &meta.mac,
         mac_key.as_ref(),
     ) {
+        if crate::mac::is_newer_mac_scheme(&meta.mac) {
+            return Err(newer_murk(&format!(
+                "its MAC scheme ({})",
+                crate::validate::show(meta.mac.split(':').next().unwrap_or_default())
+            )));
+        }
         let expected = compute_mac(vault, &meta.groups, &meta.grants, mac_key.as_ref());
         return Err(MurkError::Integrity(format!(
             "vault may have been tampered with (expected {expected}, got {})",
@@ -181,10 +208,24 @@ fn resolve_meta_state(
     })
 }
 
+fn not_a_recipient() -> MurkError {
+    MurkError::Crypto(crypto::CryptoError::Decrypt(
+        "you are not a recipient of this vault. Run `murk circle` to check, or ask a recipient to authorize you".into(),
+    ))
+}
+
+/// A vault format element this build doesn't understand: report it as a newer
+/// murk's output, not as tampering, so the fix (upgrading) is obvious.
+fn newer_murk(what: &str) -> MurkError {
+    MurkError::Integrity(format!(
+        "this vault was written by a newer murk: this build does not understand {what}. Upgrade murk to read it"
+    ))
+}
+
 /// Whether `pubkey` names one of the vault's public header recipients. SSH
 /// entries may be stored with a trailing comment while `pubkey_string()` drops
 /// it, so ssh keys compare by key type and blob only.
-fn is_listed_recipient(vault: &types::Vault, pubkey: &str) -> bool {
+pub(crate) fn is_listed_recipient(vault: &types::Vault, pubkey: &str) -> bool {
     fn ssh_head(s: &str) -> Option<(&str, &str)> {
         let mut it = s.split_whitespace();
         match (it.next(), it.next()) {
@@ -468,6 +509,80 @@ mod tests {
     }
 
     #[test]
+    fn forged_header_field_with_recomputed_mac_fails_load() {
+        // An outsider rewrites a header identity field, re-MACs with a fresh key
+        // and re-encrypts the meta to the public recipient key, keeping the
+        // stale signature. The signature must cover the header, so load fails.
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let home = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let (secret, pubkey) = generate_keypair();
+        let recipient = make_recipient(&pubkey);
+        let identity = make_identity(&secret);
+        unsafe { std::env::set_var("MURK_KEY", &secret) };
+        unsafe { std::env::remove_var("MURK_KEY_FILE") };
+
+        let forge: [(&str, VaultRewrite); 3] = [
+            ("vault_name", |v| v.vault_name = "payments-prod".into()),
+            ("repo", |v| v.repo = "https://github.com/evil/fork".into()),
+            ("created", |v| v.created = "2020-01-01T00:00:00Z".into()),
+        ];
+        let mut failures = Vec::new();
+        for (field, rewrite) in forge {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("test.murk");
+            let ps = path.to_str().unwrap();
+            let mut vault = signed_test_vault(&pubkey, &recipient);
+            let original = types::Murk {
+                values: HashMap::from([("API_KEY".into(), crate::testutil::secret("REAL"))]),
+                recipients: HashMap::from([(pubkey.clone(), "alice".to_string())]),
+                ..Default::default()
+            };
+            save_vault(ps, &mut vault, &original, &original).unwrap();
+
+            let mut tampered: types::Vault =
+                serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+            let stale_meta = decrypt_meta(&tampered, &identity).unwrap().unwrap();
+            rewrite(&mut tampered);
+            let mac_key_hex = generate_mac_key();
+            let mac_key = decode_mac_key(&mac_key_hex).unwrap();
+            let forged_meta = types::Meta {
+                mac: compute_mac(
+                    &tampered,
+                    &stale_meta.groups,
+                    &stale_meta.grants,
+                    Some(&mac_key),
+                ),
+                mac_key: Some(mac_key_hex),
+                ..stale_meta
+            };
+            tampered.meta = encrypt_value(
+                &serde_json::to_vec(&forged_meta).unwrap(),
+                std::slice::from_ref(&recipient),
+            )
+            .unwrap();
+            fs::write(&path, serde_json::to_string_pretty(&tampered).unwrap()).unwrap();
+
+            match load_vault(ps) {
+                Err(e) if e.to_string().contains("signature is invalid") => {}
+                other => failures.push(format!("{field}: {:?}", other.map(|_| ()))),
+            }
+        }
+        unsafe { std::env::remove_var("MURK_KEY") };
+        match prev_home {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert!(
+            failures.is_empty(),
+            "forged header fields loaded: {failures:?}"
+        );
+    }
+
+    #[test]
     #[allow(clippy::too_many_lines)] // one case per untrusted meta field
     fn load_rejects_invalid_meta_fields_naming_them() {
         // The meta blob is re-encryptable by anyone holding the public
@@ -641,17 +756,26 @@ mod tests {
             encrypt_value(b"POISON", std::slice::from_ref(&recipient)).unwrap();
         let mut signers = stale.signers.clone();
         signers.insert(pubkey.clone(), att_vk);
-        let msg = signing_message(
-            &tampered,
-            &stale.groups,
-            &stale.grants,
-            &stale.github_pins,
-            &signers,
-        );
+        let mac_key_hex = generate_mac_key();
+        let mac_key = decode_mac_key(&mac_key_hex).unwrap();
+        let mac = compute_mac(&tampered, &stale.groups, &stale.grants, Some(&mac_key));
+        let forged_meta = types::Meta {
+            mac,
+            mac_key: Some(mac_key_hex),
+            sig: None,
+            signers: signers.clone(),
+            ..stale.clone()
+        };
+        tampered.meta = encrypt_value(
+            &serde_json::to_vec(&forged_meta).unwrap(),
+            std::slice::from_ref(&recipient),
+        )
+        .unwrap();
+        tampered.sig = None;
         let forged_sig = types::VaultSignature {
             signer: pubkey.clone(),
             v: SIGNED_VIEW_VERSION,
-            sig: signing::sign(&att_sk, &msg),
+            sig: signing::sign(&att_sk, &signing_message_v2(&tampered)),
         };
         // The signature layer alone IS fooled — it verifies against the swapped key.
         assert!(verify_vault_signature(
@@ -662,21 +786,7 @@ mod tests {
             &signers,
             &forged_sig
         ));
-        let mac_key_hex = generate_mac_key();
-        let mac_key = decode_mac_key(&mac_key_hex).unwrap();
-        let mac = compute_mac(&tampered, &stale.groups, &stale.grants, Some(&mac_key));
-        let forged_meta = types::Meta {
-            mac,
-            mac_key: Some(mac_key_hex),
-            sig: Some(forged_sig),
-            signers,
-            ..stale
-        };
-        tampered.meta = encrypt_value(
-            &serde_json::to_vec(&forged_meta).unwrap(),
-            std::slice::from_ref(&recipient),
-        )
-        .unwrap();
+        tampered.sig = Some(forged_sig);
         fs::write(&path, serde_json::to_string_pretty(&tampered).unwrap()).unwrap();
 
         // The pin catches the changed verifying key even though the signature verifies.
@@ -715,6 +825,10 @@ mod tests {
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec![pubkey.clone()],
             schema: BTreeMap::new(),
             policy: None,
@@ -785,6 +899,10 @@ mod tests {
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec![pubkey.clone()],
             schema: BTreeMap::new(),
             policy: None,
@@ -834,7 +952,6 @@ mod tests {
 
         let (secret, pubkey) = generate_keypair();
         let recipient = make_recipient(&pubkey);
-        let identity = make_identity(&secret);
 
         let dir = std::env::temp_dir().join("murk_test_sig_downgrade");
         let _ = fs::remove_dir_all(&dir);
@@ -860,6 +977,10 @@ mod tests {
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec![pubkey.clone()],
             schema: BTreeMap::new(),
             policy: None,
@@ -889,13 +1010,10 @@ mod tests {
         ));
         assert!(!murk.signature_downgraded);
 
-        // Strip the signature: decrypt meta, clear sig, re-encrypt. The MAC does
-        // not cover the sig, so it stays valid — a clean unsigned downgrade.
+        // Strip the signature: it lives outside the meta and the MAC does not
+        // cover it, so dropping it leaves a clean unsigned downgrade.
         let mut on_disk = read_vault(path_str).unwrap();
-        let mut meta = decrypt_meta(&on_disk, &identity).unwrap().unwrap();
-        meta.sig = None;
-        let meta_json = serde_json::to_vec(&meta).unwrap();
-        on_disk.meta = encrypt_value(&meta_json, std::slice::from_ref(&recipient)).unwrap();
+        on_disk.sig = None;
         vault::write(std::path::Path::new(path_str), &on_disk).unwrap();
 
         // Second load: unsigned now, flagged as a downgrade (not a hard fail).
@@ -946,6 +1064,10 @@ mod tests {
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec![other_pubkey.clone()],
             schema: BTreeMap::new(),
             policy: None,
@@ -1062,6 +1184,10 @@ mod tests {
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec![pubkey.clone()],
             schema: BTreeMap::new(),
             policy: None,
@@ -1115,6 +1241,10 @@ mod tests {
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec![pubkey.clone()],
             schema: BTreeMap::new(),
             policy: None,
@@ -1218,6 +1348,10 @@ mod tests {
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec![pubkey.clone()],
             schema: BTreeMap::new(),
             policy: None,

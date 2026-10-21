@@ -61,6 +61,10 @@ pub(crate) fn cmd_skeleton(output: Option<&str>, vault_path: &str) {
         created: vault.created,
         vault_name: vault.vault_name,
         repo: vault.repo,
+        vault_id: String::new(),
+        generation: 0,
+        agents: BTreeMap::new(),
+        sig: None,
         recipients: Vec::new(),
         schema: vault.schema,
         // Policy is public header metadata (like schema) — keep it in the

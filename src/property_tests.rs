@@ -451,7 +451,9 @@ fn legacy_unkeyed_mac_vault_sets_legacy_flag() {
     let p = make_party();
     let rec = p.recipient();
 
+    // Legacy MACs only appear in vaults written before 3.0.
     let mut vault = empty_vault();
+    vault.version = "2.0".into();
     vault.recipients = vec![p.pubkey.clone()];
     vault.secrets.insert(
         "K".into(),

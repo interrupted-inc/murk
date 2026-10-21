@@ -723,3 +723,160 @@ fn tampered_recipients_fails_integrity() {
         .failure()
         .stderr(predicate::str::contains("integrity").or(predicate::str::contains("tampered")));
 }
+
+// ── Header identity fields ──
+
+/// Each header identity field an attacker might rewrite, with a forged value.
+const FORGED_HEADER_FIELDS: &[(&str, &str)] = &[
+    ("vault_name", "\"payments-prod\""),
+    ("repo", "\"https://github.com/evil/fork\""),
+    ("created", "\"2020-01-01T00:00:00Z\""),
+    ("vault_id", "\"0123456789abcdef0123456789abcdef\""),
+    ("generation", "7"),
+];
+
+/// Rewrite one top-level field of the vault file at `path`.
+fn set_header_field(path: &std::path::Path, field: &str, json_value: &str) {
+    let mut val: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    val[field] = serde_json::from_str(json_value).unwrap();
+    fs::write(path, serde_json::to_string_pretty(&val).unwrap()).unwrap();
+}
+
+#[test]
+fn forged_header_field_fails_verify() {
+    for (field, forged) in FORGED_HEADER_FIELDS {
+        let dir = TempDir::new().unwrap();
+        let (key, _) = init_vault(&dir);
+        murk(&dir, &key)
+            .args(["add", "SECRET", "--vault", "test.murk"])
+            .write_stdin("realvalue\n")
+            .assert()
+            .success();
+
+        set_header_field(&dir.path().join("test.murk"), field, forged);
+
+        let out = murk(&dir, &key)
+            .args(["verify", "--vault", "test.murk"])
+            .output()
+            .unwrap();
+        assert!(
+            !out.status.success(),
+            "forged `{field}` must fail verify, got: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("tampered"),
+            "forged `{field}` must read as tampering, got: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+/// A vault written and signed by murk 0.13.0 (header version 2.0, MAC
+/// `blake3v7`-era scheme, signed view 1 inside the meta), with its key.
+const V0_13_VAULT: &str = include_str!("fixtures/v0_13_signed.murk");
+const V0_13_KEY: &str = include_str!("fixtures/v0_13_signed.key");
+
+#[test]
+fn vault_from_0_13_verifies_and_upgrades_on_write() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test.murk");
+    fs::write(&path, V0_13_VAULT).unwrap();
+    // As git checks it out, whatever the test process umask: `verify` flags a
+    // group-writable vault.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    let key = V0_13_KEY.trim();
+
+    // Reads and verifies as before.
+    murk(&dir, key)
+        .args(["verify", "--vault", "test.murk"])
+        .assert()
+        .success();
+    murk(&dir, key)
+        .args(["get", "API_KEY", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with("fixture-secret-value-0123"));
+
+    // The next write upgrades it to the 3.x format: top-level view-2 signature.
+    murk(&dir, key)
+        .args(["add", "OTHER", "--vault", "test.murk"])
+        .write_stdin("othervalue123\n")
+        .assert()
+        .success();
+    let upgraded: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(upgraded["version"], "3.0");
+    assert_eq!(upgraded["sig"]["v"], 2);
+    murk(&dir, key)
+        .args(["verify", "--vault", "test.murk"])
+        .assert()
+        .success();
+    murk(&dir, key)
+        .args(["get", "API_KEY", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with("fixture-secret-value-0123"));
+
+    // Once upgraded, the header identity fields are covered.
+    set_header_field(&path, "vault_name", "\"payments-prod\"");
+    murk(&dir, key)
+        .args(["verify", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("tampered"));
+}
+
+// ── Writing into a vault you are not on ──
+
+#[test]
+fn skeleton_vault_listing_only_attacker_refuses_victim_write() {
+    // An outsider with repo write replaces the vault with a skeleton that lists
+    // only their own key. The victim's write must not encrypt to that key.
+    let mallory_dir = TempDir::new().unwrap();
+    let (mallory_key, mallory_pk) = init_vault(&mallory_dir);
+
+    let dir = TempDir::new().unwrap();
+    let (bob_key, _) = init_vault(&dir);
+    let path = dir.path().join("test.murk");
+    let skeleton = serde_json::json!({
+        "version": "2.0",
+        "created": "2026-01-01T00:00:00Z",
+        "vault_name": "test.murk",
+        "recipients": [mallory_pk],
+        "schema": {},
+        "secrets": {},
+        "meta": "",
+    });
+    let planted = serde_json::to_string_pretty(&skeleton).unwrap();
+    fs::write(&path, &planted).unwrap();
+
+    murk(&dir, &bob_key)
+        .args(["add", "DB_PASSWORD", "--vault", "test.murk"])
+        .write_stdin("prod-db-password-123\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not a recipient"));
+    fs::write(
+        dir.path().join("restore.env"),
+        "DB_PASSWORD=prod-db-password-123\n",
+    )
+    .unwrap();
+    murk(&dir, &bob_key)
+        .args(["import", "restore.env", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not a recipient"));
+
+    // Nothing was written, so mallory has nothing to read.
+    assert_eq!(fs::read_to_string(&path).unwrap(), planted);
+    murk(&dir, &mallory_key)
+        .args(["get", "DB_PASSWORD", "--vault", "test.murk"])
+        .assert()
+        .failure();
+}

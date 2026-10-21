@@ -6,8 +6,10 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-/// Current vault format version.
-pub const VAULT_VERSION: &str = "2.0";
+/// Current vault format version. Major 3 marks vaults whose MAC (`blake3v8:`)
+/// and signed view (v2) cover the header identity fields; a 2.x murk refuses
+/// them as an unsupported version instead of reporting tampering.
+pub const VAULT_VERSION: &str = "3.0";
 
 /// Default vault filename.
 pub const DEFAULT_VAULT_NAME: &str = ".murk";
@@ -24,6 +26,12 @@ pub struct Vault {
     /// Repository URL, auto-detected from git remote during init.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub repo: String,
+    /// Random vault identity (32 lowercase hex chars = 16 bytes), minted at init or on the first 0.14 save of an older vault. Binds a signature to one vault, so another vault's file (staging.murk over .murk) is refused.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vault_id: String,
+    /// Monotonic save counter. Every save writes max(loaded, highest seen on this machine) + 1; merges write max(ours, theirs) + 1. Loaders refuse a value below the highest they accepted ("rolled back").
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub generation: u64,
     /// Public keys only — no names. Name mappings live in the encrypted meta blob.
     pub recipients: Vec<String>,
     /// Key metadata — public, readable without decryption.
@@ -35,10 +43,26 @@ pub struct Vault {
     /// byte-identical to pre-policy murk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<Policy>,
+    /// Per-grant encrypted blobs: canonical grant pubkey → base64 age ciphertext
+    /// encrypted to that grant pubkey only. Covered by the MAC (`blake3v8:`) and
+    /// the signature. Absent when the vault has no grants.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub agents: BTreeMap<String, String>,
     /// Per-value encrypted secrets. Each value is a separate age ciphertext.
     pub secrets: BTreeMap<String, SecretEntry>,
     /// Encrypted metadata blob: recipient names and integrity MAC.
     pub meta: String,
+    /// Ed25519 signature (signed view v2) over this whole vault serialized with
+    /// `sig` omitted: every header field plus the `meta` and `agents`
+    /// ciphertexts. Kept last and outside the meta so the file alone can be
+    /// verified. Vaults from before 3.0 carry a view-1 signature in the meta.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sig: Option<VaultSignature>,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if passes `&T`
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
