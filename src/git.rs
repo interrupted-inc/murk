@@ -558,11 +558,44 @@ fn is_commit_id(id: &str) -> bool {
     matches!(id.len(), 40 | 64) && id.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// Run a git command in `dir`, output discarded; whether it succeeded.
+fn git_succeeds(dir: &Path, cmd: &mut Command) -> bool {
+    cmd.current_dir(dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// Whether the vault file `name` in `dir` is exactly the one committed at
+/// HEAD (tracked, no uncommitted change).
+fn vault_committed_at_head(dir: &Path, name: &std::ffi::OsStr) -> bool {
+    git_succeeds(
+        dir,
+        git_command()
+            .args(["cat-file", "-e"])
+            .arg(format!("HEAD:./{}", name.to_string_lossy())),
+    ) && git_succeeds(
+        dir,
+        git_command()
+            .args(["diff", "--quiet", "HEAD", "--"])
+            .arg(name),
+    )
+}
+
+/// The commit checked out in the checkout holding `abs_vault`, only when
+/// the vault file is exactly the one committed there (see [`head_commit`]).
+pub fn head_commit_holding_vault(abs_vault: &Path) -> Option<String> {
+    let commit = head_commit(abs_vault)?;
+    let (dir, name) = (abs_vault.parent()?, abs_vault.file_name()?);
+    vault_committed_at_head(dir, name).then_some(commit)
+}
+
 /// Whether the commit checked out in the checkout holding `abs_vault` is
 /// `commit` or an ancestor of it, and the vault file is exactly the one
 /// committed at HEAD — so the vault being read is that commit's, not an
 /// uncommitted copy of another. False when git fails, `commit` is unknown
-/// here, or it is not a full commit id.
+/// here (rewritten and collected, say), or it is not a full commit id.
 pub fn committed_vault_at_or_before(abs_vault: &Path, commit: &str) -> bool {
     let (Some(dir), Some(name)) = (abs_vault.parent(), abs_vault.file_name()) else {
         return false;
@@ -570,26 +603,12 @@ pub fn committed_vault_at_or_before(abs_vault: &Path, commit: &str) -> bool {
     if !is_commit_id(commit) || worktree_root(dir).is_none() {
         return false;
     }
-    let quiet = |cmd: &mut Command| {
-        cmd.current_dir(dir)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-    };
-    quiet(
+    git_succeeds(
+        dir,
         git_command()
             .args(["merge-base", "--is-ancestor", "HEAD"])
             .arg(commit),
-    ) && quiet(
-        git_command()
-            .args(["cat-file", "-e"])
-            .arg(format!("HEAD:./{}", name.to_string_lossy())),
-    ) && quiet(
-        git_command()
-            .args(["diff", "--quiet", "HEAD", "--"])
-            .arg(name),
-    )
+    ) && vault_committed_at_head(dir, name)
 }
 
 /// A path naming a vault the same way from every worktree of its repository:
