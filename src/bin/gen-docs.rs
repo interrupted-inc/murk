@@ -8,6 +8,8 @@
 //! Generates:
 //!   - docs/cli-reference.md   — the command reference, from the clap model.
 //!   - docs/env-reference.md   — the environment-variable reference.
+//!   - docs/permissions.md     — the role × command authorization matrix, from
+//!     the table `tests/auth_matrix.rs` enforces.
 //!
 //! Regenerate:  `cargo run --features doc-gen --bin gen-docs`
 //! Check (CI):  `cargo run --features doc-gen --bin gen-docs -- --check`
@@ -20,6 +22,10 @@ use std::process::ExitCode;
 use clap::{CommandFactory, ValueEnum};
 use clap_complete::{Generator, Shell};
 use murk_cli::cli::Cli;
+
+/// The authorization matrix, shared with `tests/auth_matrix.rs`.
+#[path = "../../tests/auth_matrix/table.rs"]
+mod table;
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -151,6 +157,116 @@ fn env_reference() -> (PathBuf, String) {
     )
 }
 
+/// The role × command authorization matrix, rendered from the table that
+/// `tests/auth_matrix.rs` enforces cell by cell.
+fn permissions() -> (PathBuf, String) {
+    use table::{Basis, EDITOR_UNIX_ONLY, NOT_IN_MATRIX, ROWS, Role, UNDER_REVIEW, Verdict};
+
+    let mut body = String::from(
+        "# murk permissions matrix\n\n\
+         Who can run which vault command. Each row is a command and each column \
+         a role; `yes` means murk runs it, `no` means it refuses and leaves the \
+         vault file unchanged, and `conflict` (merge driver only) means it \
+         stops with a merge conflict, so git commits nothing. An allowed read \
+         shows only the values that role can read, and an allowed write never \
+         gives anyone read access to a value that the command doesn't name. \
+         `tests/auth_matrix.rs` checks every cell against the real binary.\n\n\
+         The rows run against one fixture vault:\n\n\
+         - `SHARED`: shared with everyone. The override owner also has a \
+         personal (`--group me`) value for it.\n\
+         - `OPS`: held by the group `ops`.\n\
+         - `PRIV`: only the override owner's personal value.\n\
+         - `AGENT_OK`: shared with everyone, and the scope of the agent grants.\n\
+         - Every key carries the tag `agents`, which the agent policy allows.\n\
+         - `spare` is a recipient in `ops` that commands act on. `idle` is a \
+         group with no secrets, whose members are the owner and the group \
+         member. `X` is a key that isn't on the vault yet.\n\n\
+         A cell marked with a number was decided where the policy left it open; \
+         the notes below the table give the reason. A cell marked `current` \
+         records what murk does today on a question that is still open; see \
+         [Under review](#under-review).\n\n\
+         ## Roles\n\n",
+    );
+    for role in Role::ALL {
+        body.push_str(&format!("- **{}**: {}.\n", role.heading(), role.describe()));
+    }
+
+    // Number each distinct reason in order of first use.
+    let mut reasons: Vec<&str> = Vec::new();
+    body.push_str("\n## Matrix\n\n| Command |");
+    for role in Role::ALL {
+        body.push_str(&format!(" {} |", role.heading()));
+    }
+    body.push_str("\n| --- |");
+    body.push_str(&" --- |".repeat(Role::ALL.len()));
+    body.push('\n');
+    for row in ROWS {
+        body.push_str(&format!("| `{}` |", row.command));
+        for cell in &row.cells {
+            let mark = match cell.verdict {
+                Verdict::Allow => "yes",
+                Verdict::Refuse => "no",
+                Verdict::Conflict => "conflict",
+            };
+            match cell.basis {
+                Basis::Decided(reason) => {
+                    let n = match reasons.iter().position(|r| *r == reason) {
+                        Some(i) => i + 1,
+                        None => {
+                            reasons.push(reason);
+                            reasons.len()
+                        }
+                    };
+                    body.push_str(&format!(" {mark} ({n}) |"));
+                }
+                Basis::UnderReview => body.push_str(&format!(" {mark} (current) |")),
+                Basis::Policy => body.push_str(&format!(" {mark} |")),
+            }
+        }
+        body.push('\n');
+    }
+
+    body.push_str("\n## Decided cells\n\n");
+    for (i, reason) in reasons.iter().enumerate() {
+        body.push_str(&format!("{}. {reason}.\n", i + 1));
+    }
+
+    body.push_str(&format!(
+        "\n## Under review\n\n\
+         The cells marked `current` show what murk does today, not a settled \
+         rule. Whether every recipient should be able to run these commands is \
+         an open product question. The test checks today's behaviour so that \
+         any change is deliberate: if murk gains an admin role, these cells \
+         change in the table.\n\n\
+         How it works today: {UNDER_REVIEW}\n"
+    ));
+
+    let unix_only: Vec<String> = ROWS
+        .iter()
+        .filter(|row| row.editor)
+        .map(|row| format!("`{}`", row.command))
+        .collect();
+    body.push_str(&format!(
+        "\n## Platforms\n\n\
+         Every row runs on Linux, macOS and Windows except {}, which run on \
+         Linux and macOS only: {EDITOR_UNIX_ONLY}.\n",
+        unix_only.join(" and ")
+    ));
+
+    body.push_str("\n## Not in the matrix\n\n");
+    for (command, why) in NOT_IN_MATRIX {
+        body.push_str(&format!("- `{command}`: {why}.\n"));
+    }
+
+    (
+        manifest_dir().join("docs/permissions.md"),
+        format!(
+            "<!-- Generated by `cargo run --features doc-gen --bin gen-docs` from \
+             tests/auth_matrix/table.rs. Do not edit by hand; CI checks it. -->\n\n{body}"
+        ),
+    )
+}
+
 /// Shell completion scripts for every shell clap_complete supports.
 fn completions() -> Vec<(PathBuf, String)> {
     let mut out = Vec::new();
@@ -207,7 +323,7 @@ const MANAGED_DIRS: &[&str] = &["docs/completions", "docs/man"];
 
 /// Every generated artifact: (path, expected content).
 fn artifacts() -> Vec<(PathBuf, String)> {
-    let mut a = vec![cli_reference(), env_reference()];
+    let mut a = vec![cli_reference(), env_reference(), permissions()];
     a.extend(completions());
     a.extend(man_pages());
     a

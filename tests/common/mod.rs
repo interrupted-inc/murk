@@ -127,3 +127,5 @@ pub fn init_vault(dir: impl AsRef<Path>) -> (String, String) {
 
     (murk_key, pubkey)
 }
+
+pub mod cast;

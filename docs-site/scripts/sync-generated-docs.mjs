@@ -4,7 +4,7 @@
 // Mirror the repo's generated documentation into the Starlight content
 // collection.
 //
-// docs/cli-reference.md and docs/env-reference.md are produced by
+// docs/cli-reference.md, docs/env-reference.md and docs/permissions.md are produced by
 // `cargo run --features doc-gen --bin gen-docs` and CI-checked. This script is
 // the docs site's only bridge to them: for each, it strips the generated-file
 // banner and the leading H1, prepends Starlight frontmatter, and writes the
@@ -37,6 +37,15 @@ const artifacts = [
       "Terse reference of the environment variables murk reads, generated from the doc registry.",
     order: 2,
     h1: /^#\s+murk environment variable reference\s*\n+/,
+  },
+  {
+    source: "../../docs/permissions.md",
+    target: "../src/content/docs/reference/permissions.md",
+    title: "Permissions matrix",
+    description:
+      "Which roles can run which vault commands, generated from the table murk's tests enforce.",
+    order: 5,
+    h1: /^#\s+murk permissions matrix\s*\n+/,
   },
 ];
 
