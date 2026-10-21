@@ -980,7 +980,9 @@ fn github_onboarding_extends_trust_to_the_new_member() {
         serde_json::from_str(&fs::read_to_string(repo.join(".murk")).unwrap()).unwrap();
     let pin: serde_json::Value = fs::read_dir(carol.home.join(".config/murk/signer-pins"))
         .unwrap()
-        .map(|e| serde_json::from_str(&fs::read_to_string(e.unwrap().path()).unwrap()).unwrap())
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .map(|p| serde_json::from_str(&fs::read_to_string(p).unwrap()).unwrap())
         .find(|p: &serde_json::Value| p["vault_id"] == vault["vault_id"])
         .expect("Carol's pin for the team vault");
     let trusted: Vec<&str> = pin["trusted"]

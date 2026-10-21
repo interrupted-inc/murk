@@ -242,9 +242,9 @@ fn drop_ghost_grants(vault: &types::Vault, murk: &mut types::Murk, pubkey: &str)
     if vault.version.starts_with("2.") {
         return;
     }
-    let me = crate::recipients::canonical_recipient(pubkey);
+    let me = crate::recipients::canonical_recipient(pubkey).into_owned();
     murk.grants
-        .retain(|_, g| crate::recipients::canonical_recipient(&g.pubkey) != me);
+        .retain(|_, g| crate::recipients::canonical_recipient(&g.pubkey).into_owned() != me);
 }
 
 fn not_a_recipient() -> MurkError {
@@ -500,6 +500,7 @@ fn inspect_as_grant(
             verdict: trust::Verdict::Trusted,
             pin: None,
             env_signers: None,
+            external: None,
         },
         signer_vk: None,
         grant: true,
@@ -553,8 +554,9 @@ impl InspectedVault {
 
     /// Record this vault as accepted in the trust pin — the explicit `murk
     /// trust` decision. `reset_counter` lowers the rollback high-water mark to
-    /// this vault's counter (an older revision accepted on purpose). A v1
-    /// signer's verifying key is replaced by the one this vault carries.
+    /// this vault's counter (an older revision accepted on purpose). The pin
+    /// is re-read under its lock, so anything another process recorded since
+    /// this vault was inspected is kept.
     pub fn record_trust(&self, vault_path: &str, reset_counter: bool) -> Result<(), String> {
         if self.grant {
             return Err(
@@ -562,28 +564,25 @@ impl InspectedVault {
                     .into(),
             );
         }
-        let mut pin = trust::accepted_pin(
-            &self.loaded(),
-            self.assessment.pin.as_ref(),
-            reset_counter,
-            &trust::head_of(vault_path),
-        );
-        if let (types::SignatureState::Signed { signer, .. }, Some(vk)) =
-            (&self.murk.signature, &self.signer_vk)
-        {
-            pin.signers.insert(
-                crate::recipients::canonical_recipient(signer).into_owned(),
-                vk.clone(),
-            );
-        }
-        crate::pins::write(vault_path, &pin)
+        let loaded = self.loaded();
+        crate::pins::update(vault_path, |fresh| {
+            Ok(Some(trust::accepted_pin(
+                &loaded,
+                fresh,
+                reset_counter,
+                &trust::head_of(vault_path),
+            )))
+        })
     }
 
     /// Refuse unless the verdict accepts the vault; on acceptance, update the
-    /// pin. The update is best-effort: the vault is trusted either way, so a
-    /// pin that cannot be written (read-only home) only warns. When the trust
-    /// came from `MURK_TRUSTED_SIGNERS`, the pin's trusted set is left as it
-    /// was, so the environment variable never widens trust that outlives it.
+    /// pin. The acceptance is confirmed against the pin as it is now, re-read
+    /// under its lock: if another process accepted a newer revision since, the
+    /// vault is refused rather than recorded over it. Writing is best-effort —
+    /// a pin that cannot be written (read-only home) only warns. When the
+    /// trust came from `MURK_TRUSTED_SIGNERS`, the pin's trusted set is left
+    /// as it was, so the environment variable never widens trust that
+    /// outlives it.
     pub fn into_trusted(
         self,
         vault_path: &str,
@@ -594,25 +593,35 @@ impl InspectedVault {
                 return Err(MurkError::Trust(msg));
             }
             trust::Verdict::Trusted if self.grant => {}
-            trust::Verdict::Trusted => {
-                let prior = self.assessment.pin.as_ref();
-                let mut pin =
-                    trust::accepted_pin(&self.loaded(), prior, false, &trust::head_of(vault_path));
-                if self.assessment.env_signers.is_some() {
-                    let prior = prior.cloned().unwrap_or_default();
-                    pin.trusted = prior.trusted;
-                    pin.ever_trusted = prior.ever_trusted;
-                    pin.signers = prior.signers;
-                    pin.groups = prior.groups;
+            trust::Verdict::Trusted if crate::pins::signer_pin_available() => {
+                let loaded = self.loaded();
+                let mut refused = None;
+                let written = crate::pins::update(vault_path, |fresh| {
+                    if let trust::Verdict::Refused(r) =
+                        trust::reassess(vault_path, &loaded, &self.assessment, fresh)
+                    {
+                        refused = Some(trust::refusal_message(vault_path, &r, &loaded, fresh));
+                        return Ok(None);
+                    }
+                    let mut pin =
+                        trust::accepted_pin(&loaded, fresh, false, &trust::head_of(vault_path));
+                    if self.assessment.env_signers.is_some() {
+                        let prior = fresh.cloned().unwrap_or_default();
+                        pin.trusted = prior.trusted;
+                        pin.ever_trusted = prior.ever_trusted;
+                        pin.signers = prior.signers;
+                        pin.groups = prior.groups;
+                    }
+                    Ok((fresh != Some(&pin)).then_some(pin))
+                });
+                if let Some(msg) = refused {
+                    return Err(MurkError::Trust(msg));
                 }
-                if prior != Some(&pin)
-                    && crate::pins::signer_pin_available()
-                    && let Err(e) = crate::pins::write(vault_path, &pin)
-                {
+                if let Err(e) = written {
                     eprintln!("warn {e}");
                 }
             }
-            trust::Verdict::UnsignedAllowed => {}
+            trust::Verdict::Trusted | trust::Verdict::UnsignedAllowed => {}
         }
         Ok((self.vault, self.murk, self.identity))
     }
@@ -643,6 +652,7 @@ pub fn inspect_vault(vault_path: &str) -> Result<InspectedVault, MurkError> {
             verdict: trust::Verdict::UnsignedAllowed,
             pin: None,
             env_signers: None,
+            external: None,
         },
         signer_vk,
         grant: false,
@@ -1799,5 +1809,74 @@ mod tests {
             Some(v) => unsafe { std::env::set_var("HOME", v) },
             None => unsafe { std::env::remove_var("HOME") },
         }
+    }
+
+    #[test]
+    fn accepting_inspected_revisions_out_of_order_never_lowers_the_pin() {
+        // Two loads read the pin before either is accepted (two processes, or
+        // two worktrees sharing one pin), then accept in reverse order: the
+        // newer revision first, the older second. The older acceptance must
+        // not write back the pin it read — lowering the rollback mark and
+        // dropping the grant key the newer revision recorded.
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let prev_home = std::env::var_os("HOME");
+        let alice = Machine::new();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("team.murk");
+        let path = path.to_str().unwrap();
+        alice.run(|| {
+            let id = crypto::parse_identity(&alice.secret).unwrap();
+            let v = crate::create_vault("team.murk", &id, "alice").unwrap();
+            vault::write(std::path::Path::new(path), &v).unwrap();
+            crate::pin_created_vault(path, &v, &id).unwrap();
+        });
+        let pin_path = alice.run(|| crate::pins::pin_path(path).unwrap());
+        let before = fs::read(&pin_path).unwrap();
+        alice.write(path, |_, murk| {
+            murk.values.insert("A".into(), crate::testutil::secret("1"));
+        });
+        let older = fs::read(path).unwrap();
+        let (_, agent) = generate_keypair();
+        alice.write(path, |vault, murk| {
+            // A grant's scope must be a shared key, or the save prunes it.
+            murk.values
+                .insert("DB_URL".into(), crate::testutil::secret("db"));
+            vault.recipients.push(agent.clone());
+            murk.recipients.insert(agent.clone(), "agent:ci".into());
+            murk.grants
+                .insert("ci".into(), grant_to(&agent, &alice.pubkey));
+        });
+        let newer = fs::read(path).unwrap();
+
+        // Both inspections see the pin as it was before either revision.
+        fs::write(&pin_path, &before).unwrap();
+        fs::write(path, &newer).unwrap();
+        let newer_seen = alice.run(|| inspect_vault(path).unwrap());
+        fs::write(path, &older).unwrap();
+        let older_seen = alice.run(|| inspect_vault(path).unwrap());
+        alice.run(|| newer_seen.into_trusted(path).unwrap());
+        let late = alice.run(|| older_seen.into_trusted(path).map(|_| ()));
+
+        let pin = alice.run(|| crate::pins::read(path).unwrap().unwrap());
+        unsafe { std::env::remove_var("MURK_KEY") };
+        match prev_home {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert_eq!(
+            pin.generation, 3,
+            "the rollback mark stays at the newer revision"
+        );
+        assert!(
+            pin.grants.contains(&agent),
+            "the recorded grant key is kept"
+        );
+        assert!(
+            late.as_ref()
+                .is_err_and(|e| e.to_string().contains("rolled back")),
+            "{late:?}"
+        );
     }
 }
