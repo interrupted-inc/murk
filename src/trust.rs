@@ -955,8 +955,13 @@ pub fn group_change_violation(
 /// change in the pin.
 #[derive(Debug, Clone, Copy)]
 pub enum Acceptance<'a> {
-    /// A load the trust rules accepted: it replaces the trusted set, groups
-    /// and registry.
+    /// A load the trust rules accepted. It is the vault's current state, and
+    /// replaces the trusted set, groups and registry, only when it is newer
+    /// than everything this machine accepted and checked out on a branch (or
+    /// outside git). Any other accepted load — a detached HEAD, a branch
+    /// behind the mark, the vault already accepted, or a different vault with
+    /// that counter — is history: it only narrows the pin (marks, grants seen,
+    /// the signed bit), so reading history never adds trust.
     Load,
     /// The user's decision: `murk trust`, or `murk init` creating the vault.
     /// `reset_counter` lowers this branch's mark to the vault's counter (a
@@ -968,8 +973,9 @@ pub enum Acceptance<'a> {
         readmit: &'a BTreeSet<String>,
     },
     /// This machine's own signed save of a vault that listed `before`
-    /// (canonical recipients; `None` for a new file). What it removed
-    /// relative to `before` is recorded as removed.
+    /// (canonical recipients; `None` for a new file). It changes the trusted
+    /// set only by what the save itself added or removed, so saving over a
+    /// vault read as history does not trust the keys it carried.
     OwnSave {
         before: Option<&'a BTreeSet<String>>,
     },
@@ -1002,6 +1008,14 @@ pub fn accepted_pin(
         }
     );
     let found = loaded.vault.generation;
+    // Generation 0 is murk ≤ 0.13: no order, so every such load is current.
+    let current = match how {
+        Acceptance::Load => prior_v2.filter(|p| p.has_trust()).is_none_or(|p| {
+            *head != HeadState::Detached
+                && (found > p.generation || (found == 0 && p.generation == 0))
+        }),
+        Acceptance::Trust { .. } | Acceptance::OwnSave { .. } => true,
+    };
     let branch_seen = match head {
         HeadState::Branch(b) => prior_v2.is_some_and(|p| p.branches.contains_key(b)),
         _ => false,
@@ -1016,7 +1030,7 @@ pub fn accepted_pin(
         .filter(|k| !pin.trusted.contains(k) && !pin.ever_trusted.contains(k))
         .collect();
     pin.grants.extend(new_grants);
-    advance_marks(&mut pin, loaded.vault, reset_counter, head);
+    advance_marks(&mut pin, loaded.vault, current, reset_counter, head);
 
     let prior_id = std::mem::take(&mut pin.vault_id);
     pin.vault_id = if loaded.vault.vault_id.is_empty() {
@@ -1030,12 +1044,12 @@ pub fn accepted_pin(
         pin.removed.clear();
     }
 
-    let dropped = replace_trusted(&mut pin, loaded.vault, how, had_trust);
+    let dropped = replace_trusted(&mut pin, loaded.vault, how, had_trust, current);
     // A load on a branch never seen here may be a stale branch numbered past
     // the mark: what it lacks is not recorded as removed.
     let record_removals = !other_vault
         && match how {
-            Acceptance::Load => *head == HeadState::NotARepo || branch_seen,
+            Acceptance::Load => current && (*head == HeadState::NotARepo || branch_seen),
             Acceptance::Trust { .. } | Acceptance::OwnSave { .. } => true,
         };
     if record_removals {
@@ -1045,12 +1059,14 @@ pub fn accepted_pin(
         }
     }
     // Who comes back: a newer accepted vault listing the key (its signer was
-    // trusted), the user naming it, or this machine's own save adding it.
+    // trusted, or this load is history and changes nothing), the user naming
+    // it, or this machine's own save adding it.
     let trusted = std::mem::take(&mut pin.trusted);
     match how {
-        Acceptance::Load => pin
+        Acceptance::Load if current => pin
             .removed
             .retain(|k, at| !(trusted.contains(k) && found > *at)),
+        Acceptance::Load => {}
         Acceptance::Trust { readmit, .. } => pin.removed.retain(|k, _| !readmit.contains(k)),
         Acceptance::OwnSave { before } => pin
             .removed
@@ -1060,8 +1076,10 @@ pub fn accepted_pin(
     let removed = pin.removed.clone();
     pin.trusted.retain(|k| !removed.contains_key(k));
 
-    pin_signing_keys(&mut pin, loaded);
-    pin.groups = canonical_groups(loaded.groups);
+    pin_signing_keys(&mut pin, loaded, current);
+    if current {
+        pin.groups = canonical_groups(loaded.groups);
+    }
     let trusted = pin.trusted.clone();
     pin.ever_trusted.extend(trusted);
     pin.was_signed = matches!(loaded.signature, types::SignatureState::Signed { .. })
@@ -1069,14 +1087,21 @@ pub fn accepted_pin(
     pin
 }
 
-/// Raise the counters for an accepted `vault`, the overall mark (and the
-/// fingerprint of the vault at it) and the branch's. `reset_counter` lowers
-/// them to the vault's.
-fn advance_marks(pin: &mut TrustPin, vault: &types::Vault, reset_counter: bool, head: &HeadState) {
+/// Raise the counters for an accepted `vault`: the overall mark (and the
+/// fingerprint of the vault at it) only for a current acceptance, the
+/// branch's mark for any. `reset_counter` lowers them to the vault's.
+fn advance_marks(
+    pin: &mut TrustPin,
+    vault: &types::Vault,
+    current: bool,
+    reset_counter: bool,
+    head: &HeadState,
+) {
     let found = vault.generation;
     let fingerprint = vault_fingerprint(vault);
-    if found > pin.generation
-        || (reset_counter && (*head == HeadState::NotARepo || found == pin.generation))
+    if current
+        && (found > pin.generation
+            || (reset_counter && (*head == HeadState::NotARepo || found == pin.generation)))
     {
         pin.generation = found;
         pin.head.clone_from(&fingerprint);
@@ -1094,15 +1119,18 @@ fn advance_marks(pin: &mut TrustPin, vault: &types::Vault, reset_counter: bool, 
     }
 }
 
-/// Set the pin's trusted set for an accepted `vault` — its non-grant
-/// recipients — and return the keys it lost: for an own save, those it
-/// removed relative to the file it replaced. Where a grant record names a key
-/// this machine trusts as a signer, that key stays a signer.
+/// Set the pin's trusted set for an accepted `vault` and return the keys it
+/// lost. A first decision, or a current acceptance, takes the vault's non-
+/// grant recipients; history leaves the set alone; an own save applies only
+/// what it added and removed relative to the file it replaced. Where a grant
+/// record names a key this machine trusts as a signer, that key stays a
+/// signer.
 fn replace_trusted(
     pin: &mut TrustPin,
     vault: &types::Vault,
     how: Acceptance<'_>,
     had_trust: bool,
+    current: bool,
 ) -> BTreeSet<String> {
     let recipients: BTreeSet<String> = vault
         .recipients
@@ -1118,30 +1146,41 @@ fn replace_trusted(
         pin.trusted = vault_signers;
         return BTreeSet::new();
     }
-    let dropped = match how {
+    match how {
+        Acceptance::Load if !current => BTreeSet::new(),
         Acceptance::OwnSave {
             before: Some(before),
-        } => pin
-            .trusted
-            .iter()
-            .filter(|k| before.contains(*k) && !recipients.contains(*k))
-            .cloned()
-            .collect(),
-        _ => pin.trusted.difference(&vault_signers).cloned().collect(),
-    };
-    pin.trusted = vault_signers;
-    dropped
+        } => {
+            let dropped: BTreeSet<String> = pin
+                .trusted
+                .iter()
+                .filter(|k| before.contains(*k) && !recipients.contains(*k))
+                .cloned()
+                .collect();
+            let grants = &pin.grants;
+            pin.trusted
+                .retain(|k| !dropped.contains(k) && !grants.contains(k));
+            pin.trusted
+                .extend(vault_signers.into_iter().filter(|k| !before.contains(k)));
+            dropped
+        }
+        _ => {
+            let dropped = pin.trusted.difference(&vault_signers).cloned().collect();
+            pin.trusted = vault_signers;
+            dropped
+        }
+    }
 }
 
 /// Update the verifying keys for an accepted vault. An entry pinned on a
 /// signer's word (`added_by`) goes when that signer is no longer trusted, so
-/// a key they bound to a teammate's name stops counting. The acceptance
+/// a key they bound to a teammate's name stops counting. A current acceptance
 /// then pins the signer's own key and the registry entries of the vault's
 /// trusted recipients where none is pinned — believed because the vault
 /// carrying them is accepted, and recorded as added by the signer. A pinned
 /// key is never replaced, and is kept after its owner is revoked so their old
 /// revisions still verify.
-fn pin_signing_keys(pin: &mut TrustPin, loaded: &Loaded<'_>) {
+fn pin_signing_keys(pin: &mut TrustPin, loaded: &Loaded<'_>, current: bool) {
     let TrustPin {
         trusted,
         signers,
@@ -1164,6 +1203,9 @@ fn pin_signing_keys(pin: &mut TrustPin, loaded: &Loaded<'_>) {
     let types::SignatureState::Signed { signer, .. } = loaded.signature else {
         return;
     };
+    if !current {
+        return;
+    }
     let signer = canonical_recipient(signer).into_owned();
     if let Some(vk) = loaded.signer_vk
         && !dropped.contains(&signer)

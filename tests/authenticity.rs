@@ -1872,6 +1872,85 @@ fn a_different_vault_with_the_accepted_generation_is_a_fork() {
     }
 }
 
+/// Rule: reading history never adds trust. Dave was a member and was removed
+/// before Alice's laptop first trusted the vault, so the laptop never saw
+/// him. Reading the revision that lists him — on a detached HEAD, on a branch,
+/// and through `murk diff` — leaves the laptop's trust as it was, so a later
+/// vault signed by Dave is refused.
+#[test]
+fn reading_history_never_adds_trust() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo) = alice_repo(base.path());
+    let dave = Machine::new(base.path(), "dave");
+    dave.init(&base.path().join("dave-scratch"), "dave");
+    let dave_key = dave.key_file();
+    authorize(&alice, &repo, &dave, "dave");
+    dave.with_key(&repo, &dave_key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    dave.with_key(&repo, &dave_key)
+        .args(["add", "D1"])
+        .write_stdin("d1\n")
+        .assert()
+        .success();
+    alice
+        .murk(&repo)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    // Alice's write vouches for Dave's signing key.
+    alice.add(&repo, "A1", "a1");
+    commit(&repo, "dave vouched for");
+
+    // Dave builds a later vault from that revision, numbered far ahead.
+    let dave_attack = Machine::new(base.path(), "dave-attack");
+    dave_attack
+        .with_key(&repo, &dave_key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    set_pin_generation(&dave_attack, &repo, 49);
+    dave_attack
+        .with_key(&repo, &dave_key)
+        .args(["add", "EVIL"])
+        .write_stdin("evil\n")
+        .assert()
+        .success();
+    let forged = fs::read(repo.join(".murk")).unwrap();
+    git_ok(&repo, &["checkout", "--", ".murk"]);
+
+    alice
+        .murk(&repo)
+        .args(["circle", "revoke", "dave"])
+        .assert()
+        .success();
+    commit(&repo, "remove dave");
+
+    let laptop = Machine::new(base.path(), "alice-laptop");
+    let key = alice.key_file();
+    let on_laptop = |args: &[&str]| {
+        let mut cmd = laptop.with_key(&repo, &key);
+        cmd.args(args);
+        cmd
+    };
+    on_laptop(&["trust", "--yes"]).assert().success();
+
+    git_ok(&repo, &["checkout", "-q", "--detach", "HEAD~1"]);
+    on_laptop(&["get", "A1"]).assert().success().stdout("a1\n");
+    git_ok(&repo, &["checkout", "-q", "-b", "old"]);
+    on_laptop(&["get", "A1"]).assert().success().stdout("a1\n");
+    git_ok(&repo, &["checkout", "-q", "main"]);
+    on_laptop(&["diff", "HEAD~1"]).assert().success();
+
+    fs::write(repo.join(".murk"), &forged).unwrap();
+    on_laptop(&["get", "EVIL"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("not a trusted signer"));
+}
+
 /// Rule: a save never writes a removed recipient back. Alice's machine
 /// recorded Bob's removal; her working vault is then an older revision that
 /// still lists him — the remote tip she checked out predates the removal, on
