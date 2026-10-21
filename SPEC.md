@@ -139,7 +139,7 @@ A `.murk` file is a single JSON document. All fields except encrypted values and
 
 The `version` field is `MAJOR.MINOR` or `MAJOR.MINOR.PATCH` (decimal, no leading zeros) with major `2` or `3`. Any other major is rejected on load; minor bumps (e.g. `3.1`) are accepted. murk writes `3.0`. Major 3 means the MAC (`blake3v8:`) and the signature (signed view 2) cover the header identity fields; murk 0.13 and older only accept `2.x`, so they refuse a 3.x vault with "unsupported vault version" instead of reading its MAC as tampering. A 2.x vault still loads and verifies under its old MAC and signed view 1, and is rewritten as 3.0 on the next save (including a merge-driver merge that regenerates the meta).
 
-`vault_id` and `generation` are header fields too, and both are omitted when unset: `vault_id` is a random vault identity (32 lowercase hex characters), and `generation` is a save counter. `agents` maps a grant pubkey to a base64 ciphertext encrypted to that grant only, and is omitted when empty. `sig` is the signature over the rest of the file (see Signatures).
+`vault_id` and `generation` are header fields too, and both are omitted when unset: `vault_id` is a random vault identity (32 lowercase hex characters), and `generation` is a save counter. `agents` maps an agent grant's pubkey to that grant's own record, encrypted to that grant only, and is omitted when the vault has no grants (see Agent grants). `sig` is the signature over the rest of the file (see Signatures).
 
 ### Load-time validation
 
@@ -199,7 +199,7 @@ All age ciphertext is base64-encoded (standard alphabet, with padding).
 
 ### Meta
 
-The `meta` field is a single age blob encrypted to all recipients. It contains:
+The `meta` field is a single age blob encrypted to every recipient except agent grants (a grant reads its own record in `agents` instead; see Agent grants). It contains:
 
 ```json
 {
@@ -237,7 +237,9 @@ The `meta` field is a single age blob encrypted to all recipients. It contains:
 
 `groups` maps a group name to its member pubkeys (a subset of `recipients`). Stored here, not in the plaintext header, so org structure — who is in which group — does not leak. Members are covered by the MAC. The field is omitted entirely when the vault has no named groups, keeping group-free vaults byte-identical to pre-groups murk.
 
-`grants` maps an agent grant name to its metadata: the agent's ephemeral `pubkey` (also a `recipients` entry), the `scope` of keys it may read, `issued_at`/`expires_at` timestamps, and the `issuer` pubkey. The agent is excluded from the `everyone` layer — its access is the set of `scoped` ciphertexts encrypted to its pubkey, one per scope key. Stored here (not in the header) so an agent's existence and scope don't leak. Covered by the MAC so TTL/scope/issuer can't be altered undetected. The field is omitted entirely when the vault has no grants. The `expires_at` TTL is enforced by the murk binary at read time — an expired grant fails closed — though not cryptographically (see THREAT_MODEL.md).
+`grants` maps an agent grant name to its metadata: the agent's ephemeral `pubkey` (also a `recipients` entry), the `scope` of keys it may read, `issued_at`/`expires_at` timestamps, and the `issuer` pubkey. The agent is excluded from the `everyone` layer and from the meta — its access is the set of `scoped` ciphertexts encrypted to its pubkey, one per scope key, plus its own record in `agents`. Stored here (not in the header) so an agent's existence and scope don't leak. Covered by the MAC so TTL/scope/issuer can't be altered undetected. The field is omitted entirely when the vault has no grants. The `expires_at` TTL is enforced by the murk binary at read time — an expired grant, or one with no or an unreadable `expires_at`, fails closed — though not cryptographically (see THREAT_MODEL.md). The next save removes an expired grant (record, recipient and scoped copies) and marks its keys as owed a rotation.
+
+A grant record whose `pubkey` is the key that opened the meta is ignored on load and dropped by the next save: grants never open the meta, so such a record was written by a meta writer, and it never makes that key a grant.
 
 ### Integrity
 
@@ -285,7 +287,7 @@ murk signs the vault with an Ed25519 key so that a change by someone without a r
 
 ### Trust
 
-A valid signature proves that some key listed as a recipient signed the vault, and the vault chooses its own recipients. Acceptance is therefore anchored in state the repository cannot write: the local **trust pin** or the `MURK_TRUSTED_SIGNERS` environment variable. `load_vault` (`src/load.rs`, rules in `src/trust.rs`) applies these rules on every keyed load, before any value is decrypted for the caller — for the CLI, the MCP server and the Python/Node bindings alike, and for write commands too, so a write never re-signs untrusted content:
+A valid signature proves that some key listed as a recipient signed the vault, and the vault chooses its own recipients. Acceptance is therefore anchored in state the repository cannot write: the local **trust pin** or the `MURK_TRUSTED_SIGNERS` environment variable. `load_vault` (`src/load.rs`, rules in `src/trust.rs`) applies these rules on every keyed load by a key that opens the meta, before any value is decrypted for the caller — for the CLI, the MCP server and the Python/Node bindings alike, and for write commands too, so a write never re-signs untrusted content. An agent grant's load is anchored in its key file instead (see Agent grants):
 
 1. **Unsigned.** Refused when the loading key can sign (age, ssh-ed25519), or when `MURK_TRUSTED_SIGNERS` is set. Loaded with a warning otherwise (ssh-rsa, hardware/plugin keys): such a team relies on signed git commits.
 2. **Stripped.** A vault this machine accepted signed that is now unsigned is refused, for every key.
@@ -312,6 +314,32 @@ An accepted vault updates the pin: `trusted` becomes its non-grant recipients, g
 **Deliberate revert.** Restore the older file, run `murk trust` (it shows the counter going back), then any write: the save is numbered above everything this machine accepted, so teammates accept it as newer.
 
 **Upgrading from 0.13.** Every teammate needs 0.14 (a 0.14 save writes a 3.0 vault with signed view 2, which 0.13 refuses as written by a newer murk). On each machine the first load is refused once with the current signer and its fingerprint shown; review `git log -p -- .murk` and `murk diff`, then run `murk trust`. The first 0.14 save adds `generation` and a `vault_id` derived from the vault's `created` and `vault_name` (`sha256("murk.vault_id.v1\0" ‖ created ‖ "\0" ‖ vault_name)`, first 16 bytes), so teammates who upgrade separately, or on different branches, agree on it; from then on this machine refuses the view-1-signed revisions. CI needs `MURK_TRUSTED_SIGNERS` in the entry format above.
+
+### Agent grants
+
+An agent grant is never a recipient of the meta, which holds the MAC key, every name, group, grant and signer. It gets two things only:
+
+- the `scoped` copies of the keys in its scope, encrypted to its pubkey, and
+- its own record: `agents[<grant pubkey>]`, an age blob encrypted to its pubkey alone, holding `{"name": "<grant name>", "grant": {pubkey, scope, issued_at, expires_at, issuer}}` (the same fields as its `meta.grants` entry, and nothing else). murk rewrites the blob when the grant record changes and drops it with the grant.
+
+A grant cannot check the MAC, so it trusts a vault only by its signature, against signers named outside the vault: its key file's **anchor**. When `murk agent grant` (or `agent init`, `agent connect`, `--renew`) writes a key file, it puts one line per trusted signer above the key, in the trusted-signer entry format (see Trust):
+
+```
+# murk-trusted-signer: age1…:<base64 verifying key>
+# murk-trusted-signer: ssh-ed25519 AAAA…
+AGE-SECRET-KEY-1…
+```
+
+The lines list this machine's pinned trusted signers for the vault plus the minting key; grant keys are never among them. age ignores `#` lines, so the file is still a valid age identity file. Re-minting or renewing the grant rewrites the lines. `MURK_TRUSTED_SIGNERS` adds to the anchor.
+
+A load whose key has an `agents` entry and cannot open the meta is a grant load, in this order, before anything is handed out:
+
+1. **Anchor.** The key-file lines plus `MURK_TRUSTED_SIGNERS`. If both are empty, the load is refused: "this grant key names no trusted signers, so murk can't check the vault it reads: ask the operator to re-mint the grant (`murk agent grant --renew`), or set MURK_TRUSTED_SIGNERS". A key file from before 0.14 gets this message.
+2. **Signature.** The top-level view-2 `sig` must be by a signer in the anchor and verify under the anchor's key for it (the `ssh-ed25519` line for SSH signers). Nothing inside the vault, the `signers` registry included, is read for this. An unsigned vault, a signer not in the anchor and a signature that doesn't verify are each refused.
+3. **Record.** The grant's own `agents` blob is decrypted and its TTL checked; an expired grant fails closed.
+4. **Values.** Only then are its `scoped` values decrypted.
+
+A grant load reads and writes no trust pin, so it has no rollback check. Every write by a grant is refused ("agent grants are read-only"). A key that can open the meta always loads as an operator, even with an `agents` entry. A 2.x vault still encrypted its meta to grants: a grant key reading one is refused until the operator saves it with 0.14 or later and re-mints the grant.
 
 ---
 
@@ -438,7 +466,7 @@ The child runs supervised, not `exec`-ed: its stdout and stderr are pipes, and e
 
 ### `murk agent grant --name NAME --only KEY [--ttl DUR] [--renew] [--out PATH] [--vault NAME]`
 
-Mints a fresh ephemeral age identity and gives it read access to exactly the `--only` keys (repeatable, required) — never the operator's own key. The agent becomes a recipient of the encrypted meta and gets a private (per-recipient) ciphertext of each `--only` key's shared value, but is excluded from the `everyone` layer. Records grant metadata (scope, TTL, issuer) in the encrypted meta. A live grant name is refused unless `--renew` is passed, which revokes the existing key and mints the replacement in one vault write. `--ttl` accepts `30m`/`2h`/`7d` (default `2h`). Reads fail closed after expiry, though the enforcement is binary-level, not cryptographic (see THREAT_MODEL.md). The agent key is written to `~/.config/murk/agent-keys/<vault-hash>-NAME` (or `--out PATH`, or `--out -` to stream it to stdout). Run the agent with `MURK_KEY_FILE` pointing at that key and `MURK_STRICT=1` so it can't fall back to the operator's stored key.
+Mints a fresh ephemeral age identity and gives it read access to exactly the `--only` keys (repeatable, required) — never the operator's own key. The agent becomes a vault recipient and gets a private (per-recipient) ciphertext of each `--only` key's shared value and its own record in `agents`; it is excluded from the `everyone` layer and is not a recipient of the meta. Records grant metadata (scope, TTL, issuer) in the encrypted meta. A live grant name is refused unless `--renew` is passed, which revokes the existing key and mints the replacement in one vault write. `--ttl` accepts `30m`/`2h`/`7d` (default `2h`). Reads fail closed after expiry, though the enforcement is binary-level, not cryptographic (see THREAT_MODEL.md). The agent key is written to `~/.config/murk/agent-keys/<vault-hash>-NAME` (or `--out PATH`, or `--out -` to stream it to stdout), headed by `# murk-trusted-signer:` lines (see Agent grants). Run the agent with `MURK_KEY_FILE` pointing at that key and `MURK_STRICT=1` so it can't fall back to the operator's stored key.
 
 ---
 
