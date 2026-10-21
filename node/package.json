@@ -1,6 +1,6 @@
 {
   "name": "@interrupted/murk-secrets",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Node.js/TypeScript bindings for murk — encrypted secrets manager",
   "main": "index.js",
   "types": "index.d.ts",

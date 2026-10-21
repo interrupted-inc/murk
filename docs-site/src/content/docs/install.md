@@ -91,7 +91,7 @@ Binary releases carry signed build provenance
 backed by Sigstore/Fulcio). Verify a downloaded artifact with the GitHub CLI:
 
 ```bash
-gh attestation verify murk-v0.13.0-aarch64-apple-darwin.tar.gz \
+gh attestation verify murk-v0.14.0-aarch64-apple-darwin.tar.gz \
   --repo interrupted-sh/murk \
   --signer-workflow interrupted-sh/murk/.github/workflows/release.yaml
 ```

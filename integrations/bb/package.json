@@ -23,7 +23,7 @@
     "test": "cargo build --quiet --bin murk && PATH=\"$PWD/../../target/debug:$PATH\" vitest run"
   },
   "dependencies": {
-    "@interrupted/murk-secrets": "^0.11.0 || ^0.12.0 || ^0.13.0",
+    "@interrupted/murk-secrets": "^0.11.0 || ^0.12.0 || ^0.13.0 || ^0.14.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {

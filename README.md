@@ -41,7 +41,7 @@ murk is simple: one key on your machine, one encrypted file in your repo. See [T
 | Built-in direnv integration | Yes | No | No | Not documented | No |
 | Recovery phrase | Yes (BIP39) | No | No | No | No |
 
-Compared against each project's documentation as of murk v0.13.0. Other tools change, so check their current docs.
+Compared against each project's documentation as of murk v0.14.0. Other tools change, so check their current docs.
 
 **SOPS** is the closest alternative. Both encrypt values in-place and support age. murk differs in having scoped (per-user) secrets, a single-file vault model, built-in team management (`murk circle`), and BIP39 key recovery. SOPS has broader KMS backend support and a larger ecosystem.
 
@@ -73,7 +73,7 @@ The script checks the archive against the release's `SHA256SUMS`, which catches 
 
 It installs to `/usr/local/bin` by default. Set `PREFIX` (binary goes to `$PREFIX/bin`), `DESTDIR` (staging root prepended to the path), or `MURK_INSTALL_DIR` (exact bin directory, overrides `PREFIX`) on the `sh` side of the pipe, e.g. `... | PREFIX="$HOME/.local" sh`.
 
-Pre-built binaries are available for Linux (x86_64, aarch64, armhf), macOS (x86_64, Apple Silicon), and Windows on the [releases page](https://github.com/interrupted-sh/murk/releases). On Windows, download the `.zip` from that page. Binary releases are [attested](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds). Verify one downloaded file at a time with `gh attestation verify murk-v0.13.0-aarch64-apple-darwin.tar.gz --repo interrupted-sh/murk --signer-workflow interrupted-sh/murk/.github/workflows/release.yaml` (needs `gh auth login`; 0.12.0 and later; releases 0.10.2 to 0.11.0 were signed as `interrupted-inc/murk`, and 0.3.1 to 0.10.1 as `iicky/murk`). See [VERIFYING.md](VERIFYING.md) for verifying older releases and the npm, PyPI, and crates.io releases too.
+Pre-built binaries are available for Linux (x86_64, aarch64, armhf), macOS (x86_64, Apple Silicon), and Windows on the [releases page](https://github.com/interrupted-sh/murk/releases). On Windows, download the `.zip` from that page. Binary releases are [attested](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds). Verify one downloaded file at a time with `gh attestation verify murk-v0.14.0-aarch64-apple-darwin.tar.gz --repo interrupted-sh/murk --signer-workflow interrupted-sh/murk/.github/workflows/release.yaml` (needs `gh auth login`; 0.12.0 and later; releases 0.10.2 to 0.11.0 were signed as `interrupted-inc/murk`, and 0.3.1 to 0.10.1 as `iicky/murk`). See [VERIFYING.md](VERIFYING.md) for verifying older releases and the npm, PyPI, and crates.io releases too.
 
 ## Quick start
 
@@ -349,7 +349,7 @@ murk provides a [pre-commit](https://pre-commit.com/) hook to scan staged files 
 ```yaml
 repos:
   - repo: https://github.com/interrupted-sh/murk
-    rev: v0.13.0  # run 'pre-commit autoupdate' to move to a newer tag
+    rev: v0.14.0  # run 'pre-commit autoupdate' to move to a newer tag
     hooks:
       - id: murk-scan
 ```
