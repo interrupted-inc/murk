@@ -107,7 +107,7 @@ A cell marked with a number was decided where the policy left it open; the notes
 2. `agent exec` is for agent grant keys; a recipient's own key needs `--allow-operator-key`, an explicit operator decision (docs/ai-agents.md: rules).
 3. `murk mcp` serves only a grant key in agent context (docs/ai-agents.md: serving secrets over MCP).
 4. a grant can't read the meta, so it can't verify the git revision `diff` compares against, and nothing unverified is shown.
-5. grants are meta recipients by design (THREAT_MODEL: agent grants), so they see names and structure but no value outside their scope.
+5. a grant is not a meta recipient, so these commands run but reveal no recipient names, groups or other grants, and no value outside its scope (THREAT_MODEL: agent grants).
 6. reads only the plaintext header and schema, which are public by design (SPEC: header is public, values are private).
 7. `rotate --list` loads and verifies the vault before trusting its rotation schedule, so it needs a key that can load the vault (SPEC: header reads).
 8. the key holds only another recipient's personal value: there is no tier the caller could keep, and murk never picks a wider one.

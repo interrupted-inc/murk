@@ -308,7 +308,7 @@ impl Row {
 // Reasons for cells the stated policy leaves open. Each picks the rule that
 // never widens who can read a value.
 const PUBLIC: &str = "reads only the plaintext header and schema, which are public by design (SPEC: header is public, values are private)";
-const GRANT_META: &str = "grants are meta recipients by design (THREAT_MODEL: agent grants), so they see names and structure but no value outside their scope";
+const GRANT_META: &str = "a grant is not a meta recipient, so these commands run but reveal no recipient names, groups or other grants, and no value outside its scope (THREAT_MODEL: agent grants)";
 const GRANT_READ: &str = "a read bounded to the grant's scope, the same as `export`";
 const MCP_ONLY_AGENT: &str = "`murk mcp` serves only a grant key in agent context (docs/ai-agents.md: serving secrets over MCP)";
 const NO_SHIFT: &str = "piped values are matched by position, so a batch that would skip a value the caller can't rotate (another group's value, or another recipient's override) refuses before writing";
