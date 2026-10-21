@@ -14,6 +14,31 @@ pub static ENV_LOCK: Mutex<()> = Mutex::new(());
 /// Process-global lock for tests that change the working directory.
 pub static CWD_LOCK: Mutex<()> = Mutex::new(());
 
+/// Holds [`ENV_LOCK`] with `MURK_KEY` set to a key (and `MURK_KEY_FILE` unset),
+/// clearing it on drop. For tests that save, since `save_vault` resolves the
+/// saving identity from the environment.
+pub struct MurkKeyEnv {
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+pub fn murk_key_env(secret: &str) -> MurkKeyEnv {
+    let lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    unsafe { std::env::set_var("MURK_KEY", secret) };
+    unsafe { std::env::remove_var("MURK_KEY_FILE") };
+    MurkKeyEnv { _lock: lock }
+}
+
+impl Drop for MurkKeyEnv {
+    fn drop(&mut self) {
+        unsafe { std::env::remove_var("MURK_KEY") };
+    }
+}
+
+/// A named in-place edit of a vault, for tests that tamper with one field at a time.
+pub type VaultRewrite = fn(&mut types::Vault);
+
 /// `fs::canonicalize` with Windows' `\\?\` verbatim prefix removed.
 ///
 /// Fixtures that build a git worktree hand these paths straight to `git`, and
@@ -60,6 +85,10 @@ pub fn empty_vault() -> types::Vault {
         created: "2026-02-28T00:00:00Z".into(),
         vault_name: ".murk".into(),
         repo: String::new(),
+        vault_id: String::new(),
+        generation: 0,
+        agents: BTreeMap::new(),
+        sig: None,
         recipients: vec![],
         schema: BTreeMap::new(),
         policy: None,
@@ -91,6 +120,10 @@ pub fn signed_test_vault(pubkey: &str, recipient: &crypto::MurkRecipient) -> typ
         created: "2026-02-28T00:00:00Z".into(),
         vault_name: ".murk".into(),
         repo: String::new(),
+        vault_id: String::new(),
+        generation: 0,
+        agents: BTreeMap::new(),
+        sig: None,
         recipients: vec![pubkey.to_string()],
         schema: BTreeMap::new(),
         policy: None,

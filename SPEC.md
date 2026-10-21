@@ -1,4 +1,4 @@
-# murk — Specification v2.0
+# murk — Specification v3.0
 
 > Encrypted secrets manager for developers. One key unlocks everything.
 
@@ -77,10 +77,12 @@ A `.murk` file is a single JSON document. All fields except encrypted values and
 
 ```json
 {
-  "version": "2.0",
+  "version": "3.0",
   "created": "2026-02-27T00:00:00Z",
   "vault_name": ".murk",
   "repo": "https://github.com/org/repo",
+  "vault_id": "0123456789abcdef0123456789abcdef",
+  "generation": 12,
   "recipients": [
     "age1abc...",
     "age1xyz..."
@@ -118,13 +120,20 @@ A `.murk` file is a single JSON document. All fields except encrypted values and
       "shared": "<base64 age ciphertext>"
     }
   },
-  "meta": "<base64 age ciphertext>"
+  "meta": "<base64 age ciphertext>",
+  "sig": {
+    "signer": "age1abc...",
+    "v": 2,
+    "sig": "base64-ed25519-signature"
+  }
 }
 ```
 
 ### Version
 
-The `version` field is `2.MINOR` or `2.MINOR.PATCH` (decimal, no leading zeros). Any other value, including another major version, is rejected on load. Minor version bumps (e.g. `2.1`) are accepted.
+The `version` field is `MAJOR.MINOR` or `MAJOR.MINOR.PATCH` (decimal, no leading zeros) with major `2` or `3`. Any other major is rejected on load; minor bumps (e.g. `3.1`) are accepted. murk writes `3.0`. Major 3 means the MAC (`blake3v8:`) and the signature (signed view 2) cover the header identity fields; murk 0.13 and older only accept `2.x`, so they refuse a 3.x vault with "unsupported vault version" instead of reading its MAC as tampering. A 2.x vault still loads and verifies under its old MAC and signed view 1, and is rewritten as 3.0 on the next save (including a merge-driver merge that regenerates the meta).
+
+`vault_id` and `generation` are header fields too, and both are omitted when unset: `vault_id` is a random vault identity (32 lowercase hex characters), and `generation` is a save counter. `agents` maps a grant pubkey to a base64 ciphertext encrypted to that grant only, and is omitted when empty. `sig` is the signature over the rest of the file (see Signatures).
 
 ### Load-time validation
 
@@ -134,10 +143,10 @@ A `.murk` file arrives through git and is untrusted. Every reader (the working v
 - `version`: as above.
 - `created` and the schema `created`/`updated`/`expires_at`/`revoked_at`: RFC 3339 timestamps.
 - Key names in `schema`, `secrets`, and grant scopes: `[A-Za-z_][A-Za-z0-9_]*`.
-- `recipients`, `scoped` keys, and every pubkey in the meta: a public key that murk can encrypt to (age X25519, `ssh-ed25519`/`ssh-rsa`, or an age plugin recipient).
+- `recipients`, `scoped` keys, `agents` keys, the `sig` signer, and every pubkey in the meta: a public key that murk can encrypt to (age X25519, `ssh-ed25519`/`ssh-rsa`, or an age plugin recipient).
 - `grouped` keys and meta group names: 1–64 characters of `[A-Za-z0-9_-]`, and not a reserved tier alias (`everyone`, `all`, `shared`, `me`, `self`, `mine`). Meta grant names: the same character rule.
 - `rotation_interval_days`: at least 1.
-- Ciphertexts (`shared`, `scoped`/`grouped` values, `meta`, signer keys, signature): standard base64 with padding. `shared` and `meta` may be empty.
+- Ciphertexts (`shared`, `scoped`/`grouped` values, `agents` values, `meta`, signer keys, signature): standard base64 with padding. `shared` and `meta` may be empty.
 - Free text (`vault_name`, `repo`, descriptions, examples, tags, `agent_allow_tags`, display names): no control characters other than tab, CR, and LF.
 - Meta `mac_key`: 64 hex characters. `github_pins`: GitHub usernames (1–39 of `[A-Za-z0-9-]`) mapped to `SHA256:` fingerprints.
 
@@ -146,6 +155,8 @@ The MAC value is not interpreted here, and signature bytes are only checked as b
 ### Recipients
 
 Public keys only — no names or emails. Name-to-pubkey mappings live inside the encrypted meta blob where only authorized recipients can see them.
+
+murk only writes a vault as one of its recipients: a save is refused when the saving key is not in `recipients`, because the values would be encrypted to keys the saver can't read back. A vault with an empty `meta` and no secrets loads only for a key listed in `recipients`; any other key gets "not a recipient". Otherwise anyone with repo write could plant such a vault listing only their own key and receive the next secret written into it.
 
 ### Schema
 
@@ -190,15 +201,10 @@ The `meta` field is a single age blob encrypted to all recipients. It contains:
     "age1abc...": "mickey@example.com",
     "age1xyz...": "alice@example.com"
   },
-  "mac": "blake3v5:abc123...",
+  "mac": "blake3v8:abc123...",
   "hmac_key": "0a1b2c3d...",
   "signers": {
     "age1abc...": "base64-ed25519-verifying-key"
-  },
-  "sig": {
-    "signer": "age1abc...",
-    "v": 1,
-    "sig": "base64-ed25519-signature"
   },
   "groups": {
     "prod": ["age1abc...", "age1xyz..."]
@@ -221,7 +227,7 @@ The `meta` field is a single age blob encrypted to all recipients. It contains:
 
 `hmac_key` is a hex-encoded 32-byte random key used for BLAKE3 keyed hashing. Generated fresh on each save.
 
-`signers` maps a recipient pubkey to its base64 Ed25519 verifying key, recorded when that recipient signs. `sig` is the current Ed25519 signature: `signer` (the recipient pubkey that produced it), `v` (signed-view version), and `sig` (base64). Both are omitted when the last writer had no signing-capable identity. See Signatures below.
+`signers` maps a recipient pubkey to its base64 Ed25519 verifying key, recorded when that recipient signs. It is omitted when no age key has signed. Vaults written before 3.0 also carry `sig` here: a signed-view-1 signature with `signer`, `v` (`1`), and `sig` (base64). murk now writes the signature to the top-level `sig` field instead and never writes one into the meta. See Signatures below.
 
 `groups` maps a group name to its member pubkeys (a subset of `recipients`). Stored here, not in the plaintext header, so org structure — who is in which group — does not leak. Members are covered by the MAC. The field is omitted entirely when the vault has no named groups, keeping group-free vaults byte-identical to pre-groups murk.
 
@@ -235,17 +241,19 @@ The MAC is a BLAKE3 keyed hash covering, in order:
 2. **Per-key encrypted values** — for each key (sorted):
    - The shared ciphertext, followed by `\x00`
    - For each scoped entry (sorted by pubkey): the pubkey followed by `\x01`, the scoped ciphertext followed by `\x00`
-   - (v6 only) For each grouped entry (sorted by group name): `\x03`, the group name followed by `\x00`, the grouped ciphertext followed by `\x00`
+   - (v6 and later) For each grouped entry (sorted by group name): `\x03`, the group name followed by `\x00`, the grouped ciphertext followed by `\x00`
 3. **Recipient pubkeys** — sorted, each followed by `\x00`
 4. **Schema** — for each key (sorted): `\x02`, then the key name, description, and example (empty if unset) each followed by `\x00`, then each tag followed by `\x00`, then the lifecycle fields `created`, `updated`, `rotation_interval_days` (decimal text), and `expires_at` — each emitted as its bytes (empty if unset) followed by `\x00`
-5. **Group definitions** (v6 and v7) — for each group (sorted by name): `\x04`, the group name followed by `\x00`, then each member pubkey (sorted) prefixed by `\x05`
-6. **Grant definitions** (v7 and v8) — for each grant (sorted by name): `\x06`, then the grant name, agent pubkey, `issued_at`, `expires_at`, and issuer each followed by `\x00`, then each scope key (sorted) prefixed by `\x07`
-7. **Policy** (v8 and v9) — `\x08` opens the policy block, then each agent allow-tag (sorted) is length-prefixed (4-byte big-endian length + bytes) so tag contents can't forge a boundary
-8. **Revoked-at markers** (v9 only) — for each schema entry with `revoked_at` set (sorted by key name): `\x09`, the key name followed by `\x00`, the marker timestamp followed by `\x00`. Absent markers emit nothing, so setting then clearing one hashes identically to never setting it.
+5. **Group definitions** (v6 and later) — for each group (sorted by name): `\x04`, the group name followed by `\x00`, then each member pubkey (sorted) prefixed by `\x05`
+6. **Grant definitions** (v7 and later) — for each grant (sorted by name): `\x06`, then the grant name, agent pubkey, `issued_at`, `expires_at`, and issuer each followed by `\x00`, then each scope key (sorted) prefixed by `\x07`
+7. **Policy** (v8 and later, only when a policy is set) — `\x08` opens the policy block, then each agent allow-tag (sorted) is length-prefixed (8-byte big-endian length + bytes) so tag contents can't forge a boundary
+8. **Revoked-at markers** (v9 and later) — for each schema entry with `revoked_at` set (sorted by key name): `\x09`, the key name followed by `\x00`, the marker timestamp followed by `\x00`. Absent markers emit nothing, so setting then clearing one hashes identically to never setting it.
+9. **Header identity** (v10 only) — `\x0A`, then `vault_name`, `repo`, `created`, and `vault_id` (empty if unset), each as an 8-byte big-endian length followed by its bytes, then `generation` as an 8-byte big-endian integer (`0` if unset)
+10. **Agent blobs** (v10 only) — for each `agents` entry (sorted by pubkey): `\x0B`, then the pubkey and the ciphertext, each as an 8-byte big-endian length followed by its bytes
 
-The resulting digest is prefixed with `blake3v7:` (v9) when any key has a `revoked_at` marker, `blake3v6:` (v8) when the vault has a policy, `blake3v5:` (v7) when it has a grant, `blake3v4:` (v6) when it has a group, or `blake3v3:` (v5) when it has none, and stored as the `mac` field in meta. The 32-byte BLAKE3 key is stored as `hmac_key` in the same encrypted meta blob.
+murk writes v10, prefixed `blake3v8:`, on every keyed save, so every vault upgrades on its next write. The digest is stored as the `mac` field in meta, and the 32-byte BLAKE3 key as `hmac_key` in the same encrypted meta blob.
 
-On load, murk verifies the MAC. Legacy prefixes `sha256:` (v1, no scoped coverage), `sha256v2:` (v2, unkeyed), `blake3:` (v3, no schema coverage), `blake3v2:` (v4, no lifecycle-metadata coverage), `blake3v3:` (v5, no group coverage), `blake3v4:` (v6, no grant coverage), `blake3v5:` (v7, no policy coverage), and `blake3v6:` (v8, no revoked-at coverage) are accepted for backward compatibility. On save, murk writes the lowest version that covers the vault's contents (`blake3v7:` if any `revoked_at` exists, else `blake3v6:` for a policy, `blake3v5:` for grants, `blake3v4:` for groups, otherwise `blake3v3:`), always with a fresh key. Gating each version bump on the first group/grant/policy/marker keeps simpler vaults byte-identical to older murk. A vault carrying groups, grants, a policy, or a revoked-at marker is rejected under an older prefix that doesn't cover them, so an attacker can't strip coverage (e.g. clear a pending-rotation flag) by downgrading the MAC. (A vault written by a newer murk cannot be MAC-verified by an older binary that predates the prefix it uses.)
+On load, murk verifies the MAC. Older prefixes are accepted for vaults written before 3.0: `sha256:` (v1, no scoped coverage), `sha256v2:` (v2, unkeyed), `blake3:` (v3, no schema coverage), `blake3v2:` (v4, no lifecycle-metadata coverage), `blake3v3:` (v5, no group coverage), `blake3v4:` (v6, no grant coverage), `blake3v5:` (v7, no policy coverage), `blake3v6:` (v8, no revoked-at coverage), and `blake3v7:` (v9, no header-identity or agent-blob coverage). Each was written only when the vault needed it, so older murk saves of simpler vaults used older prefixes. A vault is rejected under an older prefix that doesn't cover what it carries, so an attacker can't strip coverage (for example, clear a pending-rotation flag) by downgrading the MAC: groups need v6 or later, grants v7, a policy v8, a revoked-at marker v9, and a 3.x `version`, a `vault_id`, a non-zero `generation`, or an `agents` entry v10. A `blake3vN:` prefix newer than `blake3v8:` fails the load with "written by a newer murk" rather than as tampering.
 
 Because both the MAC and its key live inside the encrypted meta blob, only authorized recipients can compute or verify the hash. This makes the MAC a keyed integrity check for recipients and a tamper/corruption detector — but it is **not** a defense against a deliberate attacker with write access to the repo. age encryption needs only the recipients' *public* keys (which are in the plaintext header), so a repo-writer can mint a fresh `hmac_key`, recompute a valid MAC over tampered content, and re-encrypt the meta blob. Authorship integrity is provided by the signature below, not the MAC.
 
@@ -259,13 +267,15 @@ murk signs the vault with an Ed25519 key so tampering by a repo-writer is detect
 
 `ssh-rsa` and plugin/hardware identities cannot sign; their saves are written unsigned.
 
-**Signed message.** A domain-tagged (`murk.vault.sig.v1\n`) canonical JSON serialization of a signed view (version 1) covering: `version`, sorted `recipients`, `schema`, `secrets` (all tiers), `policy`, `groups`, `grants`, `github_pins`, and the `signers` registry itself — so a rogue verifying key cannot be registered without invalidating the signature. It excludes `sig` (which it produces) and the MAC/`hmac_key` (a shared secret the signature supersedes for authenticity). Determinism comes from sorted maps and a sorted recipient list.
+**Signed message (view 2).** murk writes view 2: the domain tag `murk.vault.sig.v2\n` followed by the JSON serialization of the vault file with the top-level `sig` field omitted, fields in file order. That covers every header field (`version`, `created`, `vault_name`, `repo`, `vault_id`, `generation`, `recipients` in stored order, `schema`, `policy`), the `agents` and `secrets` ciphertexts, and the `meta` ciphertext. Because the meta ciphertext is covered, the decrypted meta (MAC, names, `signers`, groups, grants, pins) is authentic too, and the message is rebuilt from the file alone. The signature is computed after the meta is encrypted and stored in the top-level `sig` (`signer`, `v` = `2`, base64 `sig`).
+
+**Signed message (view 1).** Vaults written before 3.0 carry a view-1 signature inside the meta: a domain-tagged (`murk.vault.sig.v1\n`) canonical JSON serialization of a signed view covering `version`, sorted `recipients`, `schema`, `secrets` (all tiers), `policy`, `groups`, `grants`, `github_pins`, and the `signers` registry. It does not cover `vault_name`, `repo`, or `created`. It excludes `sig` and the MAC/`hmac_key`. murk still verifies view 1 on 2.x vaults and replaces it with view 2 on the next save.
 
 `serde_json` is not a formal canonical encoding, but it does not need to be here: the same serializer both signs and verifies, the signed view holds only strings, sorted maps, and lists (no floats or other ordering ambiguity), and no second implementation has to reproduce these bytes. Its deterministic output is therefore sufficient — a formal canonical form (CBOR/DER) would add nothing.
 
-**Verify.** On load, if `sig` is present murk requires: the signed-view version is understood, the `signer` is a current recipient, and the signature matches the recomputed message. The verifying key comes from the `ssh-ed25519 …` recipient string for SSH signers (self-authenticating; recipient match tolerates a trailing comment), or the `signers` registry for age signers. A present-but-invalid signature fails the load as tampering. An absent signature loads with a warning (`SignatureState::Unsigned`); integrity then rests on git. `sign_vault` only signs as a current recipient, so it never writes a self-invalidating signature.
+**Verify.** On load, murk accepts a view-2 signature only in the top-level `sig` and a view-1 signature only in the meta, and only on a 2.x vault; anything else (both present, a view in the wrong place, view 1 on a 3.x vault) fails the load as tampering. A view newer than 2 fails with "written by a newer murk". Then the `signer` must be a current recipient and the signature must match the recomputed message. The verifying key comes from the `ssh-ed25519 …` recipient string for SSH signers (self-authenticating; recipient match tolerates a trailing comment), or the `signers` registry for age signers. A present-but-invalid signature fails the load as tampering. An absent signature loads with a warning (`SignatureState::Unsigned`); integrity then rests on git. `sign_vault` only signs as a current recipient, so it never writes a self-invalidating signature.
 
-**Merge driver.** The merge driver runs without deciding to vouch for content, so it leaves the merged vault unsigned (`sig: null`), carrying the `signers` registry forward. A keyholder re-signs on the next write after reviewing `murk diff`.
+**Merge driver.** The merge driver runs without deciding to vouch for content, so it leaves the merged vault unsigned (no `sig`), carrying the `signers` registry forward. A keyholder re-signs on the next write after reviewing `murk diff`.
 
 **Signer-registry pinning (TOFU).** Because the age `signers` registry lives in the re-encryptable meta, a repo-writer could register their own verifying key under an existing recipient's pubkey and forge that recipient's signature. To close this, `load_vault` pins each pubkey→verifying-key mapping locally in `~/.config/murk/signer-pins/<vault-hash>.json` on first sight and enforces it: a *changed* verifying key for an already-pinned pubkey is never legitimate (the mapping is a fixed derivation), so the load fails with an integrity error. The check runs in the library load path, so it covers the CLI and the language bindings alike. New pubkeys are trust-on-first-use, and murk marks them as such: `load_vault` reports an age signature as `Signed { anchored: false }` until its key matches a prior pin, and `murk verify` surfaces the unanchored state rather than claiming verified authorship (git commit signing is the anchor for a first load). `MURK_NO_SIGNER_PIN=1` disables the check. The pin is local and does not travel with the repo. ssh-ed25519 signers are never in the registry (their verifying key rides in the recipient string), so they are self-authenticating — `anchored: true` even on a first clone — and need no pin.
 
@@ -492,7 +502,7 @@ Prints the agent access policy. Works without a key — the policy is in the pla
 
 ### `murk policy set --allow-tag TAG... [--vault NAME]`
 
-Sets the agent allow-list: in agent mode (`agent exec`, `agent grant`) a secret may be injected or granted only if it carries one of these tags. `--allow-tag` is repeatable and required. Default-deny once set. Writes the policy into the header and bumps the MAC to `blake3v6:`.
+Sets the agent allow-list: in agent mode (`agent exec`, `agent grant`) a secret may be injected or granted only if it carries one of these tags. `--allow-tag` is repeatable and required. Default-deny once set. Writes the policy into the header, where the MAC and signature cover it.
 
 ---
 
@@ -548,7 +558,7 @@ Exports a schema-only copy of the vault — key names, descriptions, examples, a
 
 ### `murk scan [PATHS]... [--vault NAME]`
 
-Scans files for leaked secret values. Decrypts the vault and searches text files under the given paths (defaults to the current directory) for value substrings. Skips hidden directories, `target/`, `node_modules/`, lockfiles, vault files, and binary files; values shorter than 8 characters are skipped to avoid false positives. Exits 1 if any leak is found.
+Scans files for leaked secret values. Decrypts the vault and searches text files under the given paths (defaults to the current directory) for value substrings. Skips hidden directories, `target/`, `node_modules/`, lockfiles, vault files, and binary files; values shorter than 8 characters are skipped to avoid false positives. Exits 1 if any leak is found. A given path that doesn't exist or can't be read exits 2 before scanning. A file or directory under it that can't be read is reported, and the scan exits 1 as incomplete instead of reporting no leaks.
 
 ---
 

@@ -6,7 +6,7 @@
 
 use crate::{
     MurkError, compute_mac, crypto, decode_mac_key, encrypt_value, generate_mac_key,
-    parse_recipients, sign_vault, signing_identity, types, vault,
+    parse_recipients, register_signer, sign_vault, signing_identity, types, vault,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -152,12 +152,34 @@ fn resync_grant_private(
 
 /// Save the vault: compare against original state and only re-encrypt changed values.
 /// Unchanged values keep their original ciphertext for minimal git diffs.
+///
+/// Refuses unless the saving identity (the key resolved for `vault_path`) is in
+/// `vault.recipients`: writing as a non-recipient would encrypt values to a
+/// recipient set the saver can't read back, and possibly one an attacker chose.
+/// Flows that onboard a key add it to the recipients before saving.
 pub fn save_vault(
     vault_path: &str,
     vault: &mut types::Vault,
     original: &types::Murk,
     current: &types::Murk,
 ) -> Result<(), MurkError> {
+    let saver = signing_identity(vault_path).ok_or_else(|| {
+        MurkError::Key(
+            "refusing to save: no usable key to save with. Set MURK_KEY or MURK_KEY_FILE".into(),
+        )
+    })?;
+    let saver_pubkey = saver.pubkey_string()?;
+    if !crate::load::is_listed_recipient(vault, &saver_pubkey) {
+        return Err(MurkError::Recipient(format!(
+            "refusing to save: your key ({}) is not a recipient of this vault, so the write would \
+             encrypt secrets you can't read back. Run `murk circle` to check, or ask a recipient \
+             to authorize you",
+            crate::validate::show(&saver_pubkey)
+        )));
+    }
+    // This build MACs and signs in the 3.x format, so the header says so.
+    types::VAULT_VERSION.clone_into(&mut vault.version);
+
     // The full recipient set encrypts the meta blob, so every recipient —
     // including agent grants — can verify integrity and read group/grant state.
     let recipients = parse_recipients(&vault.recipients)?;
@@ -262,45 +284,43 @@ pub fn save_vault(
 
     vault.secrets = new_secrets;
 
-    let meta = build_meta(vault_path, vault, current);
+    let meta = build_meta(vault, current, &saver);
     crate::validate::meta(&meta)
         .map_err(|e| MurkError::Secret(format!("refusing to write invalid vault meta: {e}")))?;
     let meta_json =
         serde_json::to_vec(&meta).map_err(|e| MurkError::Secret(format!("meta serialize: {e}")))?;
     vault.meta = encrypt_value(&meta_json, &recipients)?;
 
+    // Sign last: signed view v2 covers the finished file, meta ciphertext
+    // included. SSH/hardware identities can't sign, so the vault is then
+    // written unsigned (a warning surfaced on next load).
+    vault.sig = None;
+    vault.sig = sign_vault(vault, &saver);
+
     Ok(vault::write(Path::new(vault_path), vault)?)
 }
 
-/// Build the meta blob for a save: a fresh MAC key + MAC, and a signature when
-/// the operator holds a signing-capable identity (see [`sign_vault`]). The
-/// signer registry is carried forward from `current` so every recipient's
-/// verifying key persists across saves.
-fn build_meta(vault_path: &str, vault: &types::Vault, current: &types::Murk) -> types::Meta {
+/// Build the meta blob for a save: a fresh MAC key + MAC, and the signer
+/// registry carried forward from `current` so every recipient's verifying key
+/// persists across saves, plus the saver's own (see [`register_signer`]). The
+/// signature itself lives outside the meta, in `Vault::sig`.
+fn build_meta(
+    vault: &types::Vault,
+    current: &types::Murk,
+    saver: &crypto::MurkIdentity,
+) -> types::Meta {
     // Always generate a fresh BLAKE3 key on save.
     let mac_key_hex = generate_mac_key();
     let mac_key = decode_mac_key(&mac_key_hex).unwrap();
     let mac = compute_mac(vault, &current.groups, &current.grants, Some(&mac_key));
 
-    // SSH/hardware identities can't sign, so the vault is written unsigned (a
-    // warning surfaced on next load).
     let mut signers = current.signers.clone();
     // Drop registry entries for pubkeys no longer in the recipient set — a
     // revoked recipient's verifying key is inert (verify requires the signer to
-    // be a current recipient) but shouldn't linger. Prune BEFORE signing so the
-    // signed message matches the stored `signers`. (ssh-ed25519 signers are never
-    // registered, so only age entries are affected.)
+    // be a current recipient) but shouldn't linger. (ssh-ed25519 signers are
+    // never registered, so only age entries are affected.)
     signers.retain(|pk, _| vault.recipients.iter().any(|r| r == pk));
-    let sig = signing_identity(vault_path).and_then(|identity| {
-        sign_vault(
-            vault,
-            &current.groups,
-            &current.grants,
-            &current.github_pins,
-            &mut signers,
-            &identity,
-        )
-    });
+    register_signer(vault, &mut signers, saver);
 
     types::Meta {
         recipients: current.recipients.clone(),
@@ -310,7 +330,7 @@ fn build_meta(vault_path: &str, vault: &types::Vault, current: &types::Murk) -> 
         groups: current.groups.clone(),
         grants: current.grants.clone(),
         signers,
-        sig,
+        sig: None,
     }
 }
 
@@ -470,6 +490,7 @@ mod tests {
     #[test]
     fn save_vault_preserves_unchanged_ciphertext() {
         let (secret, pubkey) = generate_keypair();
+        let _key = murk_key_env(&secret);
         let recipient = make_recipient(&pubkey);
         let identity = make_identity(&secret);
 
@@ -483,6 +504,10 @@ mod tests {
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec![pubkey.clone()],
             schema: BTreeMap::new(),
             policy: None,
@@ -530,7 +555,8 @@ mod tests {
 
     #[test]
     fn save_vault_adds_new_secret() {
-        let (_, pubkey) = generate_keypair();
+        let (secret, pubkey) = generate_keypair();
+        let _key = murk_key_env(&secret);
         let recipient = make_recipient(&pubkey);
 
         let dir = std::env::temp_dir().join("murk_test_save_add");
@@ -543,6 +569,10 @@ mod tests {
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec![pubkey.clone()],
             schema: BTreeMap::new(),
             policy: None,
@@ -584,7 +614,8 @@ mod tests {
 
     #[test]
     fn save_vault_removes_deleted_secret() {
-        let (_, pubkey) = generate_keypair();
+        let (secret, pubkey) = generate_keypair();
+        let _key = murk_key_env(&secret);
         let recipient = make_recipient(&pubkey);
 
         let dir = std::env::temp_dir().join("murk_test_save_remove");
@@ -596,6 +627,10 @@ mod tests {
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec![pubkey.clone()],
             schema: BTreeMap::new(),
             policy: None,
@@ -647,6 +682,7 @@ mod tests {
     #[test]
     fn save_vault_reencrypts_all_on_recipient_change() {
         let (secret1, pubkey1) = generate_keypair();
+        let _key = murk_key_env(&secret1);
         let (_, pubkey2) = generate_keypair();
         let recipient1 = make_recipient(&pubkey1);
 
@@ -660,6 +696,10 @@ mod tests {
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec![pubkey1.clone(), pubkey2.clone()],
             schema: BTreeMap::new(),
             policy: None,
@@ -712,6 +752,7 @@ mod tests {
     #[test]
     fn save_vault_scoped_entry_lifecycle() {
         let (secret, pubkey) = generate_keypair();
+        let _key = murk_key_env(&secret);
         let recipient = make_recipient(&pubkey);
         let identity = make_identity(&secret);
 
@@ -725,6 +766,10 @@ mod tests {
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec![pubkey.clone()],
             schema: BTreeMap::new(),
             policy: None,
@@ -779,5 +824,40 @@ mod tests {
         assert!(vault.secrets["KEY1"].private.is_empty());
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn save_refuses_when_saver_is_not_a_recipient() {
+        // A vault whose recipients exclude the saver (e.g. a planted skeleton
+        // listing only an attacker) must not be written: the values would be
+        // encrypted only to keys the saver didn't choose.
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (saver_secret, _saver_pub) = generate_keypair();
+        let (_, attacker_pub) = generate_keypair();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.murk");
+
+        let mut vault = empty_vault();
+        vault.recipients = vec![attacker_pub.clone()];
+        let original = empty_murk();
+        let mut current = original.clone();
+        current.values.insert(
+            "DB_PASSWORD".into(),
+            crate::testutil::secret("hunter2hunter2"),
+        );
+
+        unsafe { std::env::set_var("MURK_KEY", &saver_secret) };
+        unsafe { std::env::remove_var("MURK_KEY_FILE") };
+        let result = save_vault(path.to_str().unwrap(), &mut vault, &original, &current);
+        unsafe { std::env::remove_var("MURK_KEY") };
+
+        let err = result.expect_err("a non-recipient save must be refused");
+        assert!(
+            err.to_string().contains("not a recipient"),
+            "unexpected error: {err}"
+        );
+        assert!(!path.exists(), "nothing may be written");
     }
 }

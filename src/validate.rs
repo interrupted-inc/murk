@@ -46,11 +46,20 @@ pub(crate) fn vault(v: &Vault) -> Result<(), String> {
             free_text(&format!("policy.agent_allow_tags[{i}]"), tag)?;
         }
     }
+    for (pk, blob) in &v.agents {
+        recipient("agents key", pk)?;
+        base64(&format!("agents[{}]", show(pk)), blob)?;
+    }
     for (key, entry) in &v.secrets {
         key_name("secrets", key)?;
         secret_entry(key, entry)?;
     }
-    base64("meta", &v.meta)
+    base64("meta", &v.meta)?;
+    if let Some(sig) = &v.sig {
+        recipient("sig.signer", &sig.signer)?;
+        base64("sig.sig", &sig.sig)?;
+    }
+    Ok(())
 }
 
 /// Validate every field of a decrypted meta blob, except the MAC and signature
@@ -171,8 +180,8 @@ fn group_name(field: &str, name: &str) -> Result<(), String> {
     }
 }
 
-/// `2.MINOR` or `2.MINOR.PATCH`, decimal components without leading zeros.
-/// Any other major is a format this build cannot interpret.
+/// `2.MINOR[.PATCH]` or `3.MINOR[.PATCH]`, decimal components without leading
+/// zeros. Any other major is a format this build cannot interpret.
 fn version(v: &str) -> Result<(), String> {
     let mut parts = v.split('.');
     let major = parts.next().unwrap_or("");
@@ -183,13 +192,22 @@ fn version(v: &str) -> Result<(), String> {
             && s.bytes().all(|b| b.is_ascii_digit())
             && (s == "0" || !s.starts_with('0'))
     };
-    if major == "2" && (1..=2).contains(&rest.len()) && rest.iter().all(|p| numeric(p)) {
+    if matches!(major, "2" | "3")
+        && (1..=2).contains(&rest.len())
+        && rest.iter().all(|p| numeric(p))
+    {
         return Ok(());
     }
     Err(format!(
-        "unsupported vault version: {}. This build of murk supports version 2.x",
+        "unsupported vault version: {}. This build of murk supports versions 2.x and 3.x",
         show(v)
     ))
+}
+
+/// Whether a (validated) version string has major 3: a format whose MAC and
+/// signature cover the header identity fields.
+pub(crate) fn is_v3_version(v: &str) -> bool {
+    v.split('.').next() == Some("3")
 }
 
 fn key_name(field: &str, key: &str) -> Result<(), String> {

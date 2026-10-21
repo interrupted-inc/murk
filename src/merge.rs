@@ -38,6 +38,8 @@ pub fn merge_vaults(base: &Vault, ours: &Vault, theirs: &Vault) -> MergeResult {
     let created = ours.created.clone();
     let vault_name = ours.vault_name.clone();
     let repo = ours.repo.clone();
+    let vault_id = ours.vault_id.clone();
+    let generation = ours.generation.max(theirs.generation);
 
     // -- Recipients: set union/removal --
     let recipients = merge_recipients(base, ours, theirs, &mut conflicts);
@@ -76,6 +78,8 @@ pub fn merge_vaults(base: &Vault, ours: &Vault, theirs: &Vault) -> MergeResult {
         created,
         vault_name,
         repo,
+        vault_id,
+        generation,
         recipients,
         schema,
         policy: merge_policy(
@@ -84,8 +88,13 @@ pub fn merge_vaults(base: &Vault, ours: &Vault, theirs: &Vault) -> MergeResult {
             theirs.policy.as_ref(),
             &mut conflicts,
         ),
+        // Per-grant blobs: taken from ours, like the meta blob they accompany.
+        agents: ours.agents.clone(),
         secrets,
         meta,
+        // The driver never vouches for merged content: a keyholder re-signs on
+        // the next write after reviewing `murk diff`.
+        sig: None,
     };
 
     MergeResult { vault, conflicts }
@@ -781,6 +790,10 @@ pub fn regenerate_meta(
         return Ok(None);
     };
     merged.meta = encrypted;
+    // The merged meta is MACed by this build (blake3v8 covers no version, so
+    // stamping after the MAC is safe), so the merged vault carries this build's
+    // format version, not either side's.
+    merged.version = crate::types::VAULT_VERSION.to_string();
     Ok(Some("meta regenerated".into()))
 }
 
@@ -817,6 +830,10 @@ mod tests {
             created: "2026-01-01T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec!["age1alice".into(), "age1bob".into()],
             schema,
             policy: None,
@@ -1382,6 +1399,10 @@ mod tests {
             created: "2026-01-01T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec!["age1alice".into()],
             schema: BTreeMap::new(),
             policy: None,

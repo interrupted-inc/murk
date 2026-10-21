@@ -108,13 +108,13 @@ mod signature;
 pub use load::{decrypt_vault, load_vault};
 pub(crate) use mac::{compute_mac, decode_mac_key, generate_mac_key, verify_mac};
 pub use save::save_vault;
-pub(crate) use signature::{sign_vault, signing_identity, verify_vault_signature};
+pub(crate) use signature::{register_signer, sign_vault, signing_identity, verify_vault_signature};
 // Internal helpers surfaced at the crate root only for the split-out unit and
 // property tests to reach across module boundaries.
 #[cfg(test)]
 pub(crate) use mac::compute_mac_v5;
 #[cfg(test)]
-pub(crate) use signature::{SIGNED_VIEW_VERSION, signing_message};
+pub(crate) use signature::{SIGNED_VIEW_VERSION, signing_message_v2};
 
 /// Check whether a key name is a valid shell identifier (safe for `export KEY=...`).
 /// Must start with a letter or underscore, and contain only `[A-Za-z0-9_]`.

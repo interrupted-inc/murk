@@ -3666,7 +3666,7 @@ fn skeleton_strips_secrets_and_recipients() {
     assert!(output.status.success());
 
     let skeleton: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(skeleton["version"], "2.0");
+    assert_eq!(skeleton["version"], "3.0");
     assert!(skeleton["recipients"].as_array().unwrap().is_empty());
     assert!(skeleton["secrets"].as_object().unwrap().is_empty());
     assert_eq!(skeleton["meta"], "");
@@ -5115,6 +5115,84 @@ fn scan_reports_multiple_leaks() {
         .stderr(predicate::str::contains("API_TOKEN"))
         .stderr(predicate::str::contains("notes.txt"))
         .stderr(predicate::str::contains("2 leaked secrets found"));
+}
+
+#[test]
+fn scan_nonexistent_path_is_an_error() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    murk(&dir, &key)
+        .args(["add", "DB_PASSWORD", "--vault", "test.murk"])
+        .write_stdin("supersecretvalue123\n")
+        .assert()
+        .success();
+
+    // A mistyped pre-commit path must not report a clean scan.
+    murk(&dir, &key)
+        .args(["scan", "no-such-dir", "--vault", "test.murk"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("cannot scan no-such-dir"))
+        .stderr(predicate::str::contains("no leaked secrets found").not());
+}
+
+/// Remove all permissions from `path`; `false` when that doesn't stop this
+/// process reading it (root ignores mode bits), so the caller skips.
+#[cfg(unix)]
+fn make_unreadable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
+    let readable = if path.is_dir() {
+        fs::read_dir(path).is_ok()
+    } else {
+        fs::File::open(path).is_ok()
+    };
+    if readable {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    !readable
+}
+
+#[cfg(unix)]
+#[test]
+fn scan_unreadable_path_is_an_error() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    murk(&dir, &key)
+        .args(["add", "DB_PASSWORD", "--vault", "test.murk"])
+        .write_stdin("supersecretvalue123\n")
+        .assert()
+        .success();
+    let locked = dir.path().join("locked");
+    fs::create_dir(&locked).unwrap();
+    fs::write(
+        locked.join("config.yml"),
+        "db_password: supersecretvalue123\n",
+    )
+    .unwrap();
+    if !make_unreadable(&locked) {
+        return;
+    }
+
+    // Named directly: a bad argument, exit 2.
+    murk(&dir, &key)
+        .args(["scan", "locked", "--vault", "test.murk"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("cannot scan locked"));
+
+    // Reached while walking: the scan is incomplete, so it fails (exit 1)
+    // instead of reporting "no leaked secrets found".
+    murk(&dir, &key)
+        .args(["scan", "--vault", "test.murk"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("cannot read"))
+        .stderr(predicate::str::contains("scan incomplete"))
+        .stderr(predicate::str::contains("no leaked secrets found").not());
+
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
 // ── groups ──
