@@ -2666,3 +2666,107 @@ fn a_fresh_clone_reads_main_after_revoking_on_a_branch() {
         .stdout("")
         .stderr(predicate::str::contains("signed by bob"));
 }
+
+/// Rule: only history from before a removal counts as before it. Alice
+/// revokes Bob on `offboard` and merges it into main. Bob, revoked but able
+/// to push, commits a vault he signed after his removal on top of main, and
+/// later a replay of his last pre-removal vault. Main refuses both, and so
+/// does a new branch created at either commit: being in main's history does
+/// not make a commit older than the removal. A branch at Bob's real
+/// pre-removal commit still reads.
+#[test]
+fn a_removed_signers_later_vault_is_refused_on_a_new_branch() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo) = alice_repo(base.path());
+    let bob = Machine::new(base.path(), "bob");
+    bob.init(&base.path().join("bob-scratch"), "bob");
+    let bob_key = bob.key_file();
+    authorize(&alice, &repo, &bob, "bob");
+    bob.with_key(&repo, &bob_key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    bob.with_key(&repo, &bob_key)
+        .args(["add", "BK0"])
+        .write_stdin("b0\n")
+        .assert()
+        .success();
+    commit(&repo, "bob0");
+    let bob0 = String::from_utf8(git(&repo, &["rev-parse", "HEAD"]).stdout).unwrap();
+    let bob0 = bob0.trim().to_string();
+    alice
+        .murk(&repo)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+
+    git_ok(&repo, &["checkout", "-q", "-b", "offboard"]);
+    alice
+        .murk(&repo)
+        .args(["circle", "revoke", "bob"])
+        .assert()
+        .success();
+    commit(&repo, "offboard");
+    git_ok(&repo, &["checkout", "-q", "main"]);
+    git_ok(
+        &repo,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "merge",
+            "-q",
+            "--no-ff",
+            "offboard",
+            "-m",
+            "merge",
+        ],
+    );
+    alice
+        .murk(&repo)
+        .args(["get", "DB_URL"])
+        .assert()
+        .success()
+        .stdout("prod-db\n");
+
+    // Bob signs a vault after his removal and commits it on main.
+    git_ok(&repo, &["checkout", "-q", &bob0, "--", ".murk"]);
+    bob.with_key(&repo, &bob_key)
+        .args(["add", "DB_URL"])
+        .write_stdin("attacker-db\n")
+        .assert()
+        .success();
+    commit(&repo, "bob: update");
+    let refused = |branch: &str| {
+        git_ok(&repo, &["checkout", "-q", "-b", branch]);
+        alice
+            .murk(&repo)
+            .args(["get", "DB_URL"])
+            .assert()
+            .failure()
+            .stdout("")
+            .stderr(predicate::str::contains("bob"));
+        git_ok(&repo, &["checkout", "-q", "main"]);
+    };
+    alice
+        .murk(&repo)
+        .args(["get", "DB_URL"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("signed by bob"));
+    refused("debug");
+
+    // A replay of Bob's last pre-removal vault, committed after the removal.
+    git_ok(&repo, &["checkout", "-q", &bob0, "--", ".murk"]);
+    commit(&repo, "bob: replay");
+    refused("debug-replay");
+
+    // Bob's real pre-removal commit is history from before the removal.
+    git_ok(&repo, &["checkout", "-q", "-b", "old", &bob0]);
+    alice
+        .murk(&repo)
+        .args(["get", "BK0"])
+        .assert()
+        .success()
+        .stdout("b0\n");
+}

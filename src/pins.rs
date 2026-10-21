@@ -91,11 +91,20 @@ pub struct TrustPin {
     /// it was made or accepted on, and every branch where an accepted vault at
     /// or after the removal no longer lists the key. A removal also applies
     /// outside git, on a detached HEAD and on a branch this machine has no
-    /// mark for (unless git shows its commit is in the history of one of these
-    /// branches and the vault file is the one committed there); a key in
-    /// `removed` with no entry here applies everywhere.
+    /// mark for (unless the vault is from before the removal, see
+    /// `removed_at_commit`); a key in `removed` with no entry here applies
+    /// everywhere.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub removed_on: BTreeMap<String, BTreeSet<String>>,
+    /// The commit checked out when this machine made or accepted each
+    /// removal: canonical key → full commit id. A vault the key signed, or
+    /// one listing it on a branch the removal has not reached, counts as
+    /// from before the removal only when git shows its commit is this one or
+    /// an ancestor of it and the vault file is as committed there. A removal
+    /// with no entry here (outside git, or recorded by an older murk) has no
+    /// such exception.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub removed_at_commit: BTreeMap<String, String>,
     /// Fingerprint ([`crate::trust::vault_fingerprint`]) of the vault accepted
     /// at `generation`.
     #[serde(default, skip_serializing_if = "String::is_empty")]

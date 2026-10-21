@@ -344,45 +344,46 @@ pub fn vault_fingerprint(vault: &types::Vault) -> String {
 }
 
 /// Where a load happens, as the removal rule sees it: the git HEAD state, and
-/// the branches a removal was made or accepted on whose history already
-/// contains the commit checked out, with the vault file as committed there.
+/// the removed keys whose recorded removal commit (see
+/// [`TrustPin::removed_at_commit`]) is the commit checked out or a descendant
+/// of it, with the vault file as committed there — the vault is from before
+/// those removals.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Checkout {
     pub head: HeadState,
-    behind: BTreeSet<String>,
+    before: BTreeSet<String>,
 }
 
 impl Checkout {
-    /// `head` with no branch-history information: on a branch this machine
-    /// never accepted, every removal applies.
+    /// `head` with no history information: no vault counts as from before a
+    /// removal.
     pub fn at(head: HeadState) -> Self {
         Self {
             head,
-            behind: BTreeSet::new(),
+            before: BTreeSet::new(),
         }
     }
 
     /// The checkout holding `vault_path`, judged against `pin`. Asks git only
-    /// on a branch, and only about the other branches a removal is recorded
-    /// on.
+    /// on a branch, and once per recorded removal commit.
     pub fn of(vault_path: &str, pin: Option<&TrustPin>) -> Self {
         let head = head_of(vault_path);
-        let behind = match (&head, pin) {
-            (HeadState::Branch(b), Some(pin)) => {
+        let before = match (&head, pin) {
+            (HeadState::Branch(_), Some(pin)) => {
                 let abs = absolute(vault_path);
-                pin.removed_on
-                    .values()
-                    .flatten()
-                    .filter(|r| *r != b)
-                    .collect::<BTreeSet<_>>()
+                let mut by_commit: BTreeMap<&str, Vec<&String>> = BTreeMap::new();
+                for (key, commit) in &pin.removed_at_commit {
+                    by_commit.entry(commit).or_default().push(key);
+                }
+                by_commit
                     .into_iter()
-                    .filter(|r| crate::git::committed_vault_in_history_of(&abs, r))
-                    .cloned()
+                    .filter(|(commit, _)| crate::git::committed_vault_at_or_before(&abs, commit))
+                    .flat_map(|(_, keys)| keys.into_iter().cloned())
                     .collect()
             }
             _ => BTreeSet::new(),
         };
-        Self { head, behind }
+        Self { head, before }
     }
 }
 
@@ -391,37 +392,33 @@ impl Checkout {
 /// it was removed at is refused there. It applies on a branch whose accepted
 /// history contains the removal (see [`TrustPin::removed_on`]), on a detached
 /// HEAD, outside git, and on a branch this machine has no mark for (its
-/// history is unknown, so it may be a replay) unless its commit is already in
-/// the history of a branch the removal was made on and the vault is the one
-/// committed there — then it is that branch as it was before the removal. On
-/// a branch this machine accepted before the removal reached it, the vault
-/// may still list the key. A vault signed by a removed key is judged by
-/// [`signed_before_removal`] instead.
+/// history is unknown, so it may be a replay) unless its vault is from before
+/// the removal: committed at the commit this machine made or accepted the
+/// removal at, or an ancestor of it. On a branch this machine accepted before
+/// the removal reached it, the vault may still list the key. A vault signed
+/// by a removed key is judged by [`signed_before_removal`] instead.
 pub fn removal_applies(pin: &TrustPin, key: &str, checkout: &Checkout) -> bool {
-    let on = pin.removed_on.get(key);
     match &checkout.head {
-        HeadState::Branch(b) if pin.branches.contains_key(b) => {
-            on.is_none_or(|branches| branches.contains(b))
-        }
-        HeadState::Branch(_) => on.is_none_or(|branches| branches.is_disjoint(&checkout.behind)),
+        HeadState::Branch(b) if pin.branches.contains_key(b) => pin
+            .removed_on
+            .get(key)
+            .is_none_or(|branches| branches.contains(b)),
+        HeadState::Branch(_) => !checkout.before.contains(key),
         HeadState::Detached | HeadState::NotARepo => true,
     }
 }
 
-/// Whether a vault signed by removed key `key` (canonical) is still that
-/// key's own history at `checkout`: the commit checked out is already in the
-/// history of a branch the removal was made or accepted on, with the vault
-/// file as committed there, and the removal has not reached this branch. Such
-/// a vault was written before the removal, so it loads like any other; a
-/// vault the key signs after its removal is never in that history. Everywhere
-/// else a vault signed by a removed key is refused.
+/// Whether a vault signed by removed key `key` (canonical) is that key's own
+/// history from before its removal at `checkout`: the commit checked out is
+/// the one this machine made or accepted the removal at, or an ancestor of
+/// it, with the vault file as committed there, and the removal has not
+/// reached this branch. A vault the key signs after its removal is never in
+/// that history. Everywhere else a vault signed by a removed key is refused.
 pub fn signed_before_removal(pin: &TrustPin, key: &str, checkout: &Checkout) -> bool {
     let HeadState::Branch(b) = &checkout.head else {
         return false;
     };
-    pin.removed_on
-        .get(key)
-        .is_some_and(|on| !on.contains(b) && !on.is_disjoint(&checkout.behind))
+    checkout.before.contains(key) && pin.removed_on.get(key).is_none_or(|on| !on.contains(b))
 }
 
 /// The removed keys (canonical, with the generation each was removed at)
@@ -705,6 +702,12 @@ fn absolute(vault_path: &str) -> std::path::PathBuf {
 /// The git HEAD state of the checkout holding `vault_path`.
 pub fn head_of(vault_path: &str) -> HeadState {
     crate::git::head_state(&absolute(vault_path))
+}
+
+/// The commit checked out in the checkout holding `vault_path` (see
+/// [`accepted_pin`]).
+pub fn commit_of(vault_path: &str) -> Option<String> {
+    crate::git::head_commit(&absolute(vault_path))
 }
 
 /// Rule 4: an age signer's registry key must be the one pinned for it (or
@@ -1154,21 +1157,24 @@ pub enum Acceptance<'a> {
 }
 
 /// The pin to store once `loaded` is accepted (see [`Acceptance`]) while
-/// `head` is checked out. Keeps the higher counters unless `reset_counter`.
+/// `head` is checked out, at `commit` (`None` outside git or on an unborn
+/// branch). Keeps the higher counters unless `reset_counter`.
 ///
 /// A key the trusted set loses is recorded in `removed` with the vault's
 /// generation — when the vault is this branch's next accepted state (a
 /// branch seen here before, or outside git), the user's decision, or this
-/// machine's own save — and leaves it only when a newer accepted vault lists
-/// it again, or the user re-adds it. A registry entry for a recipient with
-/// no pinned key is pinned on the signer's word and recorded in `added_by`;
-/// when that signer leaves the trusted set the entry is dropped (see SPEC,
-/// Trust: "independently confirmed").
+/// machine's own save — and `commit` in `removed_at_commit`; it leaves them
+/// only when a newer accepted vault lists it again, or the user re-adds it.
+/// A registry entry for a recipient with no pinned key is pinned on the
+/// signer's word and recorded in `added_by`; when that signer leaves the
+/// trusted set the entry is dropped (see SPEC, Trust: "independently
+/// confirmed").
 pub fn accepted_pin(
     loaded: &Loaded<'_>,
     prior: Option<&TrustPin>,
     how: Acceptance<'_>,
     head: &HeadState,
+    commit: Option<&str>,
 ) -> TrustPin {
     let prior_v2 = prior.filter(|p| p.v >= pins::PIN_VERSION);
     let had_trust = prior_v2.is_some_and(TrustPin::has_trust);
@@ -1238,6 +1244,7 @@ pub fn accepted_pin(
     if other_vault {
         pin.removed.clear();
         pin.removed_on.clear();
+        pin.removed_at_commit.clear();
     }
 
     let dropped = replace_trusted(&mut pin, loaded.vault, how, had_trust, current);
@@ -1250,6 +1257,10 @@ pub fn accepted_pin(
         for k in dropped {
             let at = pin.removed.entry(k.clone()).or_insert(found);
             *at = (*at).max(found);
+            match commit {
+                Some(c) => pin.removed_at_commit.insert(k.clone(), c.to_string()),
+                None => pin.removed_at_commit.remove(&k),
+            };
             pin.removed_on.entry(k).or_default();
         }
     }
@@ -1284,17 +1295,19 @@ pub fn accepted_pin(
     pin
 }
 
-/// Keep `removed_on` in step with `removed`, and mark the removals the vault
-/// just accepted on branch `head` shows: a vault at or after a removal that
-/// does not list the key means the removal has reached this branch (it was
-/// made here, or merged or pulled into it).
+/// Keep `removed_on` and `removed_at_commit` in step with `removed`, and mark
+/// the removals the vault just accepted on branch `head` shows: a vault at or
+/// after a removal that does not list the key means the removal has reached
+/// this branch (it was made here, or merged or pulled into it).
 fn record_removal_reach(pin: &mut TrustPin, vault: &types::Vault, head: &HeadState) {
     let TrustPin {
         removed,
         removed_on,
+        removed_at_commit,
         ..
     } = pin;
     removed_on.retain(|k, _| removed.contains_key(k));
+    removed_at_commit.retain(|k, _| removed.contains_key(k));
     let HeadState::Branch(branch) = head else {
         return;
     };
@@ -1694,7 +1707,7 @@ mod tests {
         } else {
             Acceptance::Load
         };
-        super::accepted_pin(loaded, prior, how, &HeadState::NotARepo)
+        super::accepted_pin(loaded, prior, how, &HeadState::NotARepo, None)
     }
 
     #[test]
@@ -1703,12 +1716,13 @@ mod tests {
         let feature = HeadState::Branch("feature".into());
         let at = |g| Case::new(&[A], g, A);
         // main accepted at 5, then this machine saved feature at 6.
-        let pin = super::accepted_pin(&at(5).loaded(), None, Acceptance::Load, &main);
+        let pin = super::accepted_pin(&at(5).loaded(), None, Acceptance::Load, &main, None);
         let pin = super::accepted_pin(
             &at(6).loaded(),
             Some(&pin),
             Acceptance::OwnSave { before: None },
             &feature,
+            None,
         );
         // Switching back to main (still 5) is fine; main going back to 4 is not.
         assert_eq!(
