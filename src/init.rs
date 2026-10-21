@@ -107,21 +107,23 @@ pub fn check_init_status(vault: &types::Vault, secret_key: &str) -> Result<InitS
     })
 }
 
-/// Create a new vault with a single recipient.
+/// Create a new vault with a single recipient, signed by that recipient.
 ///
-/// Detects the git remote URL and builds the initial vault struct.
-/// The caller is responsible for writing the vault to disk via `vault::write`.
+/// Detects the git remote URL and builds the initial vault struct, with a fresh
+/// vault id and generation 1. The caller writes it to disk via `vault::write`,
+/// then records it as trusted with [`pin_created_vault`].
 pub fn create_vault(
     vault_name: &str,
-    pubkey: &str,
+    identity: &crypto::MurkIdentity,
     name: &str,
 ) -> Result<types::Vault, crate::error::MurkError> {
     use crate::error::MurkError;
 
+    let pubkey = identity.pubkey_string()?;
     let mut recipient_names = HashMap::new();
-    recipient_names.insert(pubkey.to_string(), name.to_string());
+    recipient_names.insert(pubkey.clone(), name.to_string());
 
-    let recipient = crypto::parse_recipient(pubkey)?;
+    let recipient = crypto::parse_recipient(&pubkey)?;
 
     // Detect git repo URL, stripping any embedded credentials.
     let repo = crate::git::git_command()
@@ -138,11 +140,11 @@ pub fn create_vault(
         created: now_utc(),
         vault_name: vault_name.into(),
         repo,
-        vault_id: String::new(),
-        generation: 0,
+        vault_id: crate::save::new_vault_id(),
+        generation: 1,
+        recipients: vec![pubkey.clone()],
         agents: BTreeMap::new(),
         sig: None,
-        recipients: vec![pubkey.to_string()],
         schema: BTreeMap::new(),
         policy: None,
         secrets: BTreeMap::new(),
@@ -152,8 +154,8 @@ pub fn create_vault(
     let mac_key_hex = crate::generate_mac_key();
     let mac_key = crate::decode_mac_key(&mac_key_hex).unwrap();
     let mac = crate::compute_mac(&vault, &BTreeMap::new(), &BTreeMap::new(), Some(&mac_key));
-    // The initial vault is unsigned: `create_vault` holds only the public key,
-    // and an empty vault has nothing to protect. The first secret write signs it.
+    let mut signers = BTreeMap::new();
+    crate::register_signer(&vault, &mut signers, identity);
     let meta = types::Meta {
         recipients: recipient_names,
         mac,
@@ -161,7 +163,7 @@ pub fn create_vault(
         github_pins: HashMap::new(),
         groups: BTreeMap::new(),
         grants: BTreeMap::new(),
-        signers: BTreeMap::new(),
+        signers,
         sig: None,
     };
     crate::validate::meta(&meta)
@@ -169,8 +171,46 @@ pub fn create_vault(
     let meta_json =
         serde_json::to_vec(&meta).map_err(|e| MurkError::Secret(format!("meta serialize: {e}")))?;
     vault.meta = encrypt_value(&meta_json, &[recipient])?;
+    // Signed from the start: an unsigned vault is refused by every signing-
+    // capable loader, and a forged "empty" vault would otherwise collect the
+    // first secret written to it. The signature covers the finished file.
+    vault.sig = crate::sign_vault(&vault, identity);
 
     Ok(vault)
+}
+
+/// Record a vault this machine just created as trusted, with its creator (and
+/// the creator's verifying key) as the only trusted signer.
+pub fn pin_created_vault(
+    vault_path: &str,
+    vault: &types::Vault,
+    identity: &crate::crypto::MurkIdentity,
+) -> Result<(), String> {
+    if !crate::pins::signer_pin_available() {
+        return Ok(());
+    }
+    let creator = vault.recipients.first().cloned().unwrap_or_default();
+    let mut registry = BTreeMap::new();
+    crate::register_signer(vault, &mut registry, identity);
+    let signature = types::SignatureState::Signed {
+        signer: creator.clone(),
+        v: crate::signature::SIGNED_VIEW_VERSION,
+    };
+    let loaded = crate::trust::Loaded {
+        vault,
+        signature: &signature,
+        signer_vk: crate::signature::registry_entry(&registry, &creator).map(String::as_str),
+        registry: &registry,
+        names: &HashMap::new(),
+        groups: &BTreeMap::new(),
+        grants: &BTreeMap::new(),
+        loader_can_sign: true,
+    };
+    let head = crate::trust::head_of(vault_path);
+    crate::pins::write(
+        vault_path,
+        &crate::trust::accepted_pin(&loaded, None, true, &head),
+    )
 }
 
 #[cfg(test)]
@@ -363,16 +403,23 @@ mod tests {
     }
 
     #[test]
-    fn create_vault_basic() {
-        let (_, pubkey) = generate_keypair();
+    fn create_vault_is_signed_by_its_creator_with_an_identity() {
+        let (secret, pubkey) = generate_keypair();
+        let identity = make_identity(&secret);
 
-        let vault = create_vault(".murk", &pubkey, "Bob").unwrap();
-        assert_eq!(vault.version, types::VAULT_VERSION);
-        assert_eq!(vault.vault_name, ".murk");
-        assert_eq!(vault.recipients, vec![pubkey]);
-        assert!(vault.schema.is_empty());
-        assert!(vault.secrets.is_empty());
-        assert!(!vault.meta.is_empty(), "meta is empty");
+        let vault = create_vault(".murk", &identity, "Bob").unwrap();
+        assert_eq!(vault.recipients, vec![pubkey.clone()]);
+        assert_eq!(vault.generation, 1);
+        assert_eq!(vault.vault_id.len(), 32);
+        // A fresh vault loads signed: an unsigned one would be refused.
+        let murk = crate::decrypt_vault(&vault, &identity).unwrap();
+        assert_eq!(
+            murk.signature,
+            types::SignatureState::Signed {
+                signer: pubkey,
+                v: crate::signature::SIGNED_VIEW_VERSION
+            }
+        );
     }
 
     // ── sanitize_remote_url tests ──

@@ -793,7 +793,13 @@ fn vault_from_0_13_verifies_and_upgrades_on_write() {
     }
     let key = V0_13_KEY.trim();
 
-    // Reads and verifies as before.
+    // A machine that never trusted the vault does so once (0.14 anchors trust
+    // in a local pin, which a 0.13 machine never wrote)...
+    murk(&dir, key)
+        .args(["trust", "--yes", "--vault", "test.murk"])
+        .assert()
+        .success();
+    // ...then it reads and verifies as before.
     murk(&dir, key)
         .args(["verify", "--vault", "test.murk"])
         .assert()

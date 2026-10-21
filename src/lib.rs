@@ -44,6 +44,7 @@ pub mod recovery;
 pub mod scan;
 pub(crate) mod secrets;
 pub mod signing;
+pub mod trust;
 pub mod types;
 pub(crate) mod validate;
 pub mod vault;
@@ -83,7 +84,10 @@ pub use groups::{
     validate_group_name,
 };
 pub use info::{InfoEntry, VaultInfo, format_info_lines, lifecycle_segment, vault_info};
-pub use init::{DiscoveredKey, InitStatus, check_init_status, create_vault, discover_existing_key};
+pub use init::{
+    DiscoveredKey, InitStatus, check_init_status, create_vault, discover_existing_key,
+    pin_created_vault,
+};
 pub use merge::{MergeDriverOutput, run_merge_driver};
 pub use policy::{check_agent_keys, enforce_agent_policy, is_agent_identity, is_agent_key_allowed};
 pub use recipients::{
@@ -102,16 +106,16 @@ mod mac;
 mod save;
 mod signature;
 
-pub use load::{decrypt_vault, load_vault};
+pub use load::{InspectedVault, decrypt_vault, inspect_vault, load_vault};
 pub(crate) use mac::{compute_mac, decode_mac_key, generate_mac_key, verify_mac};
 pub use save::save_vault;
 pub(crate) use signature::{register_signer, sign_vault, signing_identity, verify_vault_signature};
+/// Escape and truncate vault-supplied text for display (see `validate::show`).
+pub use validate::show as show_untrusted;
 // Internal helpers surfaced at the crate root only for the split-out unit and
 // property tests to reach across module boundaries.
 #[cfg(test)]
 pub(crate) use mac::compute_mac_v5;
-#[cfg(test)]
-pub(crate) use signature::{SIGNED_VIEW_VERSION, signing_message_v2};
 
 /// Check whether a key name is a valid shell identifier (safe for `export KEY=...`).
 /// Must start with a letter or underscore, and contain only `[A-Za-z0-9_]`.
@@ -119,6 +123,103 @@ pub fn is_valid_key_name(key: &str) -> bool {
     !key.is_empty()
         && key.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
         && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Environment variables that change how a program, its loader or its shell
+/// runs, matched exactly (case-insensitively, since Windows env names are).
+/// Injecting one from a vault hands whoever wrote the vault code execution or
+/// control over murk itself, so `export`/`exec`/`agent exec` refuse them unless
+/// `--allow-reserved` is passed, and `murk mcp` always refuses them.
+const RESERVED_ENV_NAMES: &[&str] = &[
+    // Search paths and interpreter start-up hooks (whole families by prefix
+    // below).
+    "PATH",
+    "NODE_OPTIONS",
+    "NODE_PATH",
+    "NODE_EXTRA_CA_CERTS",
+    "CLASSPATH",
+    "GCONV_PATH",
+    "GLIBC_TUNABLES",
+    "OPENSSL_CONF",
+    "OPENSSL_ENGINES",
+    "RUSTFLAGS",
+    "RUSTDOCFLAGS",
+    "GOFLAGS",
+    "MAVEN_OPTS",
+    "GRADLE_OPTS",
+    "CURL_CA_BUNDLE",
+    "REQUESTS_CA_BUNDLE",
+    // Shell start-up and prompt hooks.
+    "BASH_ENV",
+    "ENV",
+    "ZDOTDIR",
+    "SHELLOPTS",
+    "BASHOPTS",
+    "IFS",
+    "SHELL",
+    "PS0",
+    "PS1",
+    "PS2",
+    "PS3",
+    "PS4",
+    "PROMPT_COMMAND",
+    "CDPATH",
+    // Where tools read their configuration, and commands tools run.
+    "HOME",
+    "XDG_CONFIG_HOME",
+    "EDITOR",
+    "VISUAL",
+    "PAGER",
+    "MANPAGER",
+    "LESSOPEN",
+    "LESSCLOSE",
+    "BROWSER",
+    "SSH_ASKPASS",
+    "SUDO_ASKPASS",
+];
+
+/// Reserved name prefixes: the dynamic loader (`LD_`, `DYLD_`), git (every
+/// `GIT_*` variable, including `GIT_SSH_COMMAND` and `GIT_CONFIG_*`), bash
+/// exported functions, interpreter and build-tool families whose variables
+/// load code (`PYTHON*` includes `PYTHONPATH` and `PYTHONUSERBASE`), TLS trust
+/// (`SSL_CERT_FILE`), npm configuration (`npm_config_script_shell`), and
+/// murk's own settings (a vault must not switch off `MURK_STRICT` or pick the
+/// trusted signers of a nested murk). `NODE_` is not a prefix: `NODE_ENV` is
+/// an ordinary application setting.
+const RESERVED_ENV_PREFIXES: &[&str] = &[
+    "LD_",
+    "DYLD_",
+    "GIT_",
+    "BASH_FUNC_",
+    "PYTHON",
+    "PERL",
+    "RUBY",
+    "JAVA_",
+    "_JAVA_",
+    "JDK_",
+    "DOTNET_",
+    "CARGO_",
+    "RUSTC",
+    "SSL_",
+    "PIP_",
+    "GEM_",
+    "BUNDLE_",
+    "NPM_CONFIG_",
+    "MURK_",
+];
+
+/// Reserved name suffixes: proxies (`HTTPS_PROXY`, `ALL_PROXY`, …), which
+/// would route the child's traffic — and the secrets in its environment —
+/// through a host the vault writer chose.
+const RESERVED_ENV_SUFFIXES: &[&str] = &["_PROXY"];
+
+/// Whether injecting `name` into a process environment would let the vault
+/// change how that process (or its loader, shell, or murk itself) runs.
+pub fn is_reserved_env_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    RESERVED_ENV_NAMES.contains(&upper.as_str())
+        || RESERVED_ENV_PREFIXES.iter().any(|p| upper.starts_with(p))
+        || RESERVED_ENV_SUFFIXES.iter().any(|s| upper.ends_with(s))
 }
 
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};

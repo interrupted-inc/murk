@@ -4,7 +4,7 @@
 .SH NAME
 export \- Export all secrets as shell export statements
 .SH SYNOPSIS
-\fBmurk export\fR [\fB\-\-tag\fR] [\fB\-\-json\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBmurk export\fR [\fB\-\-tag\fR] [\fB\-\-json\fR] [\fB\-\-allow\-reserved\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 Export all secrets as shell export statements
 .SH OPTIONS
@@ -14,6 +14,9 @@ Filter by tag (repeatable)
 .TP
 \fB\-\-json\fR
 Output as JSON
+.TP
+\fB\-\-allow\-reserved\fR
+Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)
 .TP
 \fB\-\-vault\fR \fI<VAULT>\fR [default: .murk]
 Vault filename

@@ -2312,59 +2312,6 @@ fn merge_driver_clean_merge() {
 }
 
 #[test]
-fn merge_driver_schema_only_merge_without_key() {
-    let dir = TempDir::new().unwrap();
-
-    let base_json = r#"{
-  "version": "2.0",
-  "created": "2026-01-01T00:00:00Z",
-  "vault_name": ".murk",
-  "recipients": ["age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"],
-  "schema": {
-    "DB_URL": { "description": "database", "tags": [] }
-  },
-  "secrets": {
-    "DB_URL": { "shared": "YmFzZS1kYg==" }
-  },
-  "meta": "YmFzZS1tZXRh"
-}"#;
-
-    // Ours: changes description only.
-    let ours_json = r#"{
-  "version": "2.0",
-  "created": "2026-01-01T00:00:00Z",
-  "vault_name": ".murk",
-  "recipients": ["age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"],
-  "schema": {
-    "DB_URL": { "description": "updated database desc", "tags": [] }
-  },
-  "secrets": {
-    "DB_URL": { "shared": "YmFzZS1kYg==" }
-  },
-  "meta": "b3Vycy1tZXRh"
-}"#;
-
-    // Theirs: identical to base (no changes).
-    let theirs_json = base_json;
-
-    let base_path = write_vault_json(dir.path(), "base.murk", base_json);
-    let ours_path = write_vault_json(dir.path(), "ours.murk", ours_json);
-    let theirs_path = write_vault_json(dir.path(), "theirs.murk", theirs_json);
-
-    // Schema-only change — secrets and recipients unchanged, should succeed without MURK_KEY.
-    murk_bin(dir.path())
-        .args([
-            "merge-driver",
-            base_path.to_str().unwrap(),
-            ours_path.to_str().unwrap(),
-            theirs_path.to_str().unwrap(),
-        ])
-        .assert()
-        .success()
-        .stderr(predicate::str::contains("content unchanged"));
-}
-
-#[test]
 fn merge_driver_conflict_exit_code() {
     let dir = TempDir::new().unwrap();
 

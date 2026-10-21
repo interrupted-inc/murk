@@ -23,6 +23,7 @@ pub(crate) mod secrets;
 #[cfg(unix)]
 pub(crate) mod signals;
 pub(crate) mod supervise;
+pub(crate) mod trust;
 pub(crate) mod verify;
 
 // `murk agent exec` reuses the plain `exec` handler.
@@ -48,6 +49,36 @@ pub(crate) fn die(msg: &dyn std::fmt::Display, code: i32) -> ! {
 /// Unwrap a result or print the error and exit with code 1.
 pub(crate) fn try_or_die<T>(result: Result<T, impl std::fmt::Display>) -> T {
     result.unwrap_or_else(|e| die(&e, 1))
+}
+
+/// Refuse to inject vault keys named like loader/shell/tool variables (see
+/// [`murk_cli::is_reserved_env_name`]) unless the operator passed
+/// `--allow-reserved`. A vault writer must not get to pick `PATH`,
+/// `LD_PRELOAD`, `GIT_SSH_COMMAND` or `MURK_STRICT` for whoever runs it.
+pub(crate) fn refuse_reserved<'a>(keys: impl IntoIterator<Item = &'a String>, allow: bool) {
+    if allow {
+        return;
+    }
+    let reserved: Vec<&str> = keys
+        .into_iter()
+        .map(String::as_str)
+        .filter(|k| murk_cli::is_reserved_env_name(k))
+        .collect();
+    if !reserved.is_empty() {
+        die(
+            &format_args!(
+                "refusing to set {} from the vault: {} control how programs, shells or murk itself run\nreview who added {} (`murk diff`, `git log -p`), then pass --allow-reserved if you mean it",
+                reserved.join(", "),
+                if reserved.len() == 1 {
+                    "it would"
+                } else {
+                    "they would"
+                },
+                if reserved.len() == 1 { "it" } else { "them" },
+            ),
+            1,
+        );
+    }
 }
 
 /// Prompt the user for a line of input, with an optional default value.
@@ -90,6 +121,10 @@ pub(crate) fn load_vault(vault: &str) -> (types::Vault, types::Murk, MurkIdentit
     if let Some(warning) = murk_cli::env_permission_warning() {
         eprintln!("{warning}");
     }
+    // `murk_cli::load_vault` refuses a vault this machine does not trust
+    // (unsigned, untrusted signer, rolled back, ...), so every caller and
+    // binding gets the same rules. What reaches here is trusted, or unsigned
+    // and loaded by a key that cannot sign.
     let result = try_or_die(murk_cli::load_vault(vault));
     if result.1.legacy_mac {
         eprintln!(
@@ -97,46 +132,13 @@ pub(crate) fn load_vault(vault: &str) -> (types::Vault, types::Murk, MurkIdentit
             "warn".yellow().bold()
         );
     }
-    // A vault signed before and now unsigned is the sharper signal — surface it
-    // distinctly (a merge is the common benign cause; a strip is not).
-    if result.1.signature_downgraded {
+    if matches!(result.1.signature, types::SignatureState::Unsigned) {
         eprintln!(
-            "{} vault was signed before and is now unsigned — expected right after `git merge` (re-sign with any write command after reviewing `murk diff`); otherwise investigate before trusting it",
-            "warn".yellow().bold()
-        );
-    } else if matches!(result.1.signature, types::SignatureState::Unsigned)
-        && !result.0.secrets.is_empty()
-        && result.2.is_signing_capable()
-    {
-        // Nudge only when the operator can actually fix it: a vault with secrets
-        // that isn't signed, loaded by a signing-capable key. SSH/hardware users
-        // can't sign, so staying unsigned is expected (integrity anchor is git).
-        eprintln!(
-            "{} vault is unsigned — run any write command to sign it (integrity relies on git until then)",
-            "warn".yellow().bold()
-        );
-    }
-    // Signature present but pinning is off (MURK_NO_SIGNER_PIN or no HOME, e.g.
-    // some CI): the signature can't be anchored, so a swapped signer key would go
-    // uncaught. Surface the blind spot rather than letting it pass silently.
-    if matches!(
-        result.1.signature,
-        types::SignatureState::Signed {
-            anchored: false,
-            ..
-        }
-    ) && !result.0.secrets.is_empty()
-        && !murk_cli::pins::signer_pin_available()
-    {
-        eprintln!(
-            "{} signer pinning is off (MURK_NO_SIGNER_PIN or no HOME) — the signature is trust-only and not anchored; anchor authorship with signed git commits",
+            "{} vault is unsigned and your key cannot sign — nothing in the vault shows who wrote it; rely on signed git commits",
             "warn".yellow().bold()
         );
     }
     maybe_nudge_agent_path(vault);
-    // The signer-registry pin (a changed verifying key for an already-seen signer)
-    // is enforced as a hard failure inside `murk_cli::load_vault`, so it applies
-    // to every caller. Nothing to do here.
     result
 }
 

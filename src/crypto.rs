@@ -139,29 +139,61 @@ impl MurkIdentity {
         matches!(self, MurkIdentity::Age(_))
     }
 
-    /// This identity's Ed25519 signing key, if it can sign.
+    /// This identity's vault signing key, if it can sign.
     ///
-    /// - Age keys: derived from the raw x25519 key bytes via a domain-separated
-    ///   KDF (see [`crate::signing`]), so it recovers from the BIP39 phrase.
+    /// - Age keys: an Ed25519 key derived from the raw x25519 key bytes via a
+    ///   domain-separated KDF (see [`crate::signing`]), so it recovers from the
+    ///   BIP39 phrase. Its verifying key is published in the signer registry.
     /// - `ssh-ed25519` keys: the SSH key *is* an Ed25519 signing key; we parse it
     ///   from the retained OpenSSH PEM (age does not expose the scalar). The
     ///   resulting verifying key matches the `ssh-ed25519 …` recipient string.
     /// - `ssh-rsa` and plugin/hardware identities return `None` (unsigned).
-    pub fn signing_key(&self) -> Option<ed25519_dalek::SigningKey> {
+    pub fn signing_key(&self) -> Option<crate::signing::VaultSigningKey> {
         match self {
             MurkIdentity::Age(id) => {
-                use age::secrecy::ExposeSecret;
-                // age keys display uppercase; bech32 decoding requires lowercase.
-                let secret = id.to_string();
-                let lower = Zeroizing::new(secret.expose_secret().to_lowercase());
-                let (_, bytes) = bech32::decode(&lower).ok()?;
-                let bytes = Zeroizing::new(bytes);
-                Some(crate::signing::signing_key_from_age_bytes(&bytes))
+                let bytes = age_secret_bytes(id)?;
+                Some(crate::signing::age_signing_key(bytes.as_slice()))
             }
-            MurkIdentity::Ssh { pem, .. } => crate::signing::ed25519_signing_key_from_openssh(pem),
+            MurkIdentity::Ssh { pem, .. } => crate::signing::ssh_signing_key(pem),
             MurkIdentity::Plugin { .. } => None,
         }
     }
+}
+
+/// The raw 32-byte X25519 secret of an age identity. Zeroized on drop.
+pub(crate) fn age_secret_bytes(id: &age::x25519::Identity) -> Option<Zeroizing<[u8; 32]>> {
+    use age::secrecy::ExposeSecret;
+    // age keys display uppercase; bech32 decoding requires lowercase.
+    let secret = id.to_string();
+    let lower = Zeroizing::new(secret.expose_secret().to_lowercase());
+    let (_, bytes) = bech32::decode(&lower).ok()?;
+    let bytes = Zeroizing::new(bytes);
+    let arr = <[u8; 32]>::try_from(bytes.as_slice()).ok()?;
+    Some(Zeroizing::new(arr))
+}
+
+/// The canonical spelling of a recipient public key, for identity comparisons.
+///
+/// Two strings can name the same key: bech32 is case-insensitive (`age1…` and
+/// `AGE1…`), and an SSH key may carry any trailing comment. Canonical form is
+/// lowercase for age and plugin recipients, and `type blob` (no comment) for
+/// SSH keys. Strings that don't parse as a key are returned unchanged.
+pub fn canonical_recipient(pubkey: &str) -> String {
+    let trimmed = pubkey.trim();
+    if trimmed.starts_with("ssh-") {
+        let mut it = trimmed.split_whitespace();
+        return match (it.next(), it.next()) {
+            (Some(kind), Some(blob)) => format!("{kind} {blob}"),
+            _ => trimmed.to_string(),
+        };
+    }
+    if trimmed
+        .get(..4)
+        .is_some_and(|p| p.eq_ignore_ascii_case("age1"))
+    {
+        return trimmed.to_ascii_lowercase();
+    }
+    trimmed.to_string()
 }
 
 /// Parse a public key string into a `MurkRecipient`.
@@ -170,6 +202,11 @@ impl MurkIdentity {
 /// then age plugin recipients (`age1<plugin>1...`).
 pub fn parse_recipient(pubkey: &str) -> Result<MurkRecipient, CryptoError> {
     if let Ok(r) = pubkey.parse::<age::x25519::Recipient>() {
+        if !age_u_is_canonical(pubkey) {
+            return Err(CryptoError::InvalidKey(format!(
+                "not a canonical age public key (high bit set or out of range): {pubkey}"
+            )));
+        }
         return Ok(MurkRecipient::Age(r));
     }
     if let Ok(r) = pubkey.parse::<age::ssh::Recipient>() {
@@ -181,6 +218,33 @@ pub fn parse_recipient(pubkey: &str) -> Result<MurkRecipient, CryptoError> {
     Err(CryptoError::InvalidKey(format!(
         "not a valid age, SSH, or plugin public key: {pubkey}"
     )))
+}
+
+/// Whether an `age1…` recipient's 32-byte Montgomery `u` is the canonical
+/// encoding of its field element: bit 255 clear and `u < 2^255 - 19`. X25519
+/// ignores bit 255 and reduces `u`, so a non-canonical spelling names the
+/// same key under a different string — an alias that would survive
+/// `circle revoke`. murk never writes one; refusing it closes the alias.
+fn age_u_is_canonical(recipient: &str) -> bool {
+    let Ok((_, data)) = bech32::decode(&recipient.to_ascii_lowercase()) else {
+        return false;
+    };
+    let Ok(u) = <[u8; 32]>::try_from(data.as_slice()) else {
+        return false;
+    };
+    if u[31] & 0x80 != 0 {
+        return false;
+    }
+    // p = 2^255 - 19, little-endian: 0xed, 0xff × 30, 0x7f.
+    let mut p = [0xffu8; 32];
+    p[0] = 0xed;
+    p[31] = 0x7f;
+    for i in (0..32).rev() {
+        if u[i] != p[i] {
+            return u[i] < p[i];
+        }
+    }
+    false
 }
 
 /// Parse a secret key or identity-file contents into a `MurkIdentity`.
@@ -409,6 +473,23 @@ mod tests {
         let decrypted = decrypt(&ciphertext, &identity).unwrap();
 
         assert_eq!(&decrypted[..], plaintext);
+    }
+
+    #[test]
+    fn age_recipient_with_the_high_bit_set_is_refused() {
+        // Same X25519 key as `pubkey` (X25519 ignores bit 255) under another
+        // string: an alias that `circle revoke` would not remove.
+        use bech32::{Bech32, Hrp};
+        let (_, pubkey) = generate_keypair();
+        let (_, mut u) = bech32::decode(&pubkey).unwrap();
+        u[31] |= 0x80;
+        let alias = bech32::encode::<Bech32>(Hrp::parse("age").unwrap(), &u).unwrap();
+        assert!(
+            alias.parse::<age::x25519::Recipient>().is_ok(),
+            "age accepts it"
+        );
+        assert!(parse_recipient(&alias).is_err());
+        assert!(parse_recipient(&pubkey).is_ok());
     }
 
     #[test]

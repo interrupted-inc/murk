@@ -453,7 +453,7 @@ pub(crate) fn cmd_group(sub: GroupCommand) {
                     );
                 }
                 None => {
-                    try_or_die(murk_cli::delete_group(&vault, &mut current, &name));
+                    try_or_die(murk_cli::delete_group(&vault, &mut current, &name, &pubkey));
                     save_vault(&vault_path, &mut vault, &original, &current);
                     eprintln!("{} deleted group {}", "◆".magenta(), name.bold());
                 }

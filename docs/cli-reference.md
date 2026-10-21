@@ -47,6 +47,7 @@ This document contains the help content for the `murk` command-line program.
 * [`murk group add`↴](#murk-group-add)
 * [`murk group rm`↴](#murk-group-rm)
 * [`murk verify`↴](#murk-verify)
+* [`murk trust`↴](#murk-trust)
 * [`murk doctor`↴](#murk-doctor)
 * [`murk scan`↴](#murk-scan)
 * [`murk diff`↴](#murk-diff)
@@ -86,6 +87,7 @@ Encrypted secrets manager for developers — one file, age encryption, git-frien
 * `circle` — Manage recipients
 * `group` — Manage recipient groups
 * `verify` — Verify vault integrity without exporting secrets
+* `trust` — Review who signed the vault and what changed, then trust it on this machine
 * `doctor` — Check the surrounding repo for hygiene issues
 * `scan` — Scan files for leaked secret values
 * `diff` — Show secret changes vs a git ref
@@ -300,6 +302,7 @@ Export all secrets as shell export statements
 
 * `--tag <TAG>` — Filter by tag (repeatable)
 * `--json` — Output as JSON
+* `--allow-reserved` — Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`
@@ -398,6 +401,7 @@ Run a command with secrets injected as environment variables
 * `--only <ONLY>` — Only inject these specific keys (repeatable)
 * `--tag <TAG>` — Filter by tag (repeatable)
 * `--clean-env` — Strip inherited environment (only murk secrets + PATH)
+* `--allow-reserved` — Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`
@@ -454,6 +458,7 @@ Run a command with strict agent-safe defaults (clears the inherited environment,
 
 * `--only <ONLY>` — Inject these specific keys (required — agent mode fails closed)
 * `--allow-operator-key` — Decrypt with your own stored key from ~/.config/murk/keys. Without this, agent exec needs an explicit MURK_KEY or MURK_KEY_FILE
+* `--allow-reserved` — Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`
@@ -813,6 +818,24 @@ Verify vault integrity without exporting secrets
 
 ###### **Options:**
 
+* `--vault <VAULT>` — Vault filename
+
+  Default value: `.murk`
+
+
+
+## `murk trust`
+
+Review who signed the vault and what changed, then trust it on this machine
+
+Needed once per vault on a new clone, whenever a teammate's first signed write arrives, and whenever murk refuses a vault (an unfamiliar signer, an unsigned or rolled-back vault). Shows the signer's key and signing-key fingerprint, the recipient changes since this machine last trusted the vault, and asks before recording it. An unsigned vault is signed with your key.
+
+**Usage:** `murk trust [OPTIONS]`
+
+###### **Options:**
+
+* `--yes` — Accept without asking (for scripts; review first)
+* `--print-key` — Print your own trusted-signer entry (for MURK_TRUSTED_SIGNERS) and signing-key fingerprint (for teammates to confirm), then exit
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`

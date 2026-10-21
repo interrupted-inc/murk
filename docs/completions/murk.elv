@@ -45,6 +45,7 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand revoke 'Remove a recipient from the vault'
             cand group 'Manage recipient groups'
             cand verify 'Verify vault integrity without exporting secrets'
+            cand trust 'Review who signed the vault and what changed, then trust it on this machine'
             cand doctor 'Check the surrounding repo for hygiene issues'
             cand scan 'Scan files for leaked secret values'
             cand diff 'Show secret changes vs a git ref'
@@ -132,6 +133,7 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand --tag 'Filter by tag (repeatable)'
             cand --vault 'Vault filename'
             cand --json 'Output as JSON'
+            cand --allow-reserved 'Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)'
             cand -h 'Print help'
             cand --help 'Print help'
         }
@@ -171,6 +173,7 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand --tag 'Filter by tag (repeatable)'
             cand --vault 'Vault filename'
             cand --clean-env 'Strip inherited environment (only murk secrets + PATH)'
+            cand --allow-reserved 'Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)'
             cand -h 'Print help'
             cand --help 'Print help'
         }
@@ -200,6 +203,7 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand --only 'Inject these specific keys (required — agent mode fails closed)'
             cand --vault 'Vault filename'
             cand --allow-operator-key 'Decrypt with your own stored key from ~/.config/murk/keys. Without this, agent exec needs an explicit MURK_KEY or MURK_KEY_FILE'
+            cand --allow-reserved 'Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)'
             cand -h 'Print help'
             cand --help 'Print help'
         }
@@ -429,6 +433,13 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand -h 'Print help'
             cand --help 'Print help'
         }
+        &'murk;trust'= {
+            cand --vault 'Vault filename'
+            cand --yes 'Accept without asking (for scripts; review first)'
+            cand --print-key 'Print your own trusted-signer entry (for MURK_TRUSTED_SIGNERS) and signing-key fingerprint (for teammates to confirm), then exit'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+        }
         &'murk;doctor'= {
             cand --vault 'Vault filename'
             cand -h 'Print help'
@@ -506,6 +517,7 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand revoke 'Remove a recipient from the vault'
             cand group 'Manage recipient groups'
             cand verify 'Verify vault integrity without exporting secrets'
+            cand trust 'Review who signed the vault and what changed, then trust it on this machine'
             cand doctor 'Check the surrounding repo for hygiene issues'
             cand scan 'Scan files for leaked secret values'
             cand diff 'Show secret changes vs a git ref'
@@ -614,6 +626,8 @@ set edit:completion:arg-completer[murk] = {|@words|
         &'murk;help;group;rm'= {
         }
         &'murk;help;verify'= {
+        }
+        &'murk;help;trust'= {
         }
         &'murk;help;doctor'= {
         }

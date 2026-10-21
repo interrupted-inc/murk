@@ -40,6 +40,8 @@ Existing secrets tools are either too complex (SOPS, Vault), tied to a runtime (
 | `MURK_KEY_FILE`| Yes      | Path to a private key file. Set by `murk init`. May be a raw age key, an SSH PEM key, or an age plugin identity file with a `# Recipient: age1...` (or `# public key: age1...`) header. |
 | `MURK_VAULT`   | No       | Vault filename. Defaults to `.murk`.                    |
 | `MURK_STRICT`  | No       | When `1`/`true`/`yes`, fail closed rather than let a secret touch disk: requires `murk edit`'s scratch file to live on a RAM-backed filesystem, and refuses `export`/`get` when stdout is a regular file (plaintext to disk). |
+| `MURK_TRUSTED_SIGNERS` | No | Signers trusted to sign the vault, separated by commas or newlines, replacing the local trust pin's set: `age1…:<verifying key>` for an age signer, the public key line for an ssh-ed25519 signer (`murk trust --print-key` prints the entry). For CI runners and other machines without a pin. See Trust. |
+| `MURK_NO_SIGNER_PIN` | No | When present, murk neither reads nor writes the local trust pin; trust then comes only from `MURK_TRUSTED_SIGNERS`. |
 
 Your identity is your key. murk derives your public key from `MURK_KEY` or `MURK_KEY_FILE` to determine which private secrets are yours and to identify you in the recipient list. Set one, not both: when both are non-empty murk refuses to resolve a key instead of picking one, and an empty value counts as unset.
 
@@ -128,6 +130,10 @@ A `.murk` file is a single JSON document. All fields except encrypted values and
   }
 }
 ```
+
+### Vault identity and counter
+
+`vault_id` is 16 random bytes as 32 lowercase hex characters, minted by `murk init` (or by the first save of a vault written by murk 0.13 or older). `generation` is a save counter: every save writes `max(loaded generation, highest generation this machine accepted) + 1`, and a keyed merge writes `max(ours, theirs, highest accepted) + 1`. Both are covered by the signature (signed view v2) and checked against the local trust pin on load (see Trust), so another vault's file and an older revision are refused. Both are omitted when unset, so a vault written by older murk parses unchanged.
 
 ### Version
 
@@ -227,7 +233,7 @@ The `meta` field is a single age blob encrypted to all recipients. It contains:
 
 `hmac_key` is a hex-encoded 32-byte random key used for BLAKE3 keyed hashing. Generated fresh on each save.
 
-`signers` maps a recipient pubkey to its base64 Ed25519 verifying key, recorded when that recipient signs. It is omitted when no age key has signed. Vaults written before 3.0 also carry `sig` here: a signed-view-1 signature with `signer`, `v` (`1`), and `sig` (base64). murk now writes the signature to the top-level `sig` field instead and never writes one into the meta. See Signatures below.
+`signers` is the signer registry: it maps a recipient pubkey to the base64 Ed25519 verifying key that recipient's age key signs with, recorded when that recipient signs (ssh-ed25519 keys are never listed: the recipient string is the verifying key). The vault's author writes it, so loaders believe an entry only as described in Trust below. It is omitted when no age key has signed. Vaults written before 3.0 also carry `sig` here: a signed-view-1 signature with `signer`, `v` (`1`), and `sig` (base64). murk now writes the signature to the top-level `sig` field instead and never writes one into the meta. See Signatures below.
 
 `groups` maps a group name to its member pubkeys (a subset of `recipients`). Stored here, not in the plaintext header, so org structure — who is in which group — does not leak. Members are covered by the MAC. The field is omitted entirely when the vault has no named groups, keeping group-free vaults byte-identical to pre-groups murk.
 
@@ -259,25 +265,53 @@ Because both the MAC and its key live inside the encrypted meta blob, only autho
 
 ### Signatures
 
-murk signs the vault with an Ed25519 key so tampering by a repo-writer is detectable — the property the MAC cannot provide, since anyone can recompute it.
+murk signs the vault with an Ed25519 key so that a change by someone without a recipient's private key is detectable — the property the MAC cannot provide, since anyone can recompute it. Whether the signer is someone *this machine trusts* is a separate check (see Trust below).
 
-**Signing key.** Two signing-capable key types:
-- **age** — derived from the writer's raw age key bytes via `blake3::derive_key("murk.vault.signing.ed25519.v1", age_key_bytes)` → Ed25519 `SigningKey`. The domain-separated KDF keeps the signing key independent of the encryption key while deriving from the same seed, so the BIP39 phrase recovers both. Its verifying key is published in the `signers` registry (below).
-- **ssh-ed25519** — the SSH key is itself an Ed25519 signing key, parsed from the OpenSSH private key (age does not expose the scalar, so murk re-parses the retained PEM with the `ssh-key` crate). Its verifying key is the one embedded in the `ssh-ed25519 …` recipient string, so it is **not** added to `signers`.
+**Signing key.** Two signing-capable key types, both plain Ed25519 (RFC 8032, `ed25519-dalek`):
+- **age** — an Ed25519 key derived from the raw 32-byte X25519 secret with `blake3::derive_key("murk.vault.signing.ed25519.v1", age_key_bytes)`, as in murk 0.13. The BIP39 phrase recovers it. Its verifying key cannot be computed from the `age1…` recipient, so the signer records it in the meta's `signers` registry on every save.
+- **ssh-ed25519** — the SSH key is itself an Ed25519 signing key, parsed from the OpenSSH private key (age does not expose the scalar, so murk re-parses the retained PEM with the `ssh-key` crate). Its verifying key is the one embedded in the `ssh-ed25519 …` recipient string.
 
-`ssh-rsa` and plugin/hardware identities cannot sign; their saves are written unsigned.
+`ssh-rsa` and plugin/hardware identities cannot sign; their saves are written unsigned. All signing and verification goes through one module (`src/signing.rs`: `VaultSigningKey::sign`, `VaultSigningKey::verifying_key`, `signing::verify`), so a different scheme would replace that module, not the trust logic.
 
 **Signed message (view 2).** murk writes view 2: the domain tag `murk.vault.sig.v2\n` followed by the JSON serialization of the vault file with the top-level `sig` field omitted, fields in file order. That covers every header field (`version`, `created`, `vault_name`, `repo`, `vault_id`, `generation`, `recipients` in stored order, `schema`, `policy`), the `agents` and `secrets` ciphertexts, and the `meta` ciphertext. Because the meta ciphertext is covered, the decrypted meta (MAC, names, `signers`, groups, grants, pins) is authentic too, and the message is rebuilt from the file alone. The signature is computed after the meta is encrypted and stored in the top-level `sig` (`signer`, `v` = `2`, base64 `sig`).
 
-**Signed message (view 1).** Vaults written before 3.0 carry a view-1 signature inside the meta: a domain-tagged (`murk.vault.sig.v1\n`) canonical JSON serialization of a signed view covering `version`, sorted `recipients`, `schema`, `secrets` (all tiers), `policy`, `groups`, `grants`, `github_pins`, and the `signers` registry. It does not cover `vault_name`, `repo`, or `created`. It excludes `sig` and the MAC/`hmac_key`. murk still verifies view 1 on 2.x vaults and replaces it with view 2 on the next save.
+**Signed message (view 1).** Vaults written before 3.0 carry a view-1 signature inside the meta: a domain-tagged (`murk.vault.sig.v1\n`) canonical JSON serialization of a signed view covering `version`, sorted `recipients`, `schema`, `secrets` (all tiers), `policy`, `groups`, `grants`, `github_pins`, and the `signers` registry. It does not cover `vault_name`, `repo`, `created`, `vault_id` or `generation`. It excludes `sig` and the MAC/`hmac_key`. murk still verifies view 1, only on a 2.x vault without a `vault_id` or `generation`, and replaces it with view 2 on the next save.
 
-`serde_json` is not a formal canonical encoding, but it does not need to be here: the same serializer both signs and verifies, the signed view holds only strings, sorted maps, and lists (no floats or other ordering ambiguity), and no second implementation has to reproduce these bytes. Its deterministic output is therefore sufficient — a formal canonical form (CBOR/DER) would add nothing.
+`serde_json` is not a formal canonical encoding, but it does not need to be here: the same serializer both signs and verifies, the signed view holds only strings, integers, sorted maps, and lists (no floats or other ordering ambiguity), and no second implementation has to reproduce these bytes. Its deterministic output is therefore sufficient — a formal canonical form (CBOR/DER) would add nothing.
 
-**Verify.** On load, murk accepts a view-2 signature only in the top-level `sig` and a view-1 signature only in the meta, and only on a 2.x vault; anything else (both present, a view in the wrong place, view 1 on a 3.x vault) fails the load as tampering. A view newer than 2 fails with "written by a newer murk". Then the `signer` must be a current recipient and the signature must match the recomputed message. The verifying key comes from the `ssh-ed25519 …` recipient string for SSH signers (self-authenticating; recipient match tolerates a trailing comment), or the `signers` registry for age signers. A present-but-invalid signature fails the load as tampering. An absent signature loads with a warning (`SignatureState::Unsigned`); integrity then rests on git. `sign_vault` only signs as a current recipient, so it never writes a self-invalidating signature.
+**Verify.** On load, murk accepts a view-2 signature only in the top-level `sig` and a view-1 signature only in the meta; anything else (both present, a view in the wrong place) fails the load as tampering. A view newer than 2 fails with "written by a newer murk". Then the `signer` must be a current recipient (compared by canonical spelling: lowercase for age, `type blob` for SSH) and the signature must verify under the signer's verifying key: the `ssh-ed25519 …` recipient string for SSH signers, the `signers` registry entry for age signers. A present-but-invalid signature fails the load as tampering, and so does a signature by an agent-grant key (grants are read-only). A valid signature only proves the registry entry's owner signed; whether that key is really the recipient's is the trust check's job (rule 4 below). `sign_vault` only signs as a current recipient, so it never writes a self-invalidating signature.
 
-**Merge driver.** The merge driver runs without deciding to vouch for content, so it leaves the merged vault unsigned (no `sig`), carrying the `signers` registry forward. A keyholder re-signs on the next write after reviewing `murk diff`.
+**Merge driver.** A keyed merge first authenticates the common ancestor (MAC, signature, a signer this machine ever trusted). An unsigned ancestor without a `vault_id` is accepted as pre-0.14 history but never used as authority: the sides' metas are then merged as if the ancestor were unreadable (any difference is a conflict), and group changes are judged against the pinned membership. It then checks ours and theirs the way a load does — MAC, valid signature, a signer this machine trusts, not a grant, the same `vault_id` (both may lack one when the ancestor does), and, for a side that changed the vault, a `generation` above the ancestor's; group changes are judged against the authenticated ancestor's membership. A side (or ancestor) that fails is a conflict naming it, and nothing from it is merged, re-MACed or signed. A merge that would change a group's membership relative to ours is a conflict when the merging key is not a member of that group, since every machine would refuse the result signed by it. Otherwise the merged vault gets a fresh MAC, `generation = max(ours, theirs, highest accepted) + 1`, and a v2 signature by the merging key (none if that key cannot sign). git passes the vault's path as `%P` (`murk merge-driver %O %A %B %P`) so the driver reads the right trust pin; a driver configured before 0.14 has no `%P` and falls back to `.murk`. A merge done without the driver (GitHub's web merge, merge queues) either conflicts textually or produces a vault whose MAC and signature fail, so it is never served. A cherry-pick or `git apply --3way` of commits from history replays their genuine delta; that is git's semantics, not something the driver can tell apart.
 
-**Signer-registry pinning (TOFU).** Because the age `signers` registry lives in the re-encryptable meta, a repo-writer could register their own verifying key under an existing recipient's pubkey and forge that recipient's signature. To close this, `load_vault` pins each pubkey→verifying-key mapping locally in `~/.config/murk/signer-pins/<vault-hash>.json` on first sight and enforces it: a *changed* verifying key for an already-pinned pubkey is never legitimate (the mapping is a fixed derivation), so the load fails with an integrity error. The check runs in the library load path, so it covers the CLI and the language bindings alike. New pubkeys are trust-on-first-use, and murk marks them as such: `load_vault` reports an age signature as `Signed { anchored: false }` until its key matches a prior pin, and `murk verify` surfaces the unanchored state rather than claiming verified authorship (git commit signing is the anchor for a first load). `MURK_NO_SIGNER_PIN=1` disables the check. The pin is local and does not travel with the repo. ssh-ed25519 signers are never in the registry (their verifying key rides in the recipient string), so they are self-authenticating — `anchored: true` even on a first clone — and need no pin.
+### Trust
+
+A valid signature proves that some key listed as a recipient signed the vault, and the vault chooses its own recipients. Acceptance is therefore anchored in state the repository cannot write: the local **trust pin** or the `MURK_TRUSTED_SIGNERS` environment variable. `load_vault` (`src/load.rs`, rules in `src/trust.rs`) applies these rules on every keyed load, before any value is decrypted for the caller — for the CLI, the MCP server and the Python/Node bindings alike, and for write commands too, so a write never re-signs untrusted content:
+
+1. **Unsigned.** Refused when the loading key can sign (age, ssh-ed25519), or when `MURK_TRUSTED_SIGNERS` is set. Loaded with a warning otherwise (ssh-rsa, hardware/plugin keys): such a team relies on signed git commits.
+2. **Stripped.** A vault this machine accepted signed that is now unsigned is refused, for every key.
+3. **Trusted signer.** The signer must be in `MURK_TRUSTED_SIGNERS` when that is set (it replaces the pin's set), otherwise in the pin's `trusted` set: the non-grant recipients of the last vault accepted here. With neither, the vault is refused until `murk trust`.
+4. **Signing key.** For an age signer, the registry key the signature verified under must be the one pinned for that signer (pin `signers`), or the one `MURK_TRUSTED_SIGNERS` gives for it. A trusted signer with no pinned key yet — a newly authorized teammate's first signed write — is refused until `murk trust` confirms the key: trust on first use. A different key for a signer whose key is pinned is refused outright, and `murk trust` will not accept it: an age key's verifying key is derived from its secret, so a second one for the same recipient is a forgery. ssh-ed25519 signers need no pinned key.
+5. **Grants.** A signer that is an agent grant in the vault, or was ever seen here as one, is refused; so is a former grant key listed as a recipient without its grant.
+6. **Identity and rollback.** `vault_id` must match the pinned one. `generation` must not be below the highest accepted on the git branch the vault is checked out on; a branch never seen here and a detached HEAD have no mark, and outside a git checkout the single highest mark applies. Once this machine has seen the vault with a `vault_id` or a `generation`, a view-1-signed vault is refused as rolled back.
+7. **Groups.** A change to a group's membership must be signed by a member of that group as pinned (a new group by one of its members). Removing a member who left the vault entirely is exempt, because `circle revoke` does that for any recipient.
+
+An accepted vault updates the pin: `trusted` becomes its non-grant recipients, grant keys are added to `grants`, `groups` is replaced, the counters move up, and the signer's verifying key and the registry entries of the vault's trusted recipients are recorded in `signers` where none was pinned. A registry entry is thus believed only from a vault signed by an already-trusted signer (whose own key matched), or one the user confirmed with `murk trust`; a pinned key is never replaced. A save signs the registry it writes, and it writes this machine's pinned keys over whatever the loaded file claimed, so a teammate's key reaches every machine through the next write by anyone who confirmed it. When the trust came from `MURK_TRUSTED_SIGNERS`, the pin's `trusted`, `groups` and `signers` are left unchanged, so the variable never widens trust that outlives it. A pin write that fails during a load only warns. The machine's own saves and `murk init` record their result the same way. Nothing from a refused or unverified vault is ever written to the pin.
+
+**The pin.** `~/.config/murk/signer-pins/<hash>.json`, `0600`, written atomically, a symlink at the path refused. The hash is over the repository's common git directory plus the vault's path in the checkout, so every worktree of a repository shares one pin; outside a repository it is over the resolved absolute path. A pin that exists but cannot be parsed is an error, never an empty pin. Fields: `trusted`, `ever_trusted` (every key ever trusted here), `grants`, `groups`, `vault_id`, `generation`, `branches` (per-branch high-water marks), `signers` (canonical recipient → pinned verifying key), `was_signed`. A murk ≤ 0.13 pin was written trust-on-first-use from unverified vaults, so murk keeps only its `was_signed` bit.
+
+**`murk trust`.** The explicit trust step: needed once per vault on each machine (a fresh clone, a new laptop, the first run after upgrading from 0.13), on each machine when a newly authorized age-key teammate first writes, and whenever a load is refused for a reason a human can accept. It shows the vault id and counter, the signer's name and full key (the name is chosen by whoever wrote the file), the signer's **signing-key fingerprint** (`SHA256:` and the unpadded base64 SHA-256 of the 32 verifying-key bytes, the `ssh-keygen -l` form) marked "trust on first use" when this machine has not confirmed it, and every recipient with its fingerprint, marked as new or removed since this machine last trusted the vault; then it asks (or takes `--yes`). The fingerprint should be checked with its owner out of band: `murk trust --print-key` prints one's own (and `murk init` prints it for a key that is not yet authorized). Accepting an unsigned or stripped vault with a signing key re-signs it with that key (a save); otherwise the vault is pinned as shown, a rollback acceptance resetting the branch's mark. It refuses vaults signed by a grant key or with a changed signing key, and refuses to run for a grant identity.
+
+**Trusted-signer entries.** `MURK_TRUSTED_SIGNERS` and an agent grant's key-file anchor use one entry format. An age signer is `age1…:<verifying key>` (the recipient, a colon, the base64 Ed25519 verifying key); an ssh-ed25519 signer is its public key line. `murk trust --print-key` prints the entry for the current key. In `MURK_TRUSTED_SIGNERS` entries are separated by commas or newlines; an invalid entry, or an age key without its verifying key, is an error.
+
+**Historical revisions.** `trust::assess_revision` checks an older revision against `ever_trusted` without rollback or group checks, and never writes the pin, so a revision signed by a teammate revoked since still verifies. The merge driver uses it for the common ancestor. `murk diff` warns when the working vault is not trusted, but does not yet verify the revision it compares against.
+
+**CI.** A fresh runner has no pin. `MURK_TRUSTED_SIGNERS` (from a CI secret, in the entry format above) names the keys allowed to sign and pins their verifying keys. Without a pin there is no rollback mark on a runner.
+
+**Opting out.** `MURK_NO_SIGNER_PIN` (present with any value, or no home directory) stops murk reading or writing the pin. It does not switch the trust check off: every signed vault is then refused unless `MURK_TRUSTED_SIGNERS` names its signer, and rollback and stripped-signature detection are off.
+
+**Deliberate revert.** Restore the older file, run `murk trust` (it shows the counter going back), then any write: the save is numbered above everything this machine accepted, so teammates accept it as newer.
+
+**Upgrading from 0.13.** Every teammate needs 0.14 (a 0.14 save writes a 3.0 vault with signed view 2, which 0.13 refuses as written by a newer murk). On each machine the first load is refused once with the current signer and its fingerprint shown; review `git log -p -- .murk` and `murk diff`, then run `murk trust`. The first 0.14 save adds `generation` and a `vault_id` derived from the vault's `created` and `vault_name` (`sha256("murk.vault_id.v1\0" ‖ created ‖ "\0" ‖ vault_name)`, first 16 bytes), so teammates who upgrade separately, or on different branches, agree on it; from then on this machine refuses the view-1-signed revisions. CI needs `MURK_TRUSTED_SIGNERS` in the entry format above.
 
 ---
 
@@ -290,7 +324,7 @@ Interactive setup. Prompts for a display name. Then:
 1. Generates an age keypair via BIP39 (24-word mnemonic encodes the key directly)
 2. Writes the secret key to `~/.config/murk/keys/<vault-hash>` with mode 0600
 3. Writes `export MURK_KEY_FILE=<path>` to `.env` (creates if missing, warns if key already present)
-4. Creates empty `.murk` vault with user's pubkey as first recipient
+4. Creates the `.murk` vault with user's pubkey as first recipient, a fresh `vault_id` and `generation` 1, signed by the new key, and records it in the local trust pin with the creator as its trusted signer
 5. Prints BIP39 24-word recovery phrase to stderr
 
 ---
@@ -301,7 +335,7 @@ Adds or updates a secret. Prompts for the value interactively (hidden input via 
 
 `--group` selects who can read it: `everyone` (the default; the shared/murk layer), `me` (only your key; the private/mote layer), or a named group (encrypted to that group's members; you must be a member). Assigning a secret to a named group makes that group its sole base tier — any existing shared value is dropped. `--scoped` is a deprecated alias for `--group me`.
 
-Key names are validated as shell identifiers. Invalid names are rejected.
+Key names are validated as shell identifiers. Invalid names are rejected. A name that `export`/`exec` treat as reserved (see `murk export`) is accepted with a warning.
 
 ---
 
@@ -359,7 +393,9 @@ The overwrite-and-delete is best-effort — it can't undo a write to a journaled
 
 ### `murk export [--tag TAG] [--json] [--vault NAME]`
 
-Prints all secrets as `export KEY=VALUE` statements to stdout. Scoped values override shared values for the current identity. Errors go to stderr. `--tag` filters by tag (repeatable). `--json` outputs JSON instead of shell exports.
+Prints all secrets as `export KEY=VALUE` statements to stdout. Scoped values override shared values for the current identity. Errors go to stderr. `--tag` filters by tag (repeatable). `--json` outputs JSON instead of shell exports; both forms skip keys that are not valid shell identifiers.
+
+**Reserved names.** A key named like a variable that changes how a program, its loader, its shell, git or murk runs is refused — the whole export fails before anything is printed — unless `--allow-reserved` is passed: `PATH`, `HOME`, `IFS`, `SHELL`, `ENV`, `BASH_ENV`, `ZDOTDIR`, `SHELLOPTS`, `BASHOPTS`, `CDPATH`, `PS0`–`PS4`, `PROMPT_COMMAND`, `XDG_CONFIG_HOME`, `EDITOR`, `VISUAL`, `PAGER`, `MANPAGER`, `LESSOPEN`, `LESSCLOSE`, `BROWSER`, `SSH_ASKPASS`, `SUDO_ASKPASS`, `NODE_OPTIONS`, `NODE_PATH`, `NODE_EXTRA_CA_CERTS`, `CLASSPATH`, `GCONV_PATH`, `GLIBC_TUNABLES`, `OPENSSL_CONF`, `OPENSSL_ENGINES`, `RUSTFLAGS`, `RUSTDOCFLAGS`, `GOFLAGS`, `MAVEN_OPTS`, `GRADLE_OPTS`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`; every name starting with `LD_`, `DYLD_`, `GIT_`, `BASH_FUNC_`, `PYTHON`, `PERL`, `RUBY`, `JAVA_`, `_JAVA_`, `JDK_`, `DOTNET_`, `CARGO_`, `RUSTC`, `SSL_`, `PIP_`, `GEM_`, `BUNDLE_`, `NPM_CONFIG_` or `MURK_`; and every name ending in `_PROXY` (all compared case-insensitively; `NODE_ENV` is not reserved). Whoever can write the vault must not get to run code in the shell that evaluates it, redirect its traffic, or switch off murk's own settings there. `exec`, `agent exec` and the MCP `murk_exec` tool apply the same list; `murk_exec` has no override.
 
 When `MURK_STRICT` is set, `export` refuses to run if stdout is a regular file (e.g. `murk export > .env`), since that persists plaintext secrets to disk; piping to a process (the direnv flow) and printing to a terminal are still allowed. `get` is guarded the same way. This is a guardrail against accidental redirects, not an airtight control — an explicit `murk export | tee .env` still writes the file.
 
@@ -374,7 +410,7 @@ eval "$(murk export)"
 
 ### `murk exec [--only KEY] [--tag TAG] [--clean-env] COMMAND...`
 
-Runs a command with decrypted secrets injected as environment variables. Scoped values override shared values. `--only` injects only the named keys (repeatable), `--tag` filters by tag, `--clean-env` strips the inherited environment so the child sees only murk secrets plus a minimal base. On Unix, murk replaces itself with the command via `exec`.
+Runs a command with decrypted secrets injected as environment variables. Scoped values override shared values. `--only` injects only the named keys (repeatable), `--tag` filters by tag, `--clean-env` strips the inherited environment so the child sees only murk secrets plus a minimal base. Reserved names (see `murk export`) are refused unless `--allow-reserved` is passed. On Unix, murk replaces itself with the command via `exec`.
 
 ---
 
@@ -522,25 +558,31 @@ Lists the secrets the revoked recipient had access to. With `--rotate`, prompts 
 
 ### `murk diff [REF] [--show-values] [--json] [--vault NAME]`
 
-Shows which secrets changed between the current vault and a git ref (defaults to `HEAD`). `--show-values` prints the actual values, not just key names. `--json` outputs JSON.
+Shows which secrets changed between the current vault and a git ref (defaults to `HEAD`), and which recipients were added or removed and whether the signer changed. `--show-values` prints the actual values, not just key names. `--json` outputs JSON (secret changes only). It runs on a vault this machine does not trust yet — it is the review step before `murk trust` — and says so on stderr; it still fails on a broken MAC or signature.
 
 ---
 
-### `murk merge-driver ANCESTOR OURS THEIRS [--vault NAME]`
+### `murk merge-driver ANCESTOR OURS THEIRS [PATH]`
 
-Git merge driver for `.murk` files. Merges non-conflicting secret changes automatically.
+Git merge driver for `.murk` files. Merges non-conflicting secret changes automatically. With a key it checks both sides against the trust pin of `PATH` (git's `%P`, default `.murk`), refuses an untrusted side as a conflict, and signs the merged result. See Signatures.
 
 ---
 
 ### `murk setup-merge-driver`
 
-Configures git to use `murk merge-driver` for `.murk` files via `.gitattributes` and `.git/config`.
+Configures git to use `murk merge-driver %O %A %B %P` for `.murk` files via `.gitattributes` and `.git/config`.
 
 ---
 
 ### `murk verify [--vault NAME]`
 
-Verifies vault integrity (MAC) and runs safety checks without exporting secrets. Exits 1 on any finding.
+Verifies vault integrity (MAC and signature), reports whether this machine trusts the signer and why not (the same reasons a load refuses with), and runs safety checks without exporting secrets. Exits 1 on any finding.
+
+---
+
+### `murk trust [--yes | --print-key] [--vault NAME]`
+
+Shows who signed the vault (name, full key and signing-key fingerprint, marked trust on first use when this machine has not confirmed it), its id and counter, and every recipient with its fingerprint and its change since this machine last trusted the vault, then asks before recording it in the local trust pin. `--yes` accepts without asking; without a terminal and without `--yes` it only shows and exits 1. An unsigned or stripped vault is re-signed with your key. Refuses a vault signed by an agent grant or with a changed signing key, and refuses to run with a grant key. `--print-key` prints your own trusted-signer entry to stdout (`age1…:<verifying key>`, or the ssh-ed25519 key line) and your fingerprint to stderr, then exits. See Trust.
 
 ---
 
@@ -575,6 +617,7 @@ Prints shell completions to stdout (`generate`) or installs them to the shell's 
 - Repo leaks — `.murk` is safe to commit, useless without a private key
 - Accidental secret exposure — `.env` is never committed if `.gitignore` is set correctly
 - Private overrides — private secrets (motes) are encrypted only to their owner
+- A repo-writer replacing the vault — an unsigned vault, one signed by a key they listed as a recipient, an older revision, another vault's file — is refused unless its signer is trusted on this machine (see Trust)
 
 **What murk does not protect against:**
 

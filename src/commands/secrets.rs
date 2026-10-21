@@ -135,6 +135,18 @@ pub(crate) fn tier_list(
     entries
 }
 
+/// Warn when a key is named like a loader/shell/tool variable: `export` and
+/// `exec` will refuse to set it without `--allow-reserved`.
+pub(crate) fn warn_if_reserved(key: &str) {
+    if murk_cli::is_reserved_env_name(key) {
+        eprintln!(
+            "{} {} is a reserved environment name (it changes how programs, shells or murk run) — `murk export` and `murk exec` will refuse it unless you pass --allow-reserved",
+            "warn".yellow().bold(),
+            key.bold()
+        );
+    }
+}
+
 pub(crate) fn cmd_add(
     key: &str,
     value: &str,
@@ -154,6 +166,7 @@ pub(crate) fn cmd_add(
             1,
         );
     }
+    warn_if_reserved(key);
 
     let tier = resolve_secret_tier(group, scoped);
 
@@ -255,6 +268,7 @@ pub(crate) fn cmd_import(
     let mut pairs: Vec<(String, zeroize::Zeroizing<String>)> = Vec::new();
     for (key, value) in &all_pairs {
         if is_valid_key_name(key) {
+            warn_if_reserved(key);
             pairs.push((key.clone(), value.clone()));
         } else {
             eprintln!("{} skipping invalid key name: {}", "⚠".yellow(), key.bold());
@@ -371,6 +385,7 @@ pub(crate) fn cmd_generate(
             1,
         );
     }
+    warn_if_reserved(key);
 
     let tier = resolve_secret_tier(group, false);
     let value = random_secret(length, hex);
@@ -671,7 +686,7 @@ pub(crate) fn parse_expires(input: Option<&str>) -> Result<Option<Option<String>
     ))
 }
 
-pub(crate) fn cmd_export(tags: &[String], json: bool, vault_path: &str) {
+pub(crate) fn cmd_export(tags: &[String], json: bool, allow_reserved: bool, vault_path: &str) {
     strict_guard_plaintext_stdout("pipe to a process instead, e.g. eval \"$(murk export)\"");
     let (vault, murk, identity) = load_vault(vault_path);
     let pubkey = identity.pubkey_string().unwrap_or_else(|e| die(&e, 1));
@@ -679,6 +694,15 @@ pub(crate) fn cmd_export(tags: &[String], json: bool, vault_path: &str) {
     if json {
         let mut raw = murk_cli::resolve_secrets(&vault, &murk, &pubkey, tags);
         apply_self_scope(&mut raw, &vault);
+        raw.retain(|k, _| {
+            let ok = is_valid_key_name(k);
+            if !ok {
+                eprintln!("{} skipping unsafe key name: {}", "⚠".yellow(), k.bold());
+            }
+            ok
+        });
+        // JSON output is routinely turned into an environment too.
+        refuse_reserved(raw.keys(), allow_reserved);
         // serde_json copies into its own owned String, so zeroization ends here.
         // Controlled boundary: JSON export intentionally writes plaintext to
         // stdout (murk-lints secret_uncontrolled_escape).
@@ -691,11 +715,17 @@ pub(crate) fn cmd_export(tags: &[String], json: bool, vault_path: &str) {
     } else {
         let mut exports = murk_cli::export_secrets(&vault, &murk, &pubkey, tags);
         apply_self_scope(&mut exports, &vault);
-        for (k, escaped) in &exports {
-            if !is_valid_key_name(k) {
+        exports.retain(|k, _| {
+            let ok = is_valid_key_name(k);
+            if !ok {
                 eprintln!("{} skipping unsafe key name: {}", "⚠".yellow(), k.bold());
-                continue;
             }
+            ok
+        });
+        // Checked before anything is printed: `eval "$(murk export)"` must not
+        // half-apply.
+        refuse_reserved(exports.keys(), allow_reserved);
+        for (k, escaped) in &exports {
             println!("export {k}='{}'", escaped.as_str());
         }
     }

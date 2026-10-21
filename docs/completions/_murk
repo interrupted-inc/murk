@@ -134,6 +134,7 @@ _arguments "${_arguments_options[@]}" : \
 '*--tag=[Filter by tag (repeatable)]:TAG:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '--json[Output as JSON]' \
+'--allow-reserved[Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)]' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0
@@ -186,6 +187,7 @@ _arguments "${_arguments_options[@]}" : \
 '*--tag=[Filter by tag (repeatable)]:TAG:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '--clean-env[Strip inherited environment (only murk secrets + PATH)]' \
+'--allow-reserved[Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::command -- Command and arguments to execute:_default' \
@@ -221,6 +223,7 @@ _arguments "${_arguments_options[@]}" : \
 '*--only=[Inject these specific keys (required — agent mode fails closed)]:ONLY:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '--allow-operator-key[Decrypt with your own stored key from ~/.config/murk/keys. Without this, agent exec needs an explicit MURK_KEY or MURK_KEY_FILE]' \
+'--allow-reserved[Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::command -- Command and arguments to execute:_default' \
@@ -611,6 +614,15 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help]' \
 && ret=0
 ;;
+(trust)
+_arguments "${_arguments_options[@]}" : \
+'--vault=[Vault filename]:VAULT:_default' \
+'--yes[Accept without asking (for scripts; review first)]' \
+'(--yes)--print-key[Print your own trusted-signer entry (for MURK_TRUSTED_SIGNERS) and signing-key fingerprint (for teammates to confirm), then exit]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+&& ret=0
+;;
 (doctor)
 _arguments "${_arguments_options[@]}" : \
 '--vault=[Vault filename]:VAULT:_default' \
@@ -649,6 +661,7 @@ _arguments "${_arguments_options[@]}" : \
 ':base -- Path to base version (%O):_default' \
 ':ours -- Path to ours version (%A) — result is written here:_default' \
 ':theirs -- Path to theirs version (%B):_default' \
+'::path -- The vault'\''s path in the work tree (%P), whose trust pin both sides are checked against:_default' \
 && ret=0
 ;;
 (completion)
@@ -939,6 +952,10 @@ esac
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
+(trust)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
 (doctor)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
@@ -1024,6 +1041,7 @@ _murk_commands() {
 'revoke:Remove a recipient from the vault' \
 'group:Manage recipient groups' \
 'verify:Verify vault integrity without exporting secrets' \
+'trust:Review who signed the vault and what changed, then trust it on this machine' \
 'doctor:Check the surrounding repo for hygiene issues' \
 'scan:Scan files for leaked secret values' \
 'diff:Show secret changes vs a git ref' \
@@ -1385,6 +1403,7 @@ _murk__subcmd__help_commands() {
 'revoke:Remove a recipient from the vault' \
 'group:Manage recipient groups' \
 'verify:Verify vault integrity without exporting secrets' \
+'trust:Review who signed the vault and what changed, then trust it on this machine' \
 'doctor:Check the surrounding repo for hygiene issues' \
 'scan:Scan files for leaked secret values' \
 'diff:Show secret changes vs a git ref' \
@@ -1669,6 +1688,11 @@ _murk__subcmd__help__subcmd__skeleton_commands() {
     local commands; commands=()
     _describe -t commands 'murk help skeleton commands' commands "$@"
 }
+(( $+functions[_murk__subcmd__help__subcmd__trust_commands] )) ||
+_murk__subcmd__help__subcmd__trust_commands() {
+    local commands; commands=()
+    _describe -t commands 'murk help trust commands' commands "$@"
+}
 (( $+functions[_murk__subcmd__help__subcmd__verify_commands] )) ||
 _murk__subcmd__help__subcmd__verify_commands() {
     local commands; commands=()
@@ -1798,6 +1822,11 @@ _murk__subcmd__setup-merge-driver_commands() {
 _murk__subcmd__skeleton_commands() {
     local commands; commands=()
     _describe -t commands 'murk skeleton commands' commands "$@"
+}
+(( $+functions[_murk__subcmd__trust_commands] )) ||
+_murk__subcmd__trust_commands() {
+    local commands; commands=()
+    _describe -t commands 'murk trust commands' commands "$@"
 }
 (( $+functions[_murk__subcmd__verify_commands] )) ||
 _murk__subcmd__verify_commands() {

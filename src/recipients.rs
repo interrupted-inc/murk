@@ -74,7 +74,14 @@ pub fn authorize_recipient(
         )));
     }
 
-    if vault.recipients.contains(&pubkey.to_string()) {
+    // Compare canonical spellings: `AGE1…` and `age1…`, or one ssh key with two
+    // comments, are the same key, and a second spelling would survive `revoke`.
+    let canonical = crypto::canonical_recipient(pubkey);
+    if vault
+        .recipients
+        .iter()
+        .any(|r| crypto::canonical_recipient(r) == canonical)
+    {
         return Err(MurkError::Recipient(format!(
             "{pubkey} is already a recipient"
         )));
@@ -86,10 +93,17 @@ pub fn authorize_recipient(
         )));
     }
 
-    vault.recipients.push(pubkey.into());
+    // Store age keys in their canonical (lowercase) spelling; ssh keys keep
+    // their comment, which is only a label.
+    let stored = if pubkey.starts_with("ssh-") {
+        pubkey.to_string()
+    } else {
+        canonical
+    };
+    vault.recipients.push(stored.clone());
 
     if let Some(n) = name {
-        murk.recipients.insert(pubkey.into(), n.into());
+        murk.recipients.insert(stored, n.into());
     }
 
     Ok(())
@@ -116,9 +130,14 @@ pub fn revoke_recipient(
 ) -> Result<RevokeResult, crate::error::MurkError> {
     use crate::error::MurkError;
 
-    let pubkeys: Vec<String> = if vault.recipients.contains(&recipient.to_string()) {
-        vec![recipient.to_string()]
-    } else {
+    let wanted = crypto::canonical_recipient(recipient);
+    let by_key: Vec<String> = vault
+        .recipients
+        .iter()
+        .filter(|r| crypto::canonical_recipient(r) == wanted)
+        .cloned()
+        .collect();
+    let matched: Vec<String> = if by_key.is_empty() {
         let matched: Vec<String> = murk
             .recipients
             .iter()
@@ -137,7 +156,20 @@ pub fn revoke_recipient(
             )));
         }
         matched
+    } else {
+        by_key
     };
+    // Every spelling of the matched key goes, so an alias can't keep access.
+    let targets: std::collections::BTreeSet<String> = matched
+        .iter()
+        .map(|pk| crypto::canonical_recipient(pk))
+        .collect();
+    let pubkeys: Vec<String> = vault
+        .recipients
+        .iter()
+        .filter(|r| targets.contains(&crypto::canonical_recipient(r)))
+        .cloned()
+        .collect();
 
     if vault.recipients.len() <= pubkeys.len() {
         return Err(MurkError::Recipient(

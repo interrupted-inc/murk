@@ -11,9 +11,11 @@ A `.murk` file is a single JSON document. Every field is plaintext except the pe
 
 - **`version`**: semver. murk validates the major version on load (rejecting a vault with a different major version). It accepts minor bumps transparently.
 - **`created`, `vault_name`, `repo`**: informational metadata about the vault.
+- **`vault_id`, `generation`**: the vault's identity and a save counter. `vault_id` is 32 lowercase hex characters, random for a vault made by `murk init`. A vault written by 0.13 has none, and the first 0.14 save derives one from its `created` timestamp and name, so teammates who upgrade separately agree on it. `generation` goes up on every save. Both are covered by the signature, and each machine checks them against its trust pin, so another vault's file or an older revision is refused. See [Trusting a signer](/concepts/recipients-signatures/#trusting-a-signer).
 - **`recipients`**: the list of authorized public keys (age, SSH, or hardware-plugin), and nothing else. No names or emails live here. See [Recipients & signatures](/concepts/recipients-signatures/) for where those go and why.
 - **`schema`**: one entry per key name, with a `description` and optional `example` and `tags`, plus optional lifecycle fields (`created`, `updated`, `rotation_interval_days`, `expires_at`, `revoked_at`) that `murk doctor` and `murk rotate --list` use to flag overdue or expiring credentials. This is public and readable without a key: it's what `murk info` and `murk ls` show. Key names must be valid shell identifiers.
 - **`policy`** *(optional)*: an agent allow-tag list. It lives in the plaintext header, at the same trust level as the recipient list, specifically so it's readable without a key. See [Grants](/concepts/grants/).
+- **`sig`** *(optional)*: the signature over the rest of the file: the signer, the signed-view version, and a base64 Ed25519 signature. It covers every other field, the encrypted meta included, and makes tampering by a repo-writer attributable. It is omitted when the last writer couldn't sign. Vaults written before 3.0 carried a view-1 signature inside the meta instead.
 
 ## Encrypted secret values
 
@@ -33,7 +35,7 @@ A secret's base tier is exactly one of `shared` or a single `grouped` entry: ass
 - **`groups`**: group name → member pubkeys, kept out of the header so org structure (who's in which group) doesn't leak to a non-recipient.
 - **`grants`**: the agent grant registry (ephemeral pubkey, scope, TTL, issuer), kept out of the header so an agent's existence and scope don't leak either. See [Grants](/concepts/grants/).
 - **`mac` / `mac_key`**: the keyed integrity hash covering the vault's contents, and the key used to compute it.
-- **`signers` / `sig`**: the Ed25519 verifying-key registry and the current signature, which make tampering by a repo-writer attributable.
+- **`signers`** *(age keys only)*: the signer registry, mapping each age signer's recipient to the base64 Ed25519 verifying key it signs with. That key can't be computed from the `age1...` recipient, so the writer records it on every save, and a loader believes an entry only as [Recipients & signatures](/concepts/recipients-signatures/#a-new-teammates-first-write) describes. `ssh-ed25519` keys are never listed: the recipient string is the verifying key.
 
 The mechanics of the MAC and signatures (what they protect against and what they don't) are covered in [Recipients & signatures](/concepts/recipients-signatures/).
 
@@ -42,6 +44,8 @@ The mechanics of the MAC and signatures (what they protect against and what they
 ```json
 {
   "version": "2.0",
+  "vault_id": "3f1c0d7a9b2e4c6d8e0f1a2b3c4d5e6f",
+  "generation": 12,
   "recipients": ["age1abc...", "age1xyz..."],
   "schema": {
     "DATABASE_URL": { "description": "postgres connection string" }
@@ -53,8 +57,9 @@ The mechanics of the MAC and signatures (what they protect against and what they
       "scoped": { "age1xyz...": "<age ciphertext>" }
     }
   },
-  "meta": "<age ciphertext: recipients, groups, grants, mac, signers>"
+  "meta": "<age ciphertext: recipients, groups, grants, signers, mac>",
+  "sig": { "signer": "age1abc...", "v": 2, "sig": "<base64 Ed25519 signature>" }
 }
 ```
 
-All ciphertext is base64-encoded age output. `policy`, `scoped`, and `grouped` are only present when the vault actually uses them, so a vault that never touches groups, grants, or policy stays byte-identical to one written by an older murk version.
+All ciphertext is base64-encoded age output. `policy`, `scoped`, and `grouped` are only present when the vault actually uses them, so a vault that never touches groups, grants, or policy carries none of those fields.

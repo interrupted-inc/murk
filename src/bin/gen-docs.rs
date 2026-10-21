@@ -60,8 +60,8 @@ struct EnvVar {
 /// Doc-only registry of the environment variables murk honors.
 ///
 /// clap only annotates `MURK_VAULT` (via `#[arg(env = ...)]`); every other
-/// variable is read ad hoc in `src/env.rs`, `src/hardening.rs`, and
-/// `src/pins.rs`, so a complete reference needs this list. Names mirror the
+/// variable is read ad hoc in `src/env.rs`, `src/hardening.rs`, `src/pins.rs`
+/// and `src/trust.rs`, so a complete reference needs this list. Names mirror the
 /// `ENV_*` constants in `src/env.rs` and the reads in those modules — keep it in
 /// sync when env handling changes (CI `--check` fails until
 /// `docs/env-reference.md` is regenerated). Summaries avoid literal `|` so they
@@ -100,8 +100,12 @@ const ENV_GROUPS: &[(&str, &[EnvVar])] = &[
                 summary: "Truthy holds your own key to the vault's agent allow-tag policy, as if you were an agent. Implied inside an agent context.",
             },
             EnvVar {
+                name: "MURK_TRUSTED_SIGNERS",
+                summary: "Signers trusted to sign the vault on this machine, separated by commas or newlines, replacing the local trust pin's set. An age signer is `age1...:<verifying key>` and an ssh-ed25519 signer is its public key line; `murk trust --print-key` prints the entry for your own key. For CI runners and other machines with no pin (set it from a CI secret). Any other entry, including a bare age key, is an error.",
+            },
+            EnvVar {
                 name: "MURK_NO_SIGNER_PIN",
-                summary: "Opts out of signer-registry pinning (TOFU) on load — an escape hatch for a deliberate signer-key change, not for everyday use.",
+                summary: "Present (any value) stops murk reading or writing the local trust pin. Trust then comes only from `MURK_TRUSTED_SIGNERS`, and rollback and stripped-signature detection are off.",
             },
         ],
     ),

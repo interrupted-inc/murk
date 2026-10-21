@@ -63,6 +63,22 @@ and murk fails closed.
 The practical version: real worktrees of your repo work, copies of the vault
 elsewhere on disk don't.
 
+## Trust follows the repository, not the checkout
+
+murk also records which signers it trusts for a vault (the [trust
+pin](/concepts/recipients-signatures/#trusting-a-signer)). That pin is keyed
+on the repository's common git directory and the vault's path in the
+checkout, so every worktree of a repo shares one. Run `murk trust` in any
+worktree, and the others already trust the vault. A fresh worktree of a
+repo you've already trusted needs nothing.
+
+The save counter the pin keeps is tracked per branch. Checking out an older
+branch in another worktree isn't a rollback: murk compares the vault with the
+highest counter accepted on the branch that worktree has checked out. On a
+detached HEAD, or a branch this machine has never seen (reviewing a PR
+branch, say), there is no counter check, so murk accepts a signed vault from
+a trusted signer whatever its counter.
+
 ## Agents get no free ride
 
 Discovery of a stored key is disabled entirely in strict mode

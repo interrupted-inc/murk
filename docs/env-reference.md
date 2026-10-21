@@ -19,7 +19,8 @@ The environment variables murk reads, and the CLI flags they mirror where one ex
 | `MURK_STRICT` | Truthy fails closed rather than let a secret touch disk, and disables the automatic key lookup under `~/.config/murk/keys`. |
 | `MURK_AGENT` | Marks the process as running for an AI agent. Forces strict mode unconditionally. `murk agent exec` sets it on its child. |
 | `MURK_SELF_SCOPE` | Truthy holds your own key to the vault's agent allow-tag policy, as if you were an agent. Implied inside an agent context. |
-| `MURK_NO_SIGNER_PIN` | Opts out of signer-registry pinning (TOFU) on load — an escape hatch for a deliberate signer-key change, not for everyday use. |
+| `MURK_TRUSTED_SIGNERS` | Signers trusted to sign the vault on this machine, separated by commas or newlines, replacing the local trust pin's set. An age signer is `age1...:<verifying key>` and an ssh-ed25519 signer is its public key line; `murk trust --print-key` prints the entry for your own key. For CI runners and other machines with no pin (set it from a CI secret). Any other entry, including a bare age key, is an error. |
+| `MURK_NO_SIGNER_PIN` | Present (any value) stops murk reading or writing the local trust pin. Trust then comes only from `MURK_TRUSTED_SIGNERS`, and rollback and stripped-signature detection are off. |
 
 ## Also honored
 

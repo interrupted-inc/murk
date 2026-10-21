@@ -4,7 +4,7 @@
 .SH NAME
 exec \- Run a command with strict agent\-safe defaults (clears the inherited environment, strips MURK_KEY, requires \-\-only, masks injected values in the output)
 .SH SYNOPSIS
-\fBmurk agent exec\fR [\fB\-\-allow\-operator\-key\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-only\fR> <\fICOMMAND\fR> 
+\fBmurk agent exec\fR [\fB\-\-allow\-operator\-key\fR] [\fB\-\-allow\-reserved\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-only\fR> <\fICOMMAND\fR> 
 .SH DESCRIPTION
 Run a command with strict agent\-safe defaults (clears the inherited environment, strips MURK_KEY, requires \-\-only, masks injected values in the output)
 .SH OPTIONS
@@ -14,6 +14,9 @@ Inject these specific keys (required — agent mode fails closed)
 .TP
 \fB\-\-allow\-operator\-key\fR
 Decrypt with your own stored key from ~/.config/murk/keys. Without this, agent exec needs an explicit MURK_KEY or MURK_KEY_FILE
+.TP
+\fB\-\-allow\-reserved\fR
+Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)
 .TP
 \fB\-\-vault\fR \fI<VAULT>\fR [default: .murk]
 Vault filename

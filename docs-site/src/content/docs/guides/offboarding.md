@@ -56,6 +56,17 @@ revoke --rotate` does both in one motion; if you skip `--rotate`, follow up
 with `murk rotate KEY` (or `murk rotate --all`) for anything sensitive they
 could read.
 
+## What stops a revoked teammate coming back
+
+`murk circle revoke` removes every spelling of the key, and murk refuses an
+`age1...` key with a non-canonical encoding, so an alias form of
+it can't survive the revocation. Once a machine has accepted the revoking
+vault, the revoked key is no longer a trusted signer there. Replaying an
+older revision from before the revocation, which would re-enrol them or put
+back rotated values, is refused as a rollback on that branch. If you really
+do need to go back to an older vault, see [rollback and deliberate
+reverts](/concepts/recipients-signatures/#rollback-and-deliberate-reverts).
+
 ## Checking what needs rotating
 
 ```bash

@@ -12,6 +12,7 @@ pub(crate) fn cmd_exec(
     tags: &[String],
     clean_env: bool,
     agent_mode: bool,
+    allow_reserved: bool,
     vault_path: &str,
 ) {
     let (vault, murk, identity) = load_vault(vault_path);
@@ -34,6 +35,10 @@ pub(crate) fn cmd_exec(
         let keys: Vec<String> = secrets.keys().cloned().collect();
         try_or_die(murk_cli::check_agent_keys(&vault, &keys));
     }
+
+    // A vault-chosen PATH, LD_PRELOAD, GIT_SSH_COMMAND or MURK_STRICT would run
+    // code as (or switch off murk's hardening for) whoever runs exec.
+    refuse_reserved(secrets.keys(), allow_reserved);
 
     // `Command::env` panics on a NUL in a value (or an `=`/NUL/empty key), so
     // validate before injecting — a NUL-bearing secret should fail with a clear
