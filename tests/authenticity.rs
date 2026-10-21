@@ -1652,7 +1652,9 @@ fn removal_is_permanent_on_the_machine_that_accepted_it() {
 /// holds that key. Once Alice removes Mallory, the entry stops counting: a
 /// vault signed as Bob with Mallory's key is refused as unconfirmed. Alice's
 /// own writes never vouch for the entry, so Carol, a third machine that
-/// learns keys only from Alice's writes, refuses it too.
+/// learns keys only from Alice's writes, refuses it too. And the binding is
+/// dropped, not just ignored: Bob's real key is then confirmed with `murk
+/// trust` like any first write, and his next write loads.
 #[test]
 fn a_registry_entry_stops_counting_once_whoever_added_it_is_removed() {
     let base = TempDir::new().unwrap();
@@ -1766,6 +1768,44 @@ fn a_registry_entry_stops_counting_once_whoever_added_it_is_removed() {
         .failure()
         .stdout("")
         .stderr(predicate::str::contains("has not confirmed yet"));
+
+    // Bob's real key is still confirmed the normal way: his first write
+    // waits for `murk trust`, which pins his key in place of the dropped
+    // binding, and his next write loads.
+    fs::write(repo.join(".murk"), &revoked).unwrap();
+    let bob_key = bob.key_file();
+    bob.with_key(&repo, &bob_key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    bob.with_key(&repo, &bob_key)
+        .args(["add", "BOB1"])
+        .write_stdin("bob1\n")
+        .assert()
+        .success();
+    let (_, bob_fp) = bob.signer_entry(&repo);
+    alice
+        .murk(&repo)
+        .args(["get", "BOB1"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(&bob_fp));
+    alice
+        .murk(&repo)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    bob.with_key(&repo, &bob_key)
+        .args(["add", "BOB2"])
+        .write_stdin("bob2\n")
+        .assert()
+        .success();
+    alice
+        .murk(&repo)
+        .args(["get", "BOB2"])
+        .assert()
+        .success()
+        .stdout("bob2\n");
 }
 
 /// Rule: generations advance in bounded steps. A vault numbered more than
