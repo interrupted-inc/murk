@@ -12,12 +12,14 @@ For a first contribution, pick an issue labelled [good first issue](https://gith
 ## Development
 
 ```bash
-cargo build              # Build
-cargo test               # Run all tests
-cargo clippy             # Lint
-cargo fmt                # Format
-cargo run -- <command>   # Run murk with arguments
+cargo build                                               # Build
+cargo nextest run --all-features                          # Run all tests, as CI does
+cargo clippy --all-features --all-targets -- -D warnings  # Lint, as CI does
+cargo fmt --check                                         # Check formatting (`cargo fmt` fixes it)
+cargo run --bin murk -- <command>                         # Run murk with arguments
 ```
+
+The tests need [cargo-nextest](https://nexte.st) (`cargo install cargo-nextest`).
 
 Run `make hooks` once per clone to install the pre-commit hook, which runs the same fmt and clippy checks as CI.
 
@@ -36,7 +38,8 @@ CI checks dependencies against the RustSec advisory database only on pushes to `
 ## Pull Requests
 
 - Keep PRs focused — one logical change per PR
-- Run `cargo fmt`, `cargo clippy`, and `cargo test` before submitting
+- Run the fmt, clippy and test commands from [Development](#development) before submitting
+- Start each commit subject and the PR title with a conventional commit type (`feat:`, `fix:`, `docs:`, `refactor:` …). Release notes are generated from commit subjects ([`cliff.toml`](cliff.toml)), not from the PR title
 - PR descriptions should be a short bullet list of changes
 - New features must include tests
 
@@ -73,7 +76,7 @@ The maintainer checks each pull request for:
 
 - **Correctness and tests.** The change does what its description says and nothing unrelated. New features include tests. Bug fixes include a regression test where the bug can be reproduced in a test.
 - **Security impact.** Changes to encryption, signing, the vault format, key and recipient handling, secret output, or the agent and MCP surfaces are checked against [THREAT_MODEL.md](THREAT_MODEL.md), in particular its [trust boundaries](THREAT_MODEL.md#trust-boundaries) and [common implementation weaknesses](THREAT_MODEL.md#common-implementation-weaknesses). A change that adds an asset, moves a trust boundary or weakens a stated property updates the threat model in the same pull request.
-- **Documentation and changelog.** User-visible changes update the README or the docs site. A change to a command or flag regenerates the CLI and env references (`make docs`); CI fails if they are out of date. The pull request title is a conventional commit summary (`feat:`, `fix:`, `docs:` …), because the release notes are generated from commit subjects ([`cliff.toml`](cliff.toml)).
+- **Documentation and changelog.** User-visible changes update the README or the docs site. A change to a command or flag regenerates the CLI and env references (`make docs`); CI fails if they are out of date. Commit subjects follow the [pull request rules](#pull-requests), because the release notes are generated from them.
 - **CI.** The `Lint`, `Test` and `VHS` checks are required by branch protection, and the protection applies to the maintainer too. CodeQL runs on every pull request; the Node, Python and docs-preview workflows run when their paths change. Lint covers formatting, clippy, generated docs, version consistency, guide commands, demo tapes and SPDX headers ([`scripts/spdx-headers.cjs`](scripts/spdx-headers.cjs)).
 - **Dependency changes.** A pull request that changes a `Cargo.toml`, a `Cargo.lock` or `deny.toml` runs `cargo deny` (advisories, bans, licenses, sources) and `cargo audit`. For a new dependency, the maintainer also checks that it is needed and maintained.
 
@@ -91,7 +94,7 @@ The maintainer cuts a release in three steps:
 2. Merge that change to `main` through a pull request.
 3. Push a signed `vX.Y.Z` tag.
 
-The tag starts [`.github/workflows/release.yaml`](.github/workflows/release.yaml). Its `preflight` job refuses to release unless the tagged commit is on `main`, reached `main` through a merged pull request, and `main`'s branch protection matches the release baseline. The workflow then builds, attests and publishes the release. The npm and PyPI packages are published from the same tag. [VERIFYING.md](VERIFYING.md) shows how to verify each release channel.
+The tag starts [`.github/workflows/release.yaml`](.github/workflows/release.yaml). Its `preflight` job refuses to release unless the tagged commit is on `main`, reached `main` through a merged pull request, and `main`'s branch protection matches the release baseline. The workflow then builds, attests and publishes the release. The tag also starts the Node and Python workflows (`node.yaml`, `python.yaml`), which publish the npm and PyPI packages. The `preflight` job gates only `release.yaml`, not those two workflows. `node.yaml` can also publish from `main` when it is run by hand. [VERIFYING.md](VERIFYING.md) shows how to verify each release channel.
 
 ### Repositories
 
