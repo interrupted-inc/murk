@@ -115,14 +115,6 @@ impl TrustPin {
             _ => Some(vk),
         }
     }
-
-    /// The `signers` entries that still count (see [`TrustPin::pinned_key`]).
-    pub fn standing_signers(&self) -> BTreeMap<String, String> {
-        self.signers
-            .keys()
-            .filter_map(|k| self.pinned_key(k).map(|vk| (k.clone(), vk.clone())))
-            .collect()
-    }
 }
 
 /// Path to the pin file for a vault: `~/.config/murk/signer-pins/<hash>.json`.
