@@ -168,7 +168,7 @@ fn resolve_meta_state(
             return Err(not_a_recipient());
         }
     };
-    let mut meta: types::Meta = serde_json::from_slice(&plaintext).map_err(|_| {
+    let meta: types::Meta = serde_json::from_slice(&plaintext).map_err(|_| {
         MurkError::Integrity("vault meta is corrupt — vault may have been tampered with".into())
     })?;
     crate::validate::meta(&meta).map_err(|e| {
@@ -183,7 +183,6 @@ fn resolve_meta_state(
                 "vault has secrets but MAC is empty — vault may have been tampered with".into(),
             ));
         }
-        drop_ghost_grants(vault, &mut meta, identity);
         let (signature, signer_vk) = check_signature(vault, &meta)?;
         return Ok(MetaState {
             recipients: meta.recipients,
@@ -218,7 +217,6 @@ fn resolve_meta_state(
         )));
     }
     let legacy_mac = meta.mac.starts_with("sha256:") || meta.mac.starts_with("sha256v2:");
-    drop_ghost_grants(vault, &mut meta, identity);
     let (signature, signer_vk) = check_signature(vault, &meta)?;
     Ok(MetaState {
         recipients: meta.recipients,
@@ -232,26 +230,21 @@ fn resolve_meta_state(
     })
 }
 
-/// Drop grant records bound to the key that just opened a 3.x meta. Grants
-/// get their own `agents` blob and are never meta recipients, so this key is
-/// no grant: such a record was written by a meta writer, and would make an
-/// operator read-only, expire them, or refuse their own signature. Runs after
-/// the MAC check (which covers the records as written); the next save drops
-/// them. A 2.x vault still encrypted its meta to grants, so there a matching
-/// record is the loader's real grant and stays (see `decrypt_vault`).
-fn drop_ghost_grants(
-    vault: &types::Vault,
-    meta: &mut types::Meta,
-    identity: &crypto::MurkIdentity,
-) {
+/// Drop grant records bound to `pubkey`, the key that just opened a 3.x meta.
+/// Grants get their own `agents` blob and are never meta recipients, so this
+/// key is no grant: such a record was written by a meta writer, and left in
+/// place it would expire the operator or, on their next save, revoke them.
+/// Runs after the trust check, which sees the records as written (and may
+/// refuse the vault for them); the next save drops them. A 2.x vault still
+/// encrypted its meta to grants, so there a matching record is the loader's
+/// real grant (refused in `decrypt_vault_with_signature`).
+fn drop_ghost_grants(vault: &types::Vault, murk: &mut types::Murk, pubkey: &str) {
     if vault.version.starts_with("2.") {
         return;
     }
-    if let Ok(pubkey) = identity.pubkey_string() {
-        let me = crypto::canonical_recipient(&pubkey);
-        meta.grants
-            .retain(|_, g| crypto::canonical_recipient(&g.pubkey) != me);
-    }
+    let me = crypto::canonical_recipient(pubkey);
+    murk.grants
+        .retain(|_, g| crypto::canonical_recipient(&g.pubkey) != me);
 }
 
 fn not_a_recipient() -> MurkError {
@@ -322,7 +315,11 @@ pub fn decrypt_vault(
     vault: &types::Vault,
     identity: &crypto::MurkIdentity,
 ) -> Result<types::Murk, MurkError> {
-    decrypt_vault_with_signature(vault, identity).map(|(murk, _)| murk)
+    decrypt_vault_with_signature(vault, identity).map(|(mut murk, _)| {
+        let pubkey = murk.loaded_by.clone().unwrap_or_default();
+        drop_ghost_grants(vault, &mut murk, &pubkey);
+        murk
+    })
 }
 
 /// [`decrypt_vault`], also returning the registry verifying key a v1 age
@@ -354,10 +351,10 @@ fn decrypt_vault_with_signature(
     } = resolve_meta_state(vault, identity)?;
 
     // This key opened the meta, so it is not an agent grant (a 3.x record
-    // bound to it was dropped as a ghost in `resolve_meta_state`). A 2.x vault
+    // bound to it is a ghost, dropped after the trust check). A 2.x vault
     // still encrypted its meta to grants; a grant key reading one has no trust
     // anchor, so it is refused until the operator re-saves.
-    if grants.values().any(|g| g.pubkey == pubkey) {
+    if vault.version.starts_with("2.") && grants.values().any(|g| g.pubkey == pubkey) {
         return Err(MurkError::Grant(
             "this vault predates murk 0.14's agent records, so an agent grant can't read \
              it: ask the operator to save it with murk 0.14 or later and re-mint the grant"
@@ -651,6 +648,8 @@ pub fn inspect_vault(vault_path: &str) -> Result<InspectedVault, MurkError> {
     };
     inspected.assessment =
         trust::assess(vault_path, &inspected.loaded(), None).map_err(MurkError::Trust)?;
+    let pubkey = inspected.identity.pubkey_string()?;
+    drop_ghost_grants(&inspected.vault, &mut inspected.murk, &pubkey);
     Ok(inspected)
 }
 
