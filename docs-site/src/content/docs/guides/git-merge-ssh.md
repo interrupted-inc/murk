@@ -6,7 +6,7 @@ sidebar:
 ---
 
 :::caution[Experimental]
-The merge driver and `murk diff` are experimental. The merge driver has had little testing against real git merges, so review a merged vault before you push it. `murk diff` is not covered by integrity checks for old revisions: it decrypts them without checking their MAC or signature.
+The merge driver and `murk diff` are experimental. Few tests run a real git merge, so review a merged vault before you push it. `murk diff` is new in its present form: it also reports recipient, signer, policy, grant and group changes, and its output may change in a minor release.
 :::
 
 `.murk` is a single JSON-ish file with encrypted values, which means a naive
