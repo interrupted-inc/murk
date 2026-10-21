@@ -42,18 +42,18 @@ A cell marked with a number was decided where the policy left it open; the notes
 | `agent exec --only SHARED -- env` | no (2) | no (2) | no (2) | no (2) | no (2) | no | no | no | no | no |
 | `agent exec --allow-operator-key --only SHARED -- env` | yes | yes | yes | yes | yes | no | no | no | no | no |
 | `mcp (murk_get AGENT_OK)` | no (3) | no (3) | no (3) | no (3) | no (3) | no (3) | yes | no | no | no |
-| `diff --show-values` | yes | yes | yes | yes | yes | yes (1) | yes (1) | no | no | no |
-| `verify` | yes | yes | yes | yes | yes | yes (4) | yes (4) | no | no | no |
+| `diff --show-values` | yes | yes | yes | yes | yes | no (4) | no (4) | no | no | no |
+| `verify` | yes | yes | yes | yes | yes | yes (5) | yes (5) | no | no | no |
 | `scan` | yes | yes | yes | yes | yes | yes (1) | yes (1) | no | no | no |
-| `ls` | yes | yes | yes | yes | yes | yes (5) | yes (5) | yes (5) | yes (5) | yes (5) |
-| `info` | yes | yes | yes | yes | yes | yes (5) | yes (5) | no (6) | yes (5) | yes (5) |
-| `circle` | yes | yes | yes | yes | yes | yes (5) | yes (5) | no (6) | yes (5) | yes (5) |
-| `policy show` | yes | yes | yes | yes | yes | yes (5) | yes (5) | yes (5) | yes (5) | yes (5) |
-| `rotate --list --json` | yes | yes | yes | yes | yes | yes (5) | yes (5) | yes (5) | yes (5) | yes (5) |
-| `skeleton -o FILE` | yes | yes | yes | yes | yes | yes (5) | yes (5) | yes (5) | yes (5) | yes (5) |
-| `agent plan -o FILE` | yes | yes | yes | yes | yes | yes (5) | yes (5) | yes (5) | yes (5) | yes (5) |
-| `group ls` | yes | yes | yes | yes | yes | yes (4) | yes (4) | no | no | no |
-| `agent ls` | yes | yes | yes | yes | yes | yes (4) | yes (4) | no | no | no |
+| `ls` | yes | yes | yes | yes | yes | yes (6) | yes (6) | yes (6) | yes (6) | yes (6) |
+| `info` | yes | yes | yes | yes | yes | yes (6) | yes (6) | yes (6) | yes (6) | yes (6) |
+| `circle` | yes | yes | yes | yes | yes | yes (6) | yes (6) | yes (6) | yes (6) | yes (6) |
+| `policy show` | yes | yes | yes | yes | yes | yes (6) | yes (6) | yes (6) | yes (6) | yes (6) |
+| `rotate --list --json` | yes | yes | yes | yes | yes | yes (7) | yes (7) | no (7) | no (7) | no (7) |
+| `skeleton -o FILE` | yes | yes | yes | yes | yes | yes (6) | yes (6) | yes (6) | yes (6) | yes (6) |
+| `agent plan -o FILE` | yes | yes | yes | yes | yes | yes (6) | yes (6) | yes (6) | yes (6) | yes (6) |
+| `group ls` | yes | yes | yes | yes | yes | yes (5) | yes (5) | no | no | no |
+| `agent ls` | yes | yes | yes | yes | yes | yes (5) | yes (5) | no | no | no |
 | `add NEW` | yes | yes | yes | yes | yes | no | no | no | no | no |
 | `add NEW --group everyone` | yes | yes | yes | yes | yes | no | no | no | no | no |
 | `add NEW --group ops` | yes | no | yes | no | no | no | no | no | no | no |
@@ -61,27 +61,31 @@ A cell marked with a number was decided where the policy left it open; the notes
 | `add SHARED` | yes | yes | yes | yes | yes | no | no | no | no | no |
 | `add OPS` | yes | no | yes | no | no | no | no | no | no | no |
 | `add OPS --group me` | yes | yes | yes | yes | yes | no | no | no | no | no |
+| `add PRIV` | no (8) | no (8) | no (8) | no (8) | yes | no | no | no | no | no |
 | `add OPS --group everyone` | yes | no | yes | no | no | no | no | no | no | no |
 | `generate NEW` | yes | yes | yes | yes | yes | no | no | no | no | no |
 | `generate OPS` | yes | no | yes | no | no | no | no | no | no | no |
 | `rm SHARED` | yes | yes | yes | yes | yes | no | no | no | no | no |
-| `rm OPS` | yes | no (7) | yes | no (7) | no (7) | no | no | no | no | no |
+| `rm OPS` | yes | no (9) | yes | no (9) | no (9) | no | no | no | no | no |
 | `describe SHARED` | yes | yes | yes | yes | yes | no | no | no | no | no |
-| `describe OPS` | yes | no (8) | yes | no (8) | no (8) | no | no | no | no | no |
+| `describe OPS` | yes | no (10) | yes | no (10) | no (10) | no | no | no | no | no |
 | `import FILE (new keys)` | yes | yes | yes | yes | yes | no | no | no | no | no |
 | `import --force FILE (OPS)` | yes | no | yes | no | no | no | no | no | no | no |
 | `edit SHARED` | yes | yes | yes | yes | yes | no | no | no | no | no |
+| `edit AGENT_OK (in the grant's scope)` | yes | yes | yes | yes | yes | no | no | no | no | no |
 | `edit OPS --group ops` | yes | no | yes | no | no | no | no | no | no | no |
 | `rotate SHARED --generate` | yes | yes | yes | yes | yes | no | no | no | no | no |
+| `rotate AGENT_OK --generate (in the grant's scope)` | yes | yes | yes | yes | yes | no | no | no | no | no |
+| `rotate PRIV --generate` | no (8) | no (8) | no (8) | no (8) | yes | no | no | no | no | no |
 | `rotate OPS --generate` | yes | no | yes | no | no | no | no | no | no | no |
-| `rotate --all (piped values)` | no (9) | no (9) | no (9) | no (9) | no (9) | no | no | no | no | no |
+| `rotate --all (piped values)` | no (11) | no (11) | no (11) | no (11) | no (11) | no | no | no | no | no |
 | `rotate --all --values-from FILE (shared keys)` | yes | yes | yes | yes | yes | no | no | no | no | no |
 | `rotate OPS --values-from FILE` | yes | no | yes | no | no | no | no | no | no | no |
 | `circle authorize X` | yes (current) | yes (current) | yes (current) | yes (current) | yes (current) | no | no | no | no | no |
 | `circle authorize X --group ops` | yes | no | yes | no | no | no | no | no | no | no |
-| `circle revoke owner (the creator)` | yes (current) | yes (current) | yes (current) | yes (current) | yes (current) | no | no | no | no | no |
+| `circle revoke owner (the creator)` | no (12) | yes (current) | yes (current) | yes (current) | yes (current) | no | no | no | no | no |
 | `circle revoke spare` | yes (current) | yes (current) | yes (current) | yes (current) | yes (current) | no | no | no | no | no |
-| `circle revoke spare --rotate (piped values)` | yes (current) | no (9) | yes (current) | no (9) | no (9) | no | no | no | no | no |
+| `circle revoke spare --rotate (piped values)` | yes (current) | no (11) | yes (current) | no (11) | no (11) | no | no | no | no | no |
 | `circle revoke spare --rotate --values-from FILE` | yes (current) | yes (current) | yes (current) | yes (current) | yes (current) | no | no | no | no | no |
 | `group create NEWG` | yes (current) | yes (current) | yes (current) | yes (current) | yes (current) | no | no | no | no | no |
 | `group add ops --member member` | yes | no | yes | no | no | no | no | no | no | no |
@@ -95,20 +99,23 @@ A cell marked with a number was decided where the policy left it open; the notes
 | `agent revoke bot --rotate (piped value)` | yes (current) | yes (current) | yes (current) | yes (current) | yes (current) | no | no | no | no | no |
 | `agent connect claude --only AGENT_OK` | yes (current) | yes (current) | yes (current) | yes (current) | yes (current) | no | no | no | no | no |
 | `agent disconnect claude --rotate --name bot` | yes (current) | yes (current) | yes (current) | yes (current) | yes (current) | no | no | no | no | no |
-| `merge-driver BASE OURS THEIRS` | yes | yes | yes | yes | yes | no | no | no | conflict (10) | conflict (10) |
+| `merge-driver BASE OURS THEIRS` | yes | yes | yes | yes | yes | no | no | no | conflict (13) | conflict (13) |
 
 ## Decided cells
 
 1. a read bounded to the grant's scope, the same as `export`.
 2. `agent exec` is for agent grant keys; a recipient's own key needs `--allow-operator-key`, an explicit operator decision (docs/ai-agents.md: rules).
 3. `murk mcp` serves only a grant key in agent context (docs/ai-agents.md: serving secrets over MCP).
-4. grants are meta recipients by design (THREAT_MODEL: agent grants), so they see names and structure but no value outside their scope.
-5. reads only the plaintext header and schema, which are public by design (SPEC: header is public, values are private).
-6. with a key these commands load the vault, and an expired grant fails closed at every load; the header stays readable without a key.
-7. deleting a group value is the most destructive overwrite, so a non-member can't do it.
-8. only a group member can change a group key, its schema included, as with `rm`.
-9. piped values are matched by position, so a batch that would skip a value the caller can't rotate (another group's value, or another recipient's override) refuses before writing.
-10. a key that can't read both sides' meta can't rebuild the integrity metadata, so the driver reports a conflict and git keeps the merge out of history.
+4. a grant can't read the meta, so it can't verify the git revision `diff` compares against, and nothing unverified is shown.
+5. grants are meta recipients by design (THREAT_MODEL: agent grants), so they see names and structure but no value outside their scope.
+6. reads only the plaintext header and schema, which are public by design (SPEC: header is public, values are private).
+7. `rotate --list` loads and verifies the vault before trusting its rotation schedule, so it needs a key that can load the vault (SPEC: header reads).
+8. the key holds only another recipient's personal value: there is no tier the caller could keep, and murk never picks a wider one.
+9. deleting a group value is the most destructive overwrite, so a non-member can't do it.
+10. only a group member can change a group key, its schema included, as with `rm`.
+11. piped values are matched by position, so a batch that would skip a value the caller can't rotate (another group's value, or another recipient's override) refuses before writing.
+12. revoking your own key would lock the writer out mid-command, so murk asks another recipient to do it.
+13. a key that can't read both sides' meta can't rebuild the integrity metadata, so the driver reports a conflict and git keeps the merge out of history.
 
 ## Under review
 
@@ -118,7 +125,7 @@ How it works today: murk has no admin role. Every recipient except agent grants 
 
 ## Platforms
 
-Every row runs on Linux, macOS and Windows except `edit SHARED` and `edit OPS --group ops`, which run on Linux and macOS only: the test drives `$EDITOR` with an `sh` script, which murk runs through `sh` only on Unix.
+Every row runs on Linux, macOS and Windows except `edit SHARED` and `edit AGENT_OK (in the grant's scope)` and `edit OPS --group ops`, which run on Linux and macOS only: the test drives `$EDITOR` with an `sh` script, which murk runs through `sh` only on Unix.
 
 ## Not in the matrix
 

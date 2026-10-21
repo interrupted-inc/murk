@@ -317,7 +317,10 @@ const NONMEMBER_RM: &str =
 const NONMEMBER_DESCRIBE: &str =
     "only a group member can change a group key, its schema included, as with `rm`";
 const OPERATOR_KEY: &str = "`agent exec` is for agent grant keys; a recipient's own key needs `--allow-operator-key`, an explicit operator decision (docs/ai-agents.md: rules)";
-const EXPIRED_KEY: &str = "with a key these commands load the vault, and an expired grant fails closed at every load; the header stays readable without a key";
+const LOADS: &str = "`rotate --list` loads and verifies the vault before trusting its rotation schedule, so it needs a key that can load the vault (SPEC: header reads)";
+const GRANT_DIFF: &str = "a grant can't read the meta, so it can't verify the git revision `diff` compares against, and nothing unverified is shown";
+const OTHERS_ONLY: &str = "the key holds only another recipient's personal value: there is no tier the caller could keep, and murk never picks a wider one";
+const SELF_REVOKE: &str = "revoking your own key would lock the writer out mid-command, so murk asks another recipient to do it";
 const MERGE_KEYLESS: &str = "a key that can't read both sides' meta can't rebuild the integrity metadata, so the driver reports a conflict and git keeps the merge out of history";
 
 /// Readers of everything current: recipients only.
@@ -340,20 +343,6 @@ const PUBLIC_ALL: [Cell; 10] = [
     da(PUBLIC),
     da(PUBLIC),
     da(PUBLIC),
-    da(PUBLIC),
-    da(PUBLIC),
-];
-/// Header reads that also load the vault when a key is given: as
-/// [`PUBLIC_ALL`], except that an expired grant key fails closed.
-const PUBLIC_LOADS: [Cell; 10] = [
-    A,
-    A,
-    A,
-    A,
-    A,
-    da(PUBLIC),
-    da(PUBLIC),
-    dr(EXPIRED_KEY),
     da(PUBLIC),
     da(PUBLIC),
 ];
@@ -438,7 +427,7 @@ pub const ROWS: &[Row] = &[
         "diff --show-values",
         &["diff", "--show-values"],
         READ,
-        [A, A, A, A, A, da(GRANT_READ), da(GRANT_READ), R, R, R],
+        [A, A, A, A, A, dr(GRANT_DIFF), dr(GRANT_DIFF), R, R, R],
     ),
     // On a copy git has no commit for: `verify` also fails on an unsigned
     // last commit, for every role alike, which says nothing about access.
@@ -450,10 +439,26 @@ pub const ROWS: &[Row] = &[
         [A, A, A, A, A, da(GRANT_READ), da(GRANT_READ), R, R, R],
     ),
     row("ls", &["ls"], READ, PUBLIC_ALL),
-    row("info", &["info"], READ, PUBLIC_LOADS),
-    row("circle", &["circle"], READ, PUBLIC_LOADS),
+    row("info", &["info"], READ, PUBLIC_ALL),
+    row("circle", &["circle"], READ, PUBLIC_ALL),
     row("policy show", &["policy", "show"], READ, PUBLIC_ALL),
-    row("rotate --list --json", &["rotate", "--list", "--json"], READ, PUBLIC_ALL),
+    row(
+        "rotate --list --json",
+        &["rotate", "--list", "--json"],
+        READ,
+        [
+            A,
+            A,
+            A,
+            A,
+            A,
+            da(LOADS),
+            da(LOADS),
+            dr(LOADS),
+            dr(LOADS),
+            dr(LOADS),
+        ],
+    ),
     row("skeleton -o FILE", &["skeleton", "-o", "skeleton.murk"], READ, PUBLIC_ALL),
     row("agent plan -o FILE", &["agent", "plan", "-o", "plan.txt"], READ, PUBLIC_ALL),
     row("group ls", &["group", "ls"], READ, META),
@@ -489,6 +494,24 @@ pub const ROWS: &[Row] = &[
         &["add", "OPS", "--group", "me"],
         write(&["OPS"]),
         WRITERS,
+    )
+    .stdin("val-upd\n"),
+    row(
+        "add PRIV",
+        &["add", "PRIV"],
+        write(&["PRIV"]),
+        [
+            dr(OTHERS_ONLY),
+            dr(OTHERS_ONLY),
+            dr(OTHERS_ONLY),
+            dr(OTHERS_ONLY),
+            A,
+            R,
+            R,
+            R,
+            R,
+            R,
+        ],
     )
     .stdin("val-upd\n"),
     row(
@@ -578,6 +601,13 @@ pub const ROWS: &[Row] = &[
     .files(&[("ops.env", "OPS=val-upd\n")]),
     row("edit SHARED", &["edit", "SHARED"], write(&["SHARED"]), WRITERS).editor(),
     row(
+        "edit AGENT_OK (in the grant's scope)",
+        &["edit", "AGENT_OK"],
+        write(&["AGENT_OK"]),
+        WRITERS,
+    )
+    .editor(),
+    row(
         "edit OPS --group ops",
         &["edit", "OPS", "--group", "ops"],
         write(&["OPS"]),
@@ -590,6 +620,29 @@ pub const ROWS: &[Row] = &[
         &["rotate", "SHARED", "--generate"],
         write(&["SHARED"]),
         WRITERS,
+    ),
+    row(
+        "rotate AGENT_OK --generate (in the grant's scope)",
+        &["rotate", "AGENT_OK", "--generate"],
+        write(&["AGENT_OK"]),
+        WRITERS,
+    ),
+    row(
+        "rotate PRIV --generate",
+        &["rotate", "PRIV", "--generate"],
+        write(&["PRIV"]),
+        [
+            dr(OTHERS_ONLY),
+            dr(OTHERS_ONLY),
+            dr(OTHERS_ONLY),
+            dr(OTHERS_ONLY),
+            A,
+            R,
+            R,
+            R,
+            R,
+            R,
+        ],
     ),
     row(
         "rotate OPS --generate",
@@ -661,7 +714,7 @@ pub const ROWS: &[Row] = &[
             losses: &[("*", "owner")],
             creates: &[],
         },
-        ANY,
+        [dr(SELF_REVOKE), CUR, CUR, CUR, CUR, R, R, R, R, R],
     ),
     row(
         "circle revoke spare",
