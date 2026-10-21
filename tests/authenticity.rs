@@ -649,8 +649,11 @@ fn key_file_expiry(key: &Path) -> chrono::DateTime<chrono::Utc> {
 #[test]
 fn a_grant_key_file_is_refused_after_its_own_expiry_whatever_the_record_says() {
     let base = TempDir::new().unwrap();
-    let (alice, repo, key) = granted_repo(base.path(), "5s");
-    let minted = std::time::Instant::now();
+    // Roomy enough for the save, the commit and the first read under a loaded
+    // parallel run. Taken after minting, `expired_by` is no earlier than the
+    // grant's expiry.
+    let (alice, repo, key) = granted_repo(base.path(), "15s");
+    let expired_by = chrono::Utc::now() + chrono::Duration::seconds(15);
 
     // A library save, run in a child so its environment stays its own.
     let mut extend = std::process::Command::new(std::env::current_exe().unwrap());
@@ -677,7 +680,10 @@ fn a_grant_key_file_is_refused_after_its_own_expiry_whatever_the_record_says() {
         .assert()
         .success()
         .stdout("prod-db\n");
-    std::thread::sleep(std::time::Duration::from_millis(5200).saturating_sub(minted.elapsed()));
+    let left = (expired_by - chrono::Utc::now())
+        .to_std()
+        .unwrap_or_default();
+    std::thread::sleep(left + std::time::Duration::from_millis(500));
     agent_get(base.path(), &repo, &key)
         .assert()
         .failure()
