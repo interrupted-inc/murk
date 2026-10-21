@@ -604,6 +604,199 @@ fn grant_forgery_child() {
     murk_cli::save_vault(&vault_path, &mut vault, &original, &current).unwrap();
 }
 
+// ── Grant key-file bounds ──
+
+/// Alice's committed repo with `DB_URL` granted to `bot` for `ttl`, and the
+/// grant's key file at `<base>/bot.key`.
+fn granted_repo(base: &Path, ttl: &str) -> (Machine, PathBuf, PathBuf) {
+    let (alice, repo) = alice_repo(base);
+    let key = base.join("bot.key");
+    alice
+        .murk(&repo)
+        .args(["agent", "grant", "--name", "bot", "--only", "DB_URL"])
+        .args(["--ttl", ttl, "--out"])
+        .arg(&key)
+        .assert()
+        .success();
+    commit(&repo, "grant bot");
+    (alice, repo, key)
+}
+
+/// `murk get DB_URL` on the agent's own machine (a HOME of its own) with the
+/// grant key file at `key`.
+fn agent_get(base: &Path, repo: &Path, key: &Path) -> assert_cmd::Command {
+    let mut cmd = Machine::new(base, "bot").murk(repo);
+    cmd.env("MURK_KEY_FILE", key).args(["get", "DB_URL"]);
+    cmd
+}
+
+/// The `# murk-grant-expires:` time in the key file at `key`.
+fn key_file_expiry(key: &Path) -> chrono::DateTime<chrono::Utc> {
+    let text = fs::read_to_string(key).unwrap();
+    let line = text
+        .lines()
+        .find_map(|l| l.strip_prefix("# murk-grant-expires:"))
+        .unwrap_or_else(|| panic!("no expiry line in {text}"));
+    chrono::DateTime::parse_from_rfc3339(line.trim())
+        .unwrap()
+        .to_utc()
+}
+
+/// A copy of a grant key file outlives its TTL only if something other than
+/// the key file bounds it. Here Alice, still a trusted signer, saves a vault
+/// whose record for the grant runs a day longer: the key file's own expiry
+/// still ends it.
+#[test]
+fn a_grant_key_file_is_refused_after_its_own_expiry_whatever_the_record_says() {
+    let base = TempDir::new().unwrap();
+    // Roomy enough for the save, the commit and the first read under a loaded
+    // parallel run. Taken after minting, `expired_by` is no earlier than the
+    // grant's expiry.
+    let (alice, repo, key) = granted_repo(base.path(), "15s");
+    let expired_by = chrono::Utc::now() + chrono::Duration::seconds(15);
+
+    // A library save, run in a child so its environment stays its own.
+    let mut extend = std::process::Command::new(std::env::current_exe().unwrap());
+    for var in common::MURK_CONTEXT_VARS {
+        extend.env_remove(var);
+    }
+    let extend = extend
+        .args(["--exact", "grant_record_extension_child", "--nocapture"])
+        .arg("--ignored")
+        .env("EXTEND_VAULT", repo.join(".murk"))
+        .env("MURK_KEY", alice.secret_key())
+        .env("HOME", &alice.home)
+        .output()
+        .unwrap();
+    assert!(
+        extend.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&extend.stdout),
+        String::from_utf8_lossy(&extend.stderr)
+    );
+    commit(&repo, "extend bot's record");
+
+    agent_get(base.path(), &repo, &key)
+        .assert()
+        .success()
+        .stdout("prod-db\n");
+    let left = (expired_by - chrono::Utc::now())
+        .to_std()
+        .unwrap_or_default();
+    std::thread::sleep(left + std::time::Duration::from_millis(500));
+    agent_get(base.path(), &repo, &key)
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("expired").and(predicate::str::contains("key file")));
+}
+
+/// Alice's library save that extends grant `bot`'s record by a day (spawned
+/// by the test above, with Alice's key and HOME).
+#[test]
+#[ignore = "run by a_grant_key_file_is_refused_after_its_own_expiry_whatever_the_record_says"]
+fn grant_record_extension_child() {
+    let vault_path = std::env::var("EXTEND_VAULT").unwrap();
+    let (mut vault, original, _) = murk_cli::load_vault(&vault_path).unwrap();
+    let mut current = original.clone();
+    let later = (chrono::Utc::now() + chrono::Duration::days(1))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    current.grants.get_mut("bot").unwrap().expires_at = later.clone();
+    murk_cli::save_vault(&vault_path, &mut vault, &original, &current).unwrap();
+    let (_, saved, _) = murk_cli::load_vault(&vault_path).unwrap();
+    assert_eq!(saved.grants["bot"].expires_at, later);
+}
+
+/// A key file is bound to the grant it names: under a record for another
+/// grant it reads nothing.
+#[test]
+fn a_grant_key_file_naming_another_grant_is_refused() {
+    let base = TempDir::new().unwrap();
+    let (_alice, repo, key) = granted_repo(base.path(), "1h");
+    agent_get(base.path(), &repo, &key).assert().success();
+
+    let text = fs::read_to_string(&key).unwrap();
+    assert!(text.contains("# murk-grant-id: bot\n"), "{text}");
+    fs::write(
+        &key,
+        text.replace("# murk-grant-id: bot\n", "# murk-grant-id: deploy\n"),
+    )
+    .unwrap();
+    agent_get(base.path(), &repo, &key)
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(
+            predicate::str::contains("grant deploy").and(predicate::str::contains("grant bot")),
+        );
+}
+
+/// `--renew` writes a key file carrying the renewed expiry, and it reads.
+#[test]
+fn renewing_a_grant_extends_its_key_files_expiry() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo, key) = granted_repo(base.path(), "1h");
+    let first = key_file_expiry(&key);
+
+    alice
+        .murk(&repo)
+        .args(["agent", "grant", "--name", "bot", "--only", "DB_URL"])
+        .args(["--ttl", "30d", "--renew", "--force", "--out"])
+        .arg(&key)
+        .assert()
+        .success();
+    commit(&repo, "renew bot");
+
+    let renewed = key_file_expiry(&key);
+    assert!(
+        renewed > first + chrono::Duration::days(29),
+        "{first} -> {renewed}"
+    );
+    agent_get(base.path(), &repo, &key)
+        .assert()
+        .success()
+        .stdout("prod-db\n");
+}
+
+/// A key file without an expiry line (minted before murk wrote one, or the
+/// bare key line murk-action passes with its signers in
+/// MURK_TRUSTED_SIGNERS) still reads under the vault's record, warning once
+/// that the key file doesn't bound the grant.
+#[test]
+fn a_grant_key_file_without_an_expiry_reads_with_one_warning() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo, key) = granted_repo(base.path(), "1h");
+    let text = fs::read_to_string(&key).unwrap();
+    let warns_once = |out: std::process::Output| {
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        assert!(out.status.success(), "{stderr}");
+        assert_eq!(out.stdout, b"prod-db\n");
+        assert_eq!(stderr.matches("carries no expiry").count(), 1, "{stderr}");
+        assert!(stderr.contains("--renew"), "{stderr}");
+    };
+
+    let pre_expiry: String = text
+        .lines()
+        .filter(|l| !l.starts_with("# murk-grant-"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    fs::write(&key, pre_expiry).unwrap();
+    warns_once(agent_get(base.path(), &repo, &key).output().unwrap());
+
+    let bare: String = text
+        .lines()
+        .filter(|l| l.starts_with("AGE-SECRET-KEY-"))
+        .collect();
+    fs::write(&key, format!("{bare}\n")).unwrap();
+    let (signer, _) = alice.signer_entry(&repo);
+    warns_once(
+        agent_get(base.path(), &repo, &key)
+            .env("MURK_TRUSTED_SIGNERS", signer)
+            .output()
+            .unwrap(),
+    );
+}
+
 // ── Recipient aliasing ──
 
 /// A second spelling of a key (bech32 is case-insensitive) would survive
@@ -2683,12 +2876,14 @@ fn both_branches_revoke_the_same_member_on_one_machine() {
 }
 
 /// Rule: a removal on a feature branch never deadlocks main. Alice revokes
-/// Bob on `feature`; before that is merged, Bob signs a new vault on main.
-/// Alice's machine refuses it (Bob signed it after his removal), and the
-/// refusal says how to recover: merge the removal. The merge stops on the
-/// vault, naming Bob's side; Alice keeps the side that removed him (`git
-/// checkout --theirs`), commits, and main carries the removal and loads,
-/// without Bob ever being trusted again.
+/// Bob on `feature`. Before that is merged, Carol (a trusted teammate) and
+/// then Bob change the vault on main. Alice's machine refuses Bob's vault,
+/// and the refusal says how to recover: merge the removal. The merge stops
+/// on the vault, naming Bob's side. Alice keeps the side that removed him
+/// (`git checkout --theirs`), which drops Carol's change too, as the hint
+/// says; she runs `murk trust` (the kept vault is numbered below main's
+/// newest), finds Carol's change with `murk diff`, makes it again, and
+/// commits. Main carries the removal and loads, Bob is never trusted again.
 #[test]
 fn merging_the_removal_into_a_branch_the_removed_member_wrote_to() {
     let base = TempDir::new().unwrap();
@@ -2713,7 +2908,24 @@ fn merging_the_removal_into_a_branch_the_removed_member_wrote_to() {
         .assert()
         .success();
     alice.add(&repo, "A0", "a0");
-    commit(&repo, "bob is a member");
+    let carol = Machine::new(base.path(), "carol");
+    let carol_key = ssh_key_file(base.path(), "carol_ed25519");
+    alice
+        .murk(&repo)
+        .args(["circle", "authorize", SSH_ED25519_PK, "--name", "carol"])
+        .assert()
+        .success();
+    commit(&repo, "bob and carol are members");
+    carol
+        .with_key(&repo, &carol_key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    // Bob's machine sees Carol added, so it trusts her writes.
+    bob.with_key(&repo, &bob_key)
+        .args(["get", "A0"])
+        .assert()
+        .success();
 
     git_ok(&repo, &["checkout", "-q", "-b", "feature"]);
     alice
@@ -2724,6 +2936,21 @@ fn merging_the_removal_into_a_branch_the_removed_member_wrote_to() {
     commit(&repo, "revoke bob");
 
     git_ok(&repo, &["checkout", "-q", "main"]);
+    carol
+        .with_key(&repo, &carol_key)
+        .args(["add", "CAROL_MAIN"])
+        .write_stdin("carol-main\n")
+        .assert()
+        .success();
+    commit(&repo, "carol writes on main");
+    let carol_commit = String::from_utf8(git(&repo, &["rev-parse", "HEAD"]).stdout).unwrap();
+    let carol_commit = carol_commit.trim().to_string();
+    alice
+        .murk(&repo)
+        .args(["get", "CAROL_MAIN"])
+        .assert()
+        .success()
+        .stdout("carol-main\n");
     bob.with_key(&repo, &bob_key)
         .args(["add", "BOB_AFTER"])
         .write_stdin("after\n")
@@ -2741,23 +2968,56 @@ fn merging_the_removal_into_a_branch_the_removed_member_wrote_to() {
         .stderr(predicate::str::contains("signed by bob"))
         .stderr(predicate::str::contains(
             "merge it with the murk merge driver",
-        ));
+        ))
+        .stderr(predicate::str::contains("drops every vault change"));
 
     // The merge stops on the vault, naming Bob's side.
     let (merged, stderr) = git_merge(&alice, &repo, "feature");
     assert!(!merged, "the merge must stop: {stderr}");
     assert!(
-        stderr.contains("ours failed its authenticity check") && stderr.contains("signed by bob"),
+        stderr.contains("ours failed its authenticity check")
+            && stderr.contains("signed by bob")
+            && stderr.contains("drops every vault change"),
         "{stderr}"
     );
 
-    // Alice keeps the side that removed Bob and commits.
+    // Alice keeps the side that removed Bob, accepts its lower counter, finds
+    // what Carol changed, makes it again, and commits.
     git_ok(&repo, &["checkout", "--theirs", "--", ".murk"]);
+    git_ok(&repo, &["add", ".murk"]);
+    // Alice accepted Carol's newer vault on main, so the kept vault reads as
+    // a fork or rollback of main until she accepts it; Bob is not involved.
+    alice
+        .murk(&repo)
+        .args(["get", "DB_URL"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("murk trust"))
+        .stderr(predicate::str::contains("bob").not());
+    alice
+        .murk(&repo)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    alice
+        .murk(&repo)
+        .args(["diff", &carol_commit, "--show-values"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("CAROL_MAIN"))
+        .stdout(predicate::str::contains("carol-main"));
+    alice.add(&repo, "CAROL_MAIN", "carol-main");
     git_ok(&repo, &["add", ".murk"]);
     git_ok(
         &repo,
         &["-c", "commit.gpgsign=false", "commit", "-q", "--no-edit"],
     );
+    alice
+        .murk(&repo)
+        .args(["get", "CAROL_MAIN"])
+        .assert()
+        .success()
+        .stdout("carol-main\n");
 
     alice
         .murk(&repo)

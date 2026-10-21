@@ -445,6 +445,12 @@ fn own_private(
 /// grant's key file (`key_text`) or `MURK_TRUSTED_SIGNERS`. Only then is the
 /// grant's own record decrypted and its TTL checked, and only then its scoped
 /// values. No pin is read or written.
+///
+/// The grant is bounded by the earlier of the record's expiry and the key
+/// file's own (`# murk-grant-expires:`), so no record a trusted signer later
+/// writes outlives the key file; a key file that names its grant must match
+/// the record. A key file without an expiry falls back to the record alone,
+/// with a warning (once per process) to re-mint it.
 fn inspect_as_grant(
     vault: types::Vault,
     identity: crypto::MurkIdentity,
@@ -453,6 +459,7 @@ fn inspect_as_grant(
 ) -> Result<InspectedVault, MurkError> {
     let pubkey = identity.pubkey_string()?;
     let mut anchor = crate::agents::anchor_from_key_text(key_text).map_err(MurkError::Key)?;
+    let bound = crate::agents::grant_from_key_text(key_text).map_err(MurkError::Key)?;
     if let Some(env) = trust::env_trusted_signers().map_err(MurkError::Key)? {
         anchor.extend(env);
     }
@@ -482,8 +489,45 @@ fn inspect_as_grant(
             ),
         })
     })?;
-    let record = crate::agents::open_blob(blob, &identity, &pubkey)?;
-    policy::check_grant_expiry(&record.name, &record.grant, chrono::Utc::now())?;
+    let mut record = crate::agents::open_blob(blob, &identity, &pubkey)?;
+    if let Some(id) = &bound.id
+        && *id != record.name
+    {
+        return Err(MurkError::Grant(format!(
+            "refusing to read: this key file is for grant {id}, but the vault's record for its key \
+             is grant {} — ask the operator to re-mint the grant",
+            record.name
+        )));
+    }
+    let now = chrono::Utc::now();
+    policy::check_grant_expiry(&record.name, &record.grant, now)?;
+    let mut warnings = Vec::new();
+    if let Some(exp) = bound.expires {
+        let exp_text = exp.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        if exp <= now {
+            return Err(MurkError::Grant(format!(
+                "grant {} expired {exp_text} (its key file's expiry) — renew with `murk agent \
+                 grant --renew` or close it with `murk agent revoke {}`",
+                record.name, record.name
+            )));
+        }
+        // The record parsed above; keep the earlier bound, so every later
+        // check and display of this grant sees the expiry actually enforced.
+        if chrono::DateTime::parse_from_rfc3339(&record.grant.expires_at)
+            .is_ok_and(|rec| rec.to_utc() > exp)
+        {
+            record.grant.expires_at = exp_text;
+        }
+    } else {
+        static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            warnings.push(
+                "this grant key file carries no expiry, so only the vault's grant record bounds \
+                 it — ask the operator to re-mint it (`murk agent grant --renew`)"
+                    .into(),
+            );
+        }
+    }
     let v = vault.sig.as_ref().map_or(0, |s| s.v);
     let murk = types::Murk {
         private: own_private(&vault, &identity, &pubkey),
@@ -491,6 +535,7 @@ fn inspect_as_grant(
         signature: types::SignatureState::Signed { signer, v },
         loaded_by: Some(pubkey),
         loaded_as_grant: true,
+        warnings,
         ..Default::default()
     };
     Ok(InspectedVault {
@@ -666,7 +711,7 @@ impl InspectedVault {
                     .into(),
             );
         }
-        murk.warnings = warnings;
+        murk.warnings.extend(warnings);
         Ok((vault, murk, identity))
     }
 }
