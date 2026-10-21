@@ -22,7 +22,7 @@ grid.
 | Application and CI configuration secrets loaded through your shell | Yes | Works with [direnv](/guides/direnv/); no runtime to install. |
 | You want dynamic, short-lived credentials or server-driven rotation | No | Use HashiCorp Vault or a cloud secrets manager. murk stores static secrets in a file. |
 | You need provable access control and audit logs for compliance (SOC 2, PCI, HIPAA) | Not yet | murk's only audit trail is git history, and it is not independently audited. Use Vault. |
-| You need HSM or cloud-KMS-backed keys, or per-secret cryptographic access control | No | Use Vault or a cloud KMS. Every authorized recipient can read shared secrets by design. |
+| You need cloud-KMS or network-HSM-backed keys, or central policy-driven access control | No | Use Vault or a cloud KMS. murk keys live on your machine or in a hardware token (via [age plugins](/guides/hardware-keys/)). Every ordinary recipient can read shared values. Named groups, personal values (`--group me`) and agent grants narrow who reads a secret, but no central server enforces policy or logs reads. |
 | You want the broadest KMS backend support and the largest ecosystem today | Consider SOPS | SOPS is the closest alternative, with more backends and a bigger community. |
 
 ## Use murk if
@@ -41,9 +41,9 @@ grid.
   (HashiCorp Vault, cloud secrets managers).
 - You are in a regulated or compliance environment that needs provable access
   control and a formal audit trail (Vault). murk's audit trail is git history.
-- You need per-secret cryptographic access control. In murk, every authorized
-  recipient can read every shared secret by design; only per-recipient motes are
-  scoped to one key.
+- You need central, policy-driven access control. In murk, every ordinary
+  recipient can read shared values. Named groups, personal values and agent
+  grants narrow access per secret, but nothing enforces policy centrally.
 - You want the widest KMS backend support and ecosystem available today (SOPS).
 
 ## The 0.x release contract
@@ -58,15 +58,20 @@ with good judgment, today.
 **What the 0.x line already gives you:**
 
 - Values encrypted with age; key names stay readable.
-- Per-recipient encryption, so revoking a teammate does not hand them future
-  secrets.
-- Tamper evidence: the vault is signed with a key derived from the writer's age
-  key, and git is the integrity anchor. See the [threat model](/security/threat-model/).
+- Per-recipient encryption. A revoked teammate cannot read values written after
+  the revoke. They keep what they could already read in git history, so rotate
+  those secrets.
+- Tamper evidence. Writers sign the vault with Ed25519 (from an age key or an
+  `ssh-ed25519` key), and a signed vault that was altered fails to load. On a
+  fresh clone, an age signer is trusted on first use. Hardware and `ssh-rsa`
+  keys cannot sign. An attacker with repo write access can strip the signature
+  (the vault then loads with a warning), so sign your git commits too. See the
+  [threat model](/security/threat-model/).
 - A documented, tested vault format.
-- Reproducible, attested releases (SLSA Build L2) that you can
-  [verify](/security/verifying/).
-- Coordinated vulnerability reporting through
-  [SECURITY.md](https://github.com/interrupted-sh/murk/blob/main/SECURITY.md).
+- Attested releases (SLSA Build L2), with reproducible Linux and Windows x86-64
+  builds, that you can [verify](/security/verifying/).
+- A private channel for reporting vulnerabilities
+  ([SECURITY.md](https://github.com/interrupted-sh/murk/blob/main/SECURITY.md)).
 
 **What murk deliberately does not claim yet:**
 

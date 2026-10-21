@@ -2,21 +2,20 @@
 
 ## Cryptography
 
-murk does not implement any cryptography. All encryption and decryption is performed by [age](https://age-encryption.org/) via the [rage](https://github.com/str4d/rage) Rust implementation. Key generation uses BIP39 mnemonics over cryptographically random bytes.
+murk implements no cryptographic primitives. [age](https://age-encryption.org/) (the [rage](https://github.com/str4d/rage) Rust crate) encrypts and decrypts every value. BLAKE3 and Ed25519 provide the integrity MAC and the vault signatures, and murk defines how they combine (see [THREAT_MODEL.md](THREAT_MODEL.md)). A new key is 32 random bytes from the system's random number generator, shown as a 24-word BIP39 recovery phrase.
 
-If you find a vulnerability in the underlying cryptographic primitives, please report it to the [age](https://github.com/FiloSottile/age) or [rage](https://github.com/str4d/rage) projects directly.
+Report a flaw in age or rage to the [age](https://github.com/FiloSottile/age) or [rage](https://github.com/str4d/rage) project. Report a flaw in murk's MAC or signature construction here.
 
 For a detailed analysis of what murk protects and what it doesn't, see [THREAT_MODEL.md](THREAT_MODEL.md).
 
 ## Known Limitations
 
 - **Not audited.** murk has not had an independent security audit. It is pre-1.0 software. Use good judgment with production secrets.
-- **Not a Vault replacement.** murk is a file-based secrets manager for dev teams. It is not designed for regulated environments, dynamic secrets, rotation policies, or provable access controls. If you need a secrets server, use HashiCorp Vault.
+- **Not a secrets server.** murk is a file-based secrets manager for dev teams. It is not designed for regulated environments, dynamic secrets, automatic provider-side rotation or provable access controls. murk can record rotation intervals and expiry dates and report overdue secrets. If you need a secrets server, use one such as HashiCorp Vault.
 - **Revoked recipients can read old git history.** Revoking a recipient re-encrypts the vault going forward, but old `.murk` versions remain in git. The revoked user can still decrypt any version they had access to. Always rotate secrets after revocation.
 - **Plaintext during edit.** `murk edit` writes decrypted values to a temp file for `$EDITOR`. The file is overwritten with zeros and deleted afterward, but the plaintext existed on disk briefly. Core dumps, swap, or filesystem journaling could retain fragments.
 - **Compromised workstation = full access.** If an attacker has access to the machine where your key lives, they can decrypt all shared secrets. murk is not a defense against a compromised machine — it protects secrets at rest in git and in transit.
 - **Key names are public.** The `.murk` header exposes what secrets exist (e.g. `STRIPE_SECRET_KEY`). Only values are encrypted. This is a deliberate trade-off for usability (`murk info` without a key, readable git diffs).
-- **No custom cryptography.** murk delegates all crypto to [age](https://age-encryption.org/). Minimal custom code, explicit trade-offs, single-file format.
 
 ## Known Issues
 
@@ -42,10 +41,12 @@ See [VERIFYING.md](VERIFYING.md) for per-channel verification, including the npm
 
 ### Repository automation secrets
 
-Two long-lived secrets support CI and release automation. Each must be held to the minimum scope required:
+Release and CI automation uses these long-lived secrets. Each must be held to the minimum scope it needs:
 
-- **`HOMEBREW_TAP_TOKEN`** — must be a fine-grained personal access token scoped to the `interrupted-sh/homebrew-tap` repository only, granting `contents: write` and nothing else. It is used solely by the release workflow to push the updated Homebrew formula. The tap is shared by all interrupted.sh tools, so this token can write every formula in it; keep it scoped to that one repository with `contents: write` only.
-- **`CODECOV_TOKEN`** — must be a Codecov repository upload token (not a personal account token), used only to upload coverage for this repository.
+- **`HOMEBREW_TAP_TOKEN`**: a fine-grained personal access token for the `interrupted-sh/homebrew-tap` repository only, with `contents: write` and nothing else. Only the release workflow uses it, to push the Homebrew formula. The tap is shared by all interrupted.sh tools, so the token can write every formula in it.
+- **`PREFLIGHT_APP_ID`** and **`PREFLIGHT_APP_PRIVATE_KEY`**: a GitHub App installed on `interrupted-sh/murk` with `administration: read`, `contents: write` and `pull-requests: write`. Each workflow requests a narrower token. The release preflight uses a read-only token to check branch protection. The advisories workflow uses a `contents: write` and `pull-requests: write` token to open dependency fix pull requests.
+- **`CODECOV_TOKEN`**: a Codecov repository upload token (not a personal account token), used only to upload coverage for this repository.
+- **`CLOUDFLARE_API_TOKEN`** and **`CLOUDFLARE_ACCOUNT_ID`**: used only to deploy the docs site and its previews.
 
 Workflow `GITHUB_TOKEN` permissions follow least privilege: read-only by default, elevated per job only where a step needs it (for example `id-token: write` for OIDC publishing and build provenance, `security-events: write` for code scanning).
 
@@ -73,10 +74,12 @@ Include:
 In scope:
 - Secret values leaking into plaintext (logs, error messages, temp files)
 - Bypassing recipient-based access control
-- Key material exposure beyond `.env`
-- Integrity check bypass (MAC validation)
+- Key material exposure beyond the key file and `MURK_KEY`
+- Bypassing MAC or signature verification, or signer pinning
+- Bypassing a grant's scope or expiry, or the agent allow-tag policy, inside the murk binary
 
 Out of scope:
-- Vulnerabilities in age/rage cryptographic primitives (report upstream)
-- Attacks requiring local access to `.env` or `MURK_KEY` (these contain the secret key by design)
+- Vulnerabilities in the age or rage primitives (report upstream)
+- Attacks that need local access to your key file, `MURK_KEY`, or an `.env` that contains `MURK_KEY` (these hold the secret key by definition)
+- Limits that [THREAT_MODEL.md](THREAT_MODEL.md) lists under "What murk does not protect", for example values that output masking misses, or a policy bypassed by using age directly
 - Denial of service against the CLI
