@@ -31,12 +31,11 @@ pub(crate) fn generate_and_write_key(vault_name: &str) -> (zeroize::Zeroizing<St
     eprintln!("{} generating keypair...", "◆".magenta());
     let (phrase, secret_key, pubkey) = try_or_die(recovery::generate());
 
-    // Write key to ~/.config/murk/keys/<hash> and reference in .env. The key
-    // file is created exclusively: if another init stored one since the
-    // discovery check, this fails and leaves that key untouched.
+    // Write key to ~/.config/murk/keys/<hash>. The key file is created
+    // exclusively: if another init stored one since the discovery check, this
+    // fails and leaves that key untouched.
     let key_path = try_or_die(murk_cli::key_file_path(vault_name));
     try_or_die(murk_cli::create_key_file(&key_path, &secret_key));
-    try_or_die(murk_cli::write_key_ref_to_dotenv(&key_path));
     eprintln!(
         "{} key saved to {}",
         "◆".magenta(),
@@ -54,10 +53,13 @@ pub(crate) fn generate_and_write_key(vault_name: &str) -> (zeroize::Zeroizing<St
     );
     eprintln!("  {}", phrase.as_str().bold());
     eprintln!();
+
+    // Reference the key in .env only after the phrase is shown: if this write
+    // fails, a retry reuses the stored key and would print no phrase.
+    try_or_die(murk_cli::write_key_ref_to_dotenv(&key_path));
     eprintln!(
         "  {}",
-        ".env contains a reference to your key — it is safe to commit, but the key file is not"
-            .dimmed()
+        ".env holds only the path to your key file; keep both out of git".dimmed()
     );
 
     (secret_key, pubkey)
@@ -89,6 +91,15 @@ fn reuse_key(source: &KeySource) {
     }
 }
 
+/// The key init should use instead of generating one: `MURK_KEY` or
+/// `MURK_KEY_FILE` from the environment first, then the key stored for this
+/// vault here or in a sibling worktree (see [`murk_cli::discover_stored_key`];
+/// refused in strict mode).
+fn existing_key(vault_name: &str) -> Option<murk_cli::DiscoveredKey> {
+    try_or_die(murk_cli::discover_existing_key())
+        .or_else(|| try_or_die(murk_cli::discover_stored_key(vault_name)))
+}
+
 pub(crate) fn cmd_init(vault_name: &str) {
     let vault_path = Path::new(vault_name);
 
@@ -101,9 +112,7 @@ pub(crate) fn cmd_init(vault_name: &str) {
         // Reuse a key the environment names, then one stored for this vault
         // (here or in a sibling worktree). Only a newcomer with neither gets a
         // new key.
-        let existing = try_or_die(murk_cli::discover_existing_key())
-            .or_else(|| try_or_die(murk_cli::discover_stored_key(vault_name, true)));
-        let secret_key = match existing {
+        let secret_key = match existing_key(vault_name) {
             Some(dk) => {
                 reuse_key(&dk.source);
                 dk.secret_key
@@ -143,9 +152,11 @@ pub(crate) fn cmd_init(vault_name: &str) {
 
     // --- New vault flow ---
 
-    // A key already stored at this vault path (say, the vault file was deleted)
-    // becomes the new vault's recipient rather than being overwritten.
-    let stored = try_or_die(murk_cli::discover_stored_key(vault_name, false));
+    // Same lookup as above, so an explicit MURK_KEY / MURK_KEY_FILE becomes the
+    // first recipient, and a key already stored for this vault path (here, say
+    // after the vault file was deleted, or in a sibling worktree) is reused
+    // rather than overwritten or shadowed.
+    let existing = existing_key(vault_name);
 
     // Prompt for display name.
     let name = prompt("Enter your name or email", None);
@@ -153,7 +164,7 @@ pub(crate) fn cmd_init(vault_name: &str) {
         die(&"name is required", 1);
     }
 
-    let pubkey = match stored {
+    let pubkey = match existing {
         Some(dk) => {
             reuse_key(&dk.source);
             dk.pubkey
@@ -162,7 +173,19 @@ pub(crate) fn cmd_init(vault_name: &str) {
     };
 
     let v = try_or_die(murk_cli::create_vault(vault_name, &pubkey, &name));
-    try_or_die(vault::write(vault_path, &v));
+    // Create exclusively: a vault that appeared while init waited at the
+    // prompt (a `git pull` in another terminal) must not be replaced.
+    match vault::create(vault_path, &v) {
+        Ok(()) => {}
+        Err(vault::VaultError::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => die(
+            &format!(
+                "{vault_name} appeared while murk init was running; it was left unchanged\n\
+                 run murk init again to use it"
+            ),
+            1,
+        ),
+        Err(e) => die(&e, 1),
+    }
 
     eprintln!();
     eprintln!(

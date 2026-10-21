@@ -25,7 +25,7 @@ function __fish_murk_using_subcommand
 end
 
 complete -c murk -n "__fish_murk_needs_command" -s h -l help -d 'Print help'
-complete -c murk -n "__fish_murk_needs_command" -f -a "init" -d 'Initialize a new vault and generate a keypair'
+complete -c murk -n "__fish_murk_needs_command" -f -a "init" -d 'Initialize a vault or reuse its existing key'
 complete -c murk -n "__fish_murk_needs_command" -f -a "env" -d 'Write a .envrc for direnv integration'
 complete -c murk -n "__fish_murk_needs_command" -f -a "restore" -d 'Restore MURK_KEY from a BIP39 recovery phrase'
 complete -c murk -n "__fish_murk_needs_command" -f -a "recover" -d 'Re-derive recovery phrase from current MURK_KEY'
@@ -274,7 +274,7 @@ complete -c murk -n "__fish_murk_using_subcommand completion; and __fish_seen_su
 complete -c murk -n "__fish_murk_using_subcommand completion; and __fish_seen_subcommand_from help" -f -a "generate" -d 'Print completions to stdout'
 complete -c murk -n "__fish_murk_using_subcommand completion; and __fish_seen_subcommand_from help" -f -a "install" -d 'Install completions to the standard path'
 complete -c murk -n "__fish_murk_using_subcommand completion; and __fish_seen_subcommand_from help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "init" -d 'Initialize a new vault and generate a keypair'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "init" -d 'Initialize a vault or reuse its existing key'
 complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "env" -d 'Write a .envrc for direnv integration'
 complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "restore" -d 'Restore MURK_KEY from a BIP39 recovery phrase'
 complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "recover" -d 'Re-derive recovery phrase from current MURK_KEY'

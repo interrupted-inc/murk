@@ -999,7 +999,7 @@ esac
 (( $+functions[_murk_commands] )) ||
 _murk_commands() {
     local commands; commands=(
-'init:Initialize a new vault and generate a keypair' \
+'init:Initialize a vault or reuse its existing key' \
 'env:Write a .envrc for direnv integration' \
 'restore:Restore MURK_KEY from a BIP39 recovery phrase' \
 'recover:Re-derive recovery phrase from current MURK_KEY' \
@@ -1360,7 +1360,7 @@ _murk__subcmd__group__subcmd__rm_commands() {
 (( $+functions[_murk__subcmd__help_commands] )) ||
 _murk__subcmd__help_commands() {
     local commands; commands=(
-'init:Initialize a new vault and generate a keypair' \
+'init:Initialize a vault or reuse its existing key' \
 'env:Write a .envrc for direnv integration' \
 'restore:Restore MURK_KEY from a BIP39 recovery phrase' \
 'recover:Re-derive recovery phrase from current MURK_KEY' \

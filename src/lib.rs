@@ -208,11 +208,15 @@ pub fn read_vault(vault_path: &str) -> Result<types::Vault, MurkError> {
 ///
 /// Mirrors how git finds `.git` and cargo finds `Cargo.toml`: if the user passed a bare
 /// filename (no path separator, not absolute) and it does not exist in the current
-/// directory, walk up from CWD looking for a file of that name. Stops at:
+/// directory, walk up from CWD looking for a file of that name, as far as the first
+/// boundary:
 ///
 /// - a directory containing `.git` (the git root — don't escape the repo)
 /// - `$HOME` (don't traverse into parents of the user's home)
-/// - the filesystem root
+///
+/// With no boundary above CWD (outside every git repo and outside `$HOME`, say under
+/// `/tmp`), there is no walk at all: a vault another user planted in a shared ancestor
+/// directory must never be picked up.
 ///
 /// If a match is found, returns the absolute path. Otherwise returns the input unchanged,
 /// so downstream error messages still reference what the user asked for.
@@ -236,26 +240,24 @@ pub fn resolve_vault_path(arg: &str) -> String {
         return arg.to_string();
     }
 
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let mut dir = cwd.as_path();
-    loop {
+    // CWD is canonical; compare HOME the same way so a symlinked HOME still
+    // counts as a boundary.
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|h| std::fs::canonicalize(&h).unwrap_or(h));
+    let is_boundary =
+        |dir: &Path| dir.join(".git").exists() || home.as_deref().is_some_and(|h| dir == h);
+    let Some(boundary) = cwd.ancestors().find(|dir| is_boundary(dir)) else {
+        return arg.to_string();
+    };
+
+    for dir in cwd.ancestors() {
         let candidate = dir.join(arg);
         if candidate.exists() {
             return candidate.to_string_lossy().into_owned();
         }
-        // Stop at git root after checking this directory.
-        if dir.join(".git").exists() {
+        if dir == boundary {
             break;
-        }
-        // Stop at $HOME boundary (don't traverse above the user's home).
-        if let Some(ref h) = home
-            && dir == h.as_path()
-        {
-            break;
-        }
-        match dir.parent() {
-            Some(parent) => dir = parent,
-            None => break,
         }
     }
 

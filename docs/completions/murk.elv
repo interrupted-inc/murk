@@ -20,7 +20,7 @@ set edit:completion:arg-completer[murk] = {|@words|
         &'murk'= {
             cand -h 'Print help'
             cand --help 'Print help'
-            cand init 'Initialize a new vault and generate a keypair'
+            cand init 'Initialize a vault or reuse its existing key'
             cand env 'Write a .envrc for direnv integration'
             cand restore 'Restore MURK_KEY from a BIP39 recovery phrase'
             cand recover 'Re-derive recovery phrase from current MURK_KEY'
@@ -481,7 +481,7 @@ set edit:completion:arg-completer[murk] = {|@words|
         &'murk;completion;help;help'= {
         }
         &'murk;help'= {
-            cand init 'Initialize a new vault and generate a keypair'
+            cand init 'Initialize a vault or reuse its existing key'
             cand env 'Write a .envrc for direnv integration'
             cand restore 'Restore MURK_KEY from a BIP39 recovery phrase'
             cand recover 'Re-derive recovery phrase from current MURK_KEY'

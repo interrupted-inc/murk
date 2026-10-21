@@ -19,7 +19,7 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     // Setup & recovery
-    /// Initialize a new vault and generate a keypair
+    /// Initialize a vault or reuse its existing key
     Init {
         /// Vault filename
         #[arg(long, env = "MURK_VAULT", default_value = ".murk")]

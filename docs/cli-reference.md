@@ -63,7 +63,7 @@ Encrypted secrets manager for developers — one file, age encryption, git-frien
 
 ###### **Subcommands:**
 
-* `init` — Initialize a new vault and generate a keypair
+* `init` — Initialize a vault or reuse its existing key
 * `env` — Write a .envrc for direnv integration
 * `restore` — Restore MURK_KEY from a BIP39 recovery phrase
 * `recover` — Re-derive recovery phrase from current MURK_KEY
@@ -96,7 +96,7 @@ Encrypted secrets manager for developers — one file, age encryption, git-frien
 
 ## `murk init`
 
-Initialize a new vault and generate a keypair
+Initialize a vault or reuse its existing key
 
 **Usage:** `murk init [OPTIONS]`
 
