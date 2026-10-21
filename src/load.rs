@@ -435,6 +435,7 @@ impl InspectedVault {
             groups: &self.murk.groups,
             grants: &self.murk.grants,
             loader_can_sign: self.identity.is_signing_capable(),
+            operator_key: crypto::operator_key(&self.identity),
         }
     }
 

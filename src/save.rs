@@ -419,6 +419,7 @@ fn record_own_save(
             groups: &current.groups,
             grants: &current.grants,
             loader_can_sign: true,
+            operator_key: None,
         };
         crate::trust::accepted_pin(&loaded, prior, false, &crate::trust::head_of(vault_path))
     } else {

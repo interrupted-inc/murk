@@ -205,6 +205,7 @@ pub fn pin_created_vault(
         groups: &BTreeMap::new(),
         grants: &BTreeMap::new(),
         loader_can_sign: true,
+        operator_key: None,
     };
     let head = crate::trust::head_of(vault_path);
     crate::pins::write(
