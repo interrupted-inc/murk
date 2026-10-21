@@ -407,10 +407,14 @@ fn signer_key_refusal(
 
 /// Whether a grant record in `loaded` names an operator key: a signer this
 /// machine trusts or ever trusted (on an operator's own machine, that includes
-/// their own key), a key with a signing-key registry entry (grants never
-/// sign), or the loading key when it is known to be an operator. The first
-/// such grant is tampering.
-fn grant_binding_refusal(loaded: &Loaded<'_>, pin: Option<&TrustPin>) -> Option<Refusal> {
+/// their own key), a signer named in `MURK_TRUSTED_SIGNERS` or an anchor, a
+/// key with a signing-key registry entry (grants never sign), or the loading
+/// key when it is known to be an operator. The first such grant is tampering.
+fn grant_binding_refusal(
+    loaded: &Loaded<'_>,
+    pin: Option<&TrustPin>,
+    external_signers: Option<&TrustedSigners>,
+) -> Option<Refusal> {
     let operator = loaded.operator_key.as_deref().map(canonical_recipient);
     let registry: BTreeSet<String> = loaded
         .registry
@@ -421,6 +425,7 @@ fn grant_binding_refusal(loaded: &Loaded<'_>, pin: Option<&TrustPin>) -> Option<
         let key = canonical_recipient(&grant.pubkey);
         let operator = operator.as_ref() == Some(&key)
             || registry.contains(&key)
+            || external_signers.is_some_and(|e| e.contains_key(&key))
             || pin.is_some_and(|p| {
                 !p.grants.contains(&key)
                     && (p.trusted.contains(&key) || p.ever_trusted.contains(&key))
@@ -473,7 +478,7 @@ fn verdict(
     external_signers: Option<&TrustedSigners>,
     head: &HeadState,
 ) -> Verdict {
-    if let Some(refusal) = grant_binding_refusal(loaded, pin) {
+    if let Some(refusal) = grant_binding_refusal(loaded, pin, external_signers) {
         return Verdict::Refused(refusal);
     }
     let types::SignatureState::Signed { signer, v } = loaded.signature else {
@@ -1196,6 +1201,25 @@ mod tests {
             verdict(&to_loader.loaded(), None, None),
             Verdict::Refused(Refusal::NotYetTrusted { .. })
         ));
+
+        // A runner with no pin that trusts both through MURK_TRUSTED_SIGNERS:
+        // B binds a grant to A and leaves A out of the registry. A is a named
+        // signer there, so this is still tampering.
+        let mut ghost_ci = Case::new(&[A, B], 2, B);
+        ghost_ci.grants.insert(
+            "ghost".into(),
+            types::GrantEntry {
+                pubkey: A.into(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            verdict(&ghost_ci.loaded(), None, Some(&env(&[A, B]))),
+            Verdict::Refused(Refusal::GrantBindsOperator {
+                grant: "ghost".into(),
+                key: A.into()
+            })
+        );
     }
 
     #[test]
