@@ -771,11 +771,12 @@ fn build_meta(
 /// trust pin only the keys this machine pinned are written — an entry the
 /// loaded file claimed but this machine never confirmed (one another signer
 /// was not entitled to vouch for, say) is dropped rather than re-signed —
-/// plus the writer's own (see [`register_signer`]). An entry pinned on another
-/// signer's word is written only while that signer stays a recipient, so a
-/// save that removes them does not vouch for what they added. Without a pin
-/// (trust from `MURK_TRUSTED_SIGNERS`) the loaded entries are carried forward
-/// as they are.
+/// plus the writer's own (see [`register_signer`]). An entry this machine
+/// pinned on another signer's word (`added_by`) is never written: signing it
+/// would vouch for it under the writer's name, so other machines would keep
+/// believing it after its adder is removed. Such a key reaches other machines
+/// through a write by someone who confirmed it. Without a pin (trust from
+/// `MURK_TRUSTED_SIGNERS`) the loaded entries are carried forward as they are.
 pub(crate) fn vouched_registry(
     vault: &types::Vault,
     loaded: &BTreeMap<String, String>,
@@ -800,13 +801,10 @@ pub(crate) fn vouched_registry(
                 .collect()
         },
         |pin| {
-            pin.standing_signers()
-                .into_iter()
-                .filter(|(pk, _)| {
-                    pin.added_by
-                        .get(pk)
-                        .is_none_or(|adder| recipients.contains(adder))
-                })
+            pin.signers
+                .iter()
+                .filter(|(pk, _)| !pin.added_by.contains_key(*pk))
+                .map(|(pk, vk)| (pk.clone(), vk.clone()))
                 .collect()
         },
     );
