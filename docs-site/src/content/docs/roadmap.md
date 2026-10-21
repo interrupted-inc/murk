@@ -29,7 +29,7 @@ adds is validation and stability guarantees. It ships when all of these hold:
   in-repo fuzz run. Planned.
 - **SLSA Build L3 provenance**: up from the current attested (L2) releases.
   Today every GitHub release archive carries Sigstore build provenance, and the
-  crates.io package is attested for releases after 0.12.0 (see
+  crates.io package is attested for 0.13.0 and later (see
   [verifying releases](/security/verifying/)).
 - **Soak**: several months of the current 0.x line in real use with no
   vault-format change and no critical security fix.

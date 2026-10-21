@@ -30,19 +30,38 @@ Once configured, git invokes `murk merge-driver ANCESTOR OURS THEIRS`
 automatically during a merge or rebase that touches `.murk`, instead of
 falling back to a text-based three-way merge on the raw file. It merges
 non-conflicting secret changes (different keys added or changed on each
-side) automatically. It does not decide to vouch for the merged content:
-it leaves the result **unsigned** (`sig: null`), carrying the existing signer
-registry forward. Re-sign it by running any write command (e.g. `murk add`,
+side) automatically, without decrypting any secret value.
+
+If it can resolve your key (`MURK_KEY`, `MURK_KEY_FILE`, or the stored key
+for `.murk`; not in strict or agent mode), it also decrypts the metadata of
+both sides. It merges names, groups, grants, GitHub pins and the signer
+registry, and writes a new MAC. It does not vouch for the merged content:
+it leaves the result **unsigned** (no `sig` field). Without a key it cannot
+rewrite the metadata, so it keeps the metadata from ours. If there are no
+merge conflicts and the merged secrets, recipients, schema or policy differ
+from ours, it exits 1 without writing, and git reports a conflict. If there
+are merge conflicts, it writes the merged result and exits 1, and that result
+may fail the integrity check. Either way, abort the merge
+(`git merge --abort`) and run it again with your key available. The merge
+completes without a key only when the merged secrets, recipients, schema and
+policy equal ours.
+
+Re-sign a merged vault by running any write command (e.g. `murk add`,
 `murk rotate`) with a signing-capable key after reviewing what actually
 changed:
 
+<!-- Re-check against the merged 0.14.0 murk diff output. -->
 ```bash
-murk diff HEAD@{1}   # or whatever ref makes sense for your merge
+murk diff HEAD@{1}           # verified structural and secret value changes
+git diff HEAD@{1} -- .murk   # the raw file
 ```
 
 `murk diff [REF]` shows which secrets changed relative to a git ref
 (defaults to `HEAD`) without printing values, unless you pass
-`--show-values`. Use it to sanity-check a merge before you trust it.
+`--show-values`. It also shows recipients added and removed, signer and
+signing-key changes, and policy, grant and group-member changes. It checks the `REF` revision with the same trust rules
+as the working vault (rollback excepted) and refuses a revision it cannot
+vouch for.
 
 ## SSH keys as recipients
 

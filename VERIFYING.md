@@ -10,7 +10,7 @@ page shows how, per distribution channel.
 | Source: git tag `vX.Y.Z` | The annotated tag (v0.3.1 and later) | Maintainer's SSH signing key | [`git verify-tag`](#release-tag) |
 | GitHub release archives and `SHA256SUMS` | Sigstore build provenance per file | `release.yaml` in this repository | [`gh attestation verify`](#github-release-binaries) |
 | Homebrew tap | The formula pins the SHA-256 of the attested GitHub release archives | (inherits the GitHub release attestation) | `brew` checks the hash; [`gh attestation verify`](#github-release-binaries) on the archive |
-| crates.io: `murk-cli` | Sigstore build provenance for the exact `.crate` file (releases after 0.12.0) | `release.yaml` in this repository | [`gh attestation verify`](#cratesio--murk-cli) on the `.crate` |
+| crates.io: `murk-cli` | Sigstore build provenance for the exact `.crate` file (0.13.0 and later) | `release.yaml` in this repository | [`gh attestation verify`](#cratesio--murk-cli) on the `.crate` |
 | npm: `@interrupted/murk-secrets` | npm registry signatures and Sigstore provenance | `node.yaml` in this repository | [`npm audit signatures`](#npm--interruptedmurk-secrets) |
 | PyPI: `murk-secrets` | PEP 740 Sigstore attestations per wheel and sdist | `python.yaml` in this repository | [`pypi-attestations verify`](#pypi--murk-secrets) |
 
@@ -55,11 +55,13 @@ signed build provenance (`actions/attest-build-provenance`, Sigstore/Fulcio).
 Verify a downloaded artifact of murk 0.12.0 or later:
 
 ```bash
-gh attestation verify murk-<version>-<target>.tar.gz --owner interrupted-sh
+gh attestation verify murk-v<version>-<target>.tar.gz --repo interrupted-sh/murk \
+  --signer-workflow interrupted-sh/murk/.github/workflows/release.yaml
 ```
 
-This confirms the artifact was produced by this repository's release workflow —
-a builder you can inspect, with a signing identity an attacker cannot forge.
+This confirms the artifact was produced by this repository's release workflow.
+`--repo` and `--signer-workflow` pin that identity. `--owner` alone would
+accept an attestation from any repository of the organization.
 
 Releases up to and including 0.11.0 were built before the GitHub organization
 was renamed from `interrupted-inc` to `interrupted-sh`, so their provenance
