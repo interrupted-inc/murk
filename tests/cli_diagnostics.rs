@@ -1078,6 +1078,92 @@ fn keyed_merge_of_schema_only_change_is_clean_and_verifies() {
     assert_integrity_verified(dir.path(), &key);
 }
 
+/// The value of secret `name` on git branch `branch`, read with `key`.
+fn value_on(dir: &Path, key: &str, branch: &str, name: &str) -> String {
+    git(dir, &["checkout", "-q", branch]);
+    let output = murk(dir, key)
+        .args(["get", name, "--vault", "test.murk"])
+        .output()
+        .unwrap();
+    git(dir, &["checkout", "-q", "main"]);
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+/// Merge `theirs` with the key and check that X ends with theirs' value, Z
+/// with ours', and the result verifies.
+fn assert_merge_keeps_theirs_x(dir: &Path, key: &str) {
+    let theirs_x = value_on(dir, key, "theirs", "X");
+    assert_ne!(theirs_x, value_on(dir, key, "main", "X"));
+
+    let output = git_merge_theirs(dir, dir, Some(key));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "merge failed: {stderr}");
+    assert_eq!(
+        value_on(dir, key, "main", "X"),
+        theirs_x,
+        "theirs' change to X was lost"
+    );
+    assert_eq!(value_on(dir, key, "main", "Z"), "v");
+    assert_integrity_verified(dir, key);
+}
+
+#[test]
+fn keyed_merge_keeps_theirs_value_change_when_both_sides_authorize_the_same_recipient() {
+    // Both sides authorize dave, so every ciphertext differs from the ancestor
+    // on both sides. Theirs also changes X; ours adds an unrelated Z.
+    let authorize: &[&str] = &["circle", "authorize", FOREIGN_PK, "--name", "dave"];
+    let (dir, key) = vault_repo(
+        &[&["generate", "X"], &["add", "Y"]],
+        &[authorize, &["add", "X"]],
+        &[authorize, &["add", "Z"]],
+    );
+    assert_merge_keeps_theirs_x(dir.path(), &key);
+}
+
+#[test]
+fn keyed_merge_keeps_theirs_rotation_when_both_sides_revoke_the_same_recipient() {
+    // Both sides revoke carol; theirs rotates X, ours adds Z. X lives in group
+    // `ops`, which carol is not in: a revoke stamps every key carol could read
+    // with a second-precision `revoked_at`, and stamps made in different
+    // seconds would make X's schema conflict before its value is compared.
+    let revoke: &[&str] = &["circle", "revoke", "carol"];
+    let (dir, key) = vault_repo(
+        &[
+            &["circle", "authorize", FOREIGN_PK, "--name", "carol"],
+            &["group", "create", "ops"],
+            &["generate", "X", "--group", "ops"],
+        ],
+        &[revoke, &["rotate", "X", "--generate"]],
+        &[revoke, &["add", "Z"]],
+    );
+    assert_merge_keeps_theirs_x(dir.path(), &key);
+}
+
+#[test]
+fn keyed_merge_conflicts_when_both_sides_re_key_and_change_a_value_differently() {
+    let authorize: &[&str] = &["circle", "authorize", FOREIGN_PK, "--name", "dave"];
+    let (dir, key) = vault_repo(
+        &[&["generate", "X"]],
+        &[authorize, &["add", "X"]],
+        &[authorize, &["rotate", "X", "--generate"]],
+    );
+    let ours_x = value_on(dir.path(), &key, "main", "X");
+
+    let output = git_merge_theirs(dir.path(), dir.path(), Some(&key));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "merge must not succeed: {stderr}");
+    assert!(stderr.contains("secrets.X"), "{stderr}");
+    assert_eq!(unmerged_paths(dir.path()).trim(), "test.murk");
+    // The conflicted file keeps ours' value.
+    let vault: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("test.murk")).unwrap()).unwrap();
+    git(dir.path(), &["checkout", "-q", "main", "--", "test.murk"]);
+    let ours: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("test.murk")).unwrap()).unwrap();
+    assert_eq!(vault["secrets"]["X"], ours["secrets"]["X"]);
+    assert_eq!(value_on(dir.path(), &key, "main", "X"), ours_x);
+}
+
 /// Base for the group tests: `bob` (an outsider key) is a member of group
 /// `ops`, which holds secret `S`.
 const BOB_IN_OPS: &[&[&str]] = &[
