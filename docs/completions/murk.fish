@@ -147,7 +147,7 @@ complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcomm
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from plan" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from exec" -l only -d 'Inject these specific keys (required — agent mode fails closed)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from exec" -l vault -d 'Vault filename' -r
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from exec" -l allow-operator-key -d 'Decrypt with your own stored key from ~/.config/murk/keys. Without this, agent exec needs an explicit MURK_KEY or MURK_KEY_FILE'
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from exec" -l allow-operator-key -d 'Decrypt with a key that is not an agent grant: your own stored key from ~/.config/murk/keys, or a full recipient\'s MURK_KEY or MURK_KEY_FILE. Without this, agent exec needs an agent grant key'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from exec" -l allow-reserved -d 'Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from exec" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l name -d 'Grant name (used to revoke it later)' -r

@@ -223,7 +223,7 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '*--only=[Inject these specific keys (required — agent mode fails closed)]:ONLY:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
-'--allow-operator-key[Decrypt with your own stored key from ~/.config/murk/keys. Without this, agent exec needs an explicit MURK_KEY or MURK_KEY_FILE]' \
+'--allow-operator-key[Decrypt with a key that is not an agent grant\: your own stored key from ~/.config/murk/keys, or a full recipient'\''s MURK_KEY or MURK_KEY_FILE. Without this, agent exec needs an agent grant key]' \
 '--allow-reserved[Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)]' \
 '-h[Print help]' \
 '--help[Print help]' \
