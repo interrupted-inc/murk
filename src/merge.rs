@@ -943,7 +943,7 @@ fn authenticate_inputs(
     let base_groups = check_base(vault_path, base, identity).map_err(|reason| MergeConflict {
         field: "base".into(),
         reason: format!(
-            "the common ancestor failed its authenticity check, so nothing was merged or signed: {reason}"
+            "the common ancestor failed its authenticity check, so the written file holds the merge of both sides' secrets and recipients, keeps ours' meta and has no signature (abort the merge and resolve it): {reason}"
         ),
     })?;
     for (side, vault) in [("ours", ours), ("theirs", theirs)] {
@@ -951,7 +951,7 @@ fn authenticate_inputs(
             MergeConflict {
                 field: side.into(),
                 reason: format!(
-                    "{side} failed its authenticity check, so nothing was merged or signed: {reason}"
+                    "{side} failed its authenticity check, so the written file holds the merge of both sides' secrets and recipients, keeps ours' meta and has no signature (abort the merge and resolve it): {reason}"
                 ),
             }
         })?;
