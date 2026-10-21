@@ -430,7 +430,7 @@ Lists key names, one per line. `--tag` filters by tag (repeatable). `--json` out
 
 ### `murk describe KEY "description" [--example EX] [--tag T]... [--rotate-every DAYS] [--expires DATE] [--vault NAME]`
 
-Sets metadata for a key in the plaintext schema. Does not touch encrypted values. Refused for a key held by a group you are not a member of, since its tags and policy belong to that group's members.
+Sets metadata for a key in the plaintext schema. Does not touch encrypted values. Each call replaces the description and the example (omitting `--example` clears it); `--tag` replaces the tags only when given. Refused for a key held by a group you are not a member of, since its tags and policy belong to that group's members.
 
 `--rotate-every` takes a day count (`90` or `90d`) and `--expires` takes a date (`2026-09-01`) or RFC-3339 timestamp; pass `never` to either to clear it. Both are sticky — a later `describe` that omits the flag leaves the existing value untouched. `doctor` reports keys that are overdue for rotation or past/near their expiry.
 
