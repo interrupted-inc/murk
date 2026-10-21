@@ -91,7 +91,7 @@ pub fn decrypt_vault_values(
             values.insert(key.clone(), value);
         }
         // Private override takes priority.
-        if let Some(encoded) = entry.private.get(&pubkey)
+        if let Some(encoded) = crate::recipients::scoped_entry_for(entry, &pubkey)
             && let Ok(value) = crate::decrypt_value(encoded, identity).and_then(|pt| {
                 crate::plaintext_bytes_to_zeroizing_string(&pt)
                     .map_err(|e| crate::error::MurkError::Secret(e.to_string()))

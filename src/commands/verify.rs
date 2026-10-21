@@ -7,21 +7,16 @@ use murk_cli::types;
 use std::path::Path;
 
 /// Human label for a signer pubkey: its recipient display name, or a truncated
-/// key. Tolerates ssh-ed25519 comment mismatches — the name map may be keyed by
-/// `ssh-ed25519 <blob> comment` while the signer is the comment-stripped form.
+/// key. The name map may be keyed by another spelling of the signer's key (an
+/// SSH comment, an uppercase age key), so names match by canonical key.
 pub(crate) fn signer_display_name(murk: &types::Murk, signer: &str) -> String {
-    if let Some(name) = murk.recipients.get(signer) {
-        return name.clone();
-    }
-    if signer.starts_with("ssh-ed25519 ")
-        && let Some((_, name)) = murk
-            .recipients
-            .iter()
-            .find(|(pk, _)| murk_cli::signing::ssh_ed25519_key_eq(pk, signer))
-    {
-        return name.clone();
-    }
-    murk_cli::truncate_pubkey(signer)
+    murk.recipients
+        .iter()
+        .find(|(pk, _)| murk_cli::same_recipient(pk, signer))
+        .map_or_else(
+            || murk_cli::truncate_pubkey(signer),
+            |(_, name)| name.clone(),
+        )
 }
 
 pub(crate) fn cmd_verify(vault_path: &str) {
@@ -181,6 +176,37 @@ pub(crate) fn cmd_verify(vault_path: &str) {
             ),
             fix: Some("rotate to ed25519 keys and `murk revoke` the old ssh-rsa recipients".into()),
         });
+    }
+
+    for entries in murk_cli::duplicate_recipients(&vault) {
+        findings.push(Finding {
+            category: "recipients",
+            message: format!(
+                "{} is listed {} times as a recipient",
+                murk_cli::truncate_pubkey(entries[0]),
+                entries.len()
+            ),
+            fix: Some(format!(
+                "`murk circle revoke \"{}\"` removes every copy; then re-authorize the key once",
+                murk_cli::canonical_recipient(entries[0])
+            )),
+        });
+    }
+
+    for pk in &vault.recipients {
+        if let Some(why) = murk_cli::crypto::parse_recipient(pk)
+            .ok()
+            .and_then(|r| r.weakness())
+        {
+            findings.push(Finding {
+                category: "recipients",
+                message: format!(
+                    "unsafe recipient {}: {why} — every save refuses until it is removed",
+                    murk_cli::truncate_pubkey(pk)
+                ),
+                fix: Some(format!("`murk circle revoke \"{pk}\"`")),
+            });
+        }
     }
 
     if findings.is_empty() {

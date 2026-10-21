@@ -81,7 +81,11 @@ pub(crate) fn cmd_init(vault_name: &str) {
             Some(sk) => try_or_die(murk_cli::check_init_status(&vault, sk.expose_secret())),
             None => {
                 // No secret key — fall back to simple recipient check.
-                if vault.recipients.contains(&pubkey) {
+                if vault
+                    .recipients
+                    .iter()
+                    .any(|pk| murk_cli::same_recipient(pk, &pubkey))
+                {
                     eprintln!("{} authorized  {}", "◆".magenta(), pubkey.dimmed());
                 } else {
                     eprintln!(

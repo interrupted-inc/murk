@@ -459,9 +459,10 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '--vault=[Vault filename]:VAULT:_default' \
 '--rotate[Rotate the secrets they had access to in the same session]' \
+'--force[Revoke every key of a multi-key GitHub user without confirmation]' \
 '-h[Print help]' \
 '--help[Print help]' \
-':recipient -- Recipient pubkey or display name:_default' \
+':recipient -- Recipient pubkey, display name, or github\:username:_default' \
 && ret=0
 ;;
 (help)
@@ -511,9 +512,10 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '--vault=[Vault filename]:VAULT:_default' \
 '--rotate[Rotate the secrets they had access to in the same session]' \
+'--force[Revoke every key of a multi-key GitHub user without confirmation]' \
 '-h[Print help]' \
 '--help[Print help]' \
-':recipient -- Recipient pubkey or display name:_default' \
+':recipient -- Recipient pubkey, display name, or github\:username:_default' \
 && ret=0
 ;;
 (group)

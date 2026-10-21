@@ -50,6 +50,93 @@ impl std::fmt::Debug for MurkRecipient {
     }
 }
 
+impl std::fmt::Display for MurkRecipient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MurkRecipient::Age(r) => write!(f, "{r}"),
+            MurkRecipient::Ssh(r) => write!(f, "{r}"),
+            MurkRecipient::Plugin(r) => write!(f, "{r}"),
+        }
+    }
+}
+
+impl MurkRecipient {
+    /// Why encrypting to this recipient is unsafe, if it is.
+    ///
+    /// age accepts any 32-byte X25519 `u` and any ssh-ed25519 point, but a
+    /// low-order point makes `age::encrypt` panic ("all-zero esk") and admits
+    /// signature forgery, and a point with a torsion component is an alias
+    /// string for another key. An honestly generated key is always a
+    /// canonical, on-curve point in the prime-order subgroup, so requiring
+    /// exactly that rejects no real key. Plugin and ssh-rsa recipients are not
+    /// curve points and are never weak.
+    pub fn weakness(&self) -> Option<&'static str> {
+        use curve25519_dalek::edwards::CompressedEdwardsY;
+        use curve25519_dalek::montgomery::MontgomeryPoint;
+
+        match self {
+            MurkRecipient::Age(r) => {
+                let Ok((_, data)) = bech32::decode(&r.to_string()) else {
+                    return Some("not a Bech32 X25519 key");
+                };
+                let Ok(u) = <[u8; 32]>::try_from(data.as_slice()) else {
+                    return Some("not a 32-byte X25519 key");
+                };
+                if !is_canonical_field_element(&u) {
+                    return Some("non-canonical X25519 encoding");
+                }
+                match MontgomeryPoint(u).to_edwards(0) {
+                    None => Some("low-order or twist X25519 point (not on the curve)"),
+                    Some(p) if p.is_small_order() || !p.is_torsion_free() => {
+                        Some("low-order or non-prime-order X25519 point")
+                    }
+                    Some(_) => None,
+                }
+            }
+            MurkRecipient::Ssh(r) => {
+                use base64::Engine;
+                // Wire format: string "ssh-ed25519", string <32-byte point>.
+                const PREFIX: &[u8] = b"\0\0\0\x0bssh-ed25519\0\0\0\x20";
+                let line = r.to_string();
+                if !line.starts_with("ssh-ed25519 ") {
+                    return None; // ssh-rsa: not a curve point
+                }
+                // Fail closed: an ssh-ed25519 key we can't decode is unsafe.
+                let point = line
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok())
+                    .and_then(|b| <[u8; 32]>::try_from(b.strip_prefix(PREFIX)?).ok());
+                let Some(point) = point else {
+                    return Some("malformed ssh-ed25519 key");
+                };
+                let compressed = CompressedEdwardsY(point);
+                match compressed.decompress() {
+                    None => Some("ed25519 point is not on the curve"),
+                    Some(p) if p.compress() != compressed => Some("non-canonical ed25519 encoding"),
+                    Some(p) if p.is_small_order() || !p.is_torsion_free() => {
+                        Some("low-order or non-prime-order ed25519 point")
+                    }
+                    Some(_) => None,
+                }
+            }
+            MurkRecipient::Plugin(_) => None,
+        }
+    }
+}
+
+/// Whether 32 little-endian bytes are a field element below p = 2^255 − 19
+/// with the unused top bit clear (the only encoding X25519 keys are generated
+/// in).
+fn is_canonical_field_element(u: &[u8; 32]) -> bool {
+    if u[31] & 0x80 != 0 {
+        return false;
+    }
+    // u >= p only when the top 254 bits are all set and the low byte >= 0xed.
+    let all_high_set = u[31] == 0x7f && u[1..31].iter().all(|&b| b == 0xff);
+    !(all_high_set && u[0] >= 0xed)
+}
+
 /// An identity that can decrypt age-encrypted data.
 ///
 /// Plugin identities (`AGE-PLUGIN-<NAME>-1...`) carry the recipient pubkey
@@ -290,6 +377,16 @@ pub fn parse_identity(input: &str) -> Result<MurkIdentity, CryptoError> {
 /// Plugin recipients are grouped by plugin name and dispatched via
 /// [`RecipientPluginV1`]. Native (age/ssh) recipients pass through directly.
 pub fn encrypt(plaintext: &[u8], recipients: &[MurkRecipient]) -> Result<Vec<u8>, CryptoError> {
+    // age panics on a low-order X25519 point; refuse with an error instead.
+    if let Some((r, why)) = recipients
+        .iter()
+        .find_map(|r| r.weakness().map(|why| (r, why)))
+    {
+        return Err(CryptoError::Encrypt(format!(
+            "refusing to encrypt to unsafe recipient {r}: {why} — revoke it with `murk circle revoke`"
+        )));
+    }
+
     let mut native: Vec<&dyn age::Recipient> = vec![];
     let mut grouped: HashMap<String, Vec<PluginRecipient>> = HashMap::new();
 
@@ -396,6 +493,101 @@ mod tests {
         let secret = identity.to_string();
         let pubkey = identity.to_public().to_string();
         (secret.expose_secret().to_string(), pubkey)
+    }
+
+    /// The five low-order X25519 `u` values (the eight-torsion points' images,
+    /// deduplicated, plus u = p − 1 on the twist), as age recipient strings.
+    pub(crate) const LOW_ORDER_AGE_RECIPIENTS: [&str; 5] = [
+        "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq5cu47z",
+        "age1qyqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqj7vrya",
+        "age1t7wft09r2zxzfvwsk92eeql0tvzyghxytqwgapkcyf8dm5ylz9ts6wm9s8",
+        "age1ur4h5lpmgxu2u9jku0a0r87ydtdqnr0tnsetrlvxvgz3vh6fhqqqzyt4v9",
+        "age1anlllllllllllllllllllllllllllllllllllllllllllllllals4n2t7m",
+    ];
+
+    fn age_recipient_from_u(u: &[u8; 32]) -> String {
+        bech32::encode::<bech32::Bech32>(bech32::Hrp::parse("age").unwrap(), u).unwrap()
+    }
+
+    /// age parses every low-order key, and encrypting to one used to panic.
+    /// murk flags them all and `encrypt` returns an error instead.
+    #[test]
+    fn low_order_age_recipients_are_weak_and_never_encrypted_to() {
+        for pk in LOW_ORDER_AGE_RECIPIENTS {
+            let r = parse_recipient(pk).unwrap_or_else(|e| panic!("{pk}: {e}"));
+            assert!(r.weakness().is_some(), "{pk}");
+            let err = encrypt(b"x", &[r]).unwrap_err().to_string();
+            assert!(err.contains("unsafe recipient"), "{pk}: {err}");
+        }
+    }
+
+    /// A real key's torsion alias (A + T₈) and a non-canonical encoding of a
+    /// low-order point are weak; the real key, and real SSH keys, are not.
+    #[test]
+    fn weakness_rejects_aliases_but_not_real_keys() {
+        use curve25519_dalek::constants::EIGHT_TORSION;
+        use curve25519_dalek::montgomery::MontgomeryPoint;
+
+        let (_, pubkey) = generate_keypair();
+        let real = parse_recipient(&pubkey).unwrap();
+        assert!(real.weakness().is_none());
+        let ssh = parse_recipient(crate::testutil::SSH_ED25519_PK).unwrap();
+        assert!(ssh.weakness().is_none());
+
+        let (_, data) = bech32::decode(&pubkey).unwrap();
+        let u: [u8; 32] = data.try_into().unwrap();
+        let a = MontgomeryPoint(u).to_edwards(0).unwrap();
+        let alias = age_recipient_from_u(&(a + EIGHT_TORSION[1]).to_montgomery().to_bytes());
+        let p_plus_1 = {
+            let mut u = [0xff; 32];
+            u[0] = 0xee;
+            u[31] = 0x7f;
+            u
+        };
+        let mut high_bit = u;
+        high_bit[31] |= 0x80;
+        for weak in [
+            alias,
+            age_recipient_from_u(&p_plus_1),
+            age_recipient_from_u(&high_bit),
+        ] {
+            let r = parse_recipient(&weak).unwrap_or_else(|e| panic!("age parses {weak}: {e}"));
+            assert!(r.weakness().is_some(), "{weak}");
+        }
+    }
+
+    /// A low-order ssh-ed25519 key (the identity point) and a real key's
+    /// torsion alias (A + T₈) are flagged; the real key itself is not.
+    #[test]
+    fn low_order_and_torsion_ssh_ed25519_recipients_are_weak() {
+        use base64::Engine;
+        use curve25519_dalek::constants::EIGHT_TORSION;
+        use curve25519_dalek::edwards::CompressedEdwardsY;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let ssh_pk = |point: &[u8; 32]| {
+            let mut blob = Vec::new();
+            for field in [b"ssh-ed25519".as_slice(), point.as_slice()] {
+                blob.extend(u32::try_from(field.len()).unwrap().to_be_bytes());
+                blob.extend(field);
+            }
+            format!("ssh-ed25519 {}", b64.encode(blob))
+        };
+
+        let real_blob = b64
+            .decode(crate::testutil::SSH_ED25519_PK.split(' ').nth(1).unwrap())
+            .unwrap();
+        let real: [u8; 32] = real_blob[real_blob.len() - 32..].try_into().unwrap();
+        assert_eq!(ssh_pk(&real), crate::testutil::SSH_ED25519_PK);
+        let a = CompressedEdwardsY(real).decompress().unwrap();
+        let alias = (a + EIGHT_TORSION[1]).compress().to_bytes();
+        let mut identity = [0u8; 32];
+        identity[0] = 1;
+
+        for (point, weak) in [(real, false), (alias, true), (identity, true)] {
+            let pk = ssh_pk(&point);
+            let r = parse_recipient(&pk).unwrap_or_else(|e| panic!("{pk}: {e}"));
+            assert_eq!(r.weakness().is_some(), weak, "{pk}");
+        }
     }
 
     #[test]

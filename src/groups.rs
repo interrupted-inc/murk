@@ -14,6 +14,7 @@
 //! and `me` (a personal scoped value, encrypted to the caller only).
 
 use crate::error::MurkError;
+use crate::recipients::same_recipient;
 use crate::types;
 
 /// Destination tier for a secret: where a written value lives and who can
@@ -114,8 +115,8 @@ pub fn resolve_member(
     murk: &types::Murk,
     spec: &str,
 ) -> Result<String, MurkError> {
-    if vault.recipients.iter().any(|pk| pk == spec) {
-        return Ok(spec.to_string());
+    if let Some(pk) = crate::recipients::find_recipient(vault, spec) {
+        return Ok(pk.clone());
     }
     let matched: Vec<&String> = murk
         .recipients
@@ -149,12 +150,12 @@ pub fn add_member(
         .groups
         .get_mut(name)
         .ok_or_else(|| MurkError::Group(format!("group not found: {name}")))?;
-    if !members.iter().any(|pk| pk == operator_pubkey) {
+    if !is_member(members, operator_pubkey) {
         return Err(MurkError::Group(format!(
             "you must be a member of group \"{name}\" to modify it"
         )));
     }
-    if members.iter().any(|pk| pk == member_pubkey) {
+    if is_member(members, member_pubkey) {
         return Ok(false);
     }
     members.push(member_pubkey.to_string());
@@ -174,21 +175,27 @@ pub fn remove_member(
         .groups
         .get_mut(name)
         .ok_or_else(|| MurkError::Group(format!("group not found: {name}")))?;
-    if !members.iter().any(|pk| pk == operator_pubkey) {
+    if !is_member(members, operator_pubkey) {
         return Err(MurkError::Group(format!(
             "you must be a member of group \"{name}\" to modify it"
         )));
     }
-    if !members.iter().any(|pk| pk == member_pubkey) {
+    if !is_member(members, member_pubkey) {
         return Ok(false);
     }
-    if members.len() == 1 {
+    if members.iter().all(|pk| same_recipient(pk, member_pubkey)) {
         return Err(MurkError::Group(format!(
             "cannot remove the last member of group \"{name}\" — delete the group instead"
         )));
     }
-    members.retain(|pk| pk != member_pubkey);
+    members.retain(|pk| !same_recipient(pk, member_pubkey));
     Ok(true)
+}
+
+/// Whether `pubkey` is in `members` under any spelling of the key (a legacy
+/// member entry may carry an SSH comment or be an uppercase age key).
+pub(crate) fn is_member(members: &[String], pubkey: &str) -> bool {
+    members.iter().any(|pk| same_recipient(pk, pubkey))
 }
 
 #[cfg(test)]
@@ -277,5 +284,41 @@ mod tests {
         );
         assert_eq!(resolve_member(&vault, &murk, "alice").unwrap(), "age1alice");
         assert!(resolve_member(&vault, &murk, "nobody").is_err());
+    }
+
+    /// An older murk stored keys as typed, so a group may list its member
+    /// under another spelling (uppercase age, SSH comment) than the identity's
+    /// canonical pubkey. That member can still manage the group and add
+    /// secrets to it, and removing a member removes every spelling.
+    #[test]
+    fn group_membership_matches_legacy_key_spellings() {
+        let alice = "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p";
+        let bob = format!("{} bob@laptop", crate::testutil::SSH_ED25519_PK);
+        let mut murk = empty_murk();
+        murk.groups
+            .insert("ops".into(), vec![alice.to_ascii_uppercase(), bob.clone()]);
+
+        assert!(add_member(&mut murk, "ops", "age1carol", alice).unwrap());
+        assert!(!add_member(&mut murk, "ops", crate::testutil::SSH_ED25519_PK, alice).unwrap());
+        assert!(remove_member(&mut murk, "ops", crate::testutil::SSH_ED25519_PK, alice).unwrap());
+        assert_eq!(
+            murk.groups["ops"],
+            vec![alice.to_ascii_uppercase(), "age1carol".to_string()]
+        );
+
+        let mut vault = empty_vault();
+        crate::add_grouped_secret(
+            &mut vault,
+            &mut murk,
+            "KEY",
+            "v",
+            None,
+            None,
+            "ops",
+            &[],
+            alice,
+        )
+        .unwrap();
+        assert!(murk.grouped["KEY"].contains_key("ops"));
     }
 }

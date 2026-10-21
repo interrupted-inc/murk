@@ -10,7 +10,7 @@ use std::io::{self, IsTerminal};
 use std::path::Path;
 
 pub(crate) fn is_ssh_rsa(key: &str) -> bool {
-    key.starts_with("ssh-rsa ")
+    murk_cli::canonical_recipient(key).starts_with("ssh-rsa ")
 }
 
 /// Abort if any of the given keys are ssh-rsa, unless the user passed
@@ -121,12 +121,16 @@ pub(crate) fn cmd_authorize(
             std::collections::HashMap::new();
 
         for (_, key_string) in &keys {
-            // Skip keys already in the vault.
-            if vault.recipients.contains(key_string) {
+            // Skip keys already in the vault, in any form.
+            if vault
+                .recipients
+                .iter()
+                .any(|pk| murk_cli::same_recipient(pk, key_string))
+            {
                 continue;
             }
 
-            try_or_die(murk_cli::authorize_recipient(
+            let stored = try_or_die(murk_cli::authorize_recipient(
                 &mut vault,
                 &mut current,
                 key_string,
@@ -135,7 +139,7 @@ pub(crate) fn cmd_authorize(
 
             let key_type = murk_cli::github::key_type_label(key_string);
             *type_counts.entry(key_type.to_string()).or_default() += 1;
-            authorized.push((*key_string).clone());
+            authorized.push(stored);
             added += 1;
         }
 
@@ -197,32 +201,24 @@ pub(crate) fn cmd_authorize(
             die(&format_args!("cannot read {}: {e}", path.display()), 1);
         });
         // Take first non-empty line (pub files may have trailing newlines).
+        // authorize_recipient drops the comment field and stores `type base64`.
         let key_line = contents
             .lines()
             .find(|l| !l.trim().is_empty())
             .unwrap_or_else(|| die(&format_args!("empty key file: {}", path.display()), 1));
-        // Strip the comment field if present (ssh-type base64 comment).
-        let key_string = {
-            let parts: Vec<&str> = key_line.splitn(3, ' ').collect();
-            if parts.len() >= 2 {
-                format!("{} {}", parts[0], parts[1])
-            } else {
-                key_line.to_string()
-            }
-        };
 
-        reject_rsa_keys(std::slice::from_ref(&key_string), allow_ssh_rsa);
-        try_or_die(murk_cli::authorize_recipient(
+        reject_rsa_keys(&[key_line.trim().to_string()], allow_ssh_rsa);
+        let stored = try_or_die(murk_cli::authorize_recipient(
             &mut vault,
             &mut current,
-            &key_string,
+            key_line,
             name,
         ));
 
         add_recipients_to_group(
             &mut current,
             group,
-            std::slice::from_ref(&key_string),
+            std::slice::from_ref(&stored),
             &operator_pubkey,
         );
 
@@ -235,7 +231,7 @@ pub(crate) fn cmd_authorize(
     } else {
         // Raw pubkey (age or SSH).
         reject_rsa_keys(&[pubkey.to_string()], allow_ssh_rsa);
-        try_or_die(murk_cli::authorize_recipient(
+        let stored = try_or_die(murk_cli::authorize_recipient(
             &mut vault,
             &mut current,
             pubkey,
@@ -245,22 +241,61 @@ pub(crate) fn cmd_authorize(
         add_recipients_to_group(
             &mut current,
             group,
-            std::slice::from_ref(&pubkey.to_string()),
+            std::slice::from_ref(&stored),
             &operator_pubkey,
         );
 
         save_vault(vault_path, &mut vault, &original, &current);
 
-        let display = name.unwrap_or(pubkey);
+        let display = current.recipients.get(&stored).unwrap_or(&stored);
         eprintln!("{} authorized {}", "◆".magenta(), display.bold());
     }
 }
 
-pub(crate) fn cmd_revoke(recipient: &str, rotate: bool, vault_path: &str) {
-    let (mut vault, murk, _identity, _lock) = load_vault_locked(vault_path);
+pub(crate) fn cmd_revoke(recipient: &str, rotate: bool, force: bool, vault_path: &str) {
+    let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
     let original = murk.clone();
     let mut current = murk;
+    let operator_pubkey = identity.pubkey_string().unwrap_or_else(|e| die(&e, 1));
 
+    let targets = try_or_die(murk_cli::revoke_targets(&vault, &current, recipient));
+
+    // Revoking yourself would leave a vault you can neither read nor sign, so
+    // every other member would see a signature downgrade. Refuse before any
+    // prompt or write, whether the key was named directly or through a name.
+    if targets
+        .iter()
+        .flatten()
+        .any(|pk| murk_cli::same_recipient(pk, &operator_pubkey))
+    {
+        die(
+            &format_args!(
+                "you can't revoke your own key — ask another recipient to run `murk circle revoke \"{operator_pubkey}\"`"
+            ),
+            1,
+        );
+    }
+
+    // A GitHub user's name covers several keys: show them and confirm before
+    // revoking them all.
+    if targets.len() > 1 && !force {
+        eprintln!("{} {recipient} has {} keys:", "◆".magenta(), targets.len());
+        for entries in &targets {
+            eprintln!("  {} {}", "▸".dimmed(), entries[0]);
+        }
+        if !io::stdin().is_terminal() {
+            die(
+                &format_args!(
+                    "refusing to revoke {} keys without confirmation — pass --force to revoke them all",
+                    targets.len()
+                ),
+                1,
+            );
+        }
+        if !confirm(&format!("revoke all {} keys?", targets.len())) {
+            die(&"aborted", 1);
+        }
+    }
     let result = try_or_die(murk_cli::revoke_recipient(
         &mut vault,
         &mut current,

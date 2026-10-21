@@ -104,21 +104,6 @@ pub fn ed25519_verifying_key_b64_from_ssh_recipient(recipient: &str) -> Option<S
     Some(BASE64.encode(pk.as_ref()))
 }
 
-/// Whether two strings name the same ssh-ed25519 key, ignoring any trailing
-/// comment. Both must be `ssh-ed25519 <base64> [comment]`; only the key type and
-/// base64 blob are compared. Needed because recipients may be stored with a
-/// comment while an identity's `pubkey_string()` drops it.
-pub fn ssh_ed25519_key_eq(a: &str, b: &str) -> bool {
-    fn key_blob(s: &str) -> Option<&str> {
-        let mut it = s.split_whitespace();
-        (it.next()? == "ssh-ed25519").then(|| it.next()).flatten()
-    }
-    match (key_blob(a), key_blob(b)) {
-        (Some(x), Some(y)) => x == y,
-        _ => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,17 +209,5 @@ mod tests {
         assert!(ed25519_signing_key_from_openssh("not a key").is_none());
         assert!(ed25519_verifying_key_b64_from_ssh_recipient("ssh-rsa AAAAB3xyz").is_none());
         assert!(ed25519_verifying_key_b64_from_ssh_recipient("garbage").is_none());
-    }
-
-    #[test]
-    fn ssh_key_eq_ignores_comment_requires_ed25519() {
-        let with_comment = format!("{SSH_ED25519_PK} comment@host");
-        assert!(ssh_ed25519_key_eq(SSH_ED25519_PK, &with_comment));
-        assert!(!ssh_ed25519_key_eq(
-            SSH_ED25519_PK,
-            "ssh-ed25519 AAAADIFFERENTKEYBLOB"
-        ));
-        // Non-ed25519 never matches, even if identical.
-        assert!(!ssh_ed25519_key_eq("ssh-rsa AAAA", "ssh-rsa AAAA"));
     }
 }

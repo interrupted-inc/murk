@@ -708,11 +708,12 @@ Remove a recipient from the vault
 
 ###### **Arguments:**
 
-* `<RECIPIENT>` — Recipient pubkey or display name
+* `<RECIPIENT>` — Recipient pubkey, display name, or github:username
 
 ###### **Options:**
 
 * `--rotate` — Rotate the secrets they had access to in the same session
+* `--force` — Revoke every key of a multi-key GitHub user without confirmation
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`

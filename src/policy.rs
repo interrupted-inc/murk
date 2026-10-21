@@ -57,7 +57,9 @@ pub fn check_agent_keys(vault: &Vault, keys: &[String]) -> Result<(), MurkError>
 /// it decrypts as an agent (`lib::decrypt_vault`). An operator (or any plain
 /// recipient) is not in `grants`, so this returns `false` for them.
 pub fn is_agent_identity(murk: &Murk, pubkey: &str) -> bool {
-    murk.grants.values().any(|g| g.pubkey == pubkey)
+    murk.grants
+        .values()
+        .any(|g| crate::recipients::same_recipient(&g.pubkey, pubkey))
 }
 
 /// Apply the agent guardrails when the caller is a granted agent, or when the
@@ -88,7 +90,11 @@ pub fn enforce_agent_policy(
     // expired duplicate must not hide behind a valid one. Fail closed on any.
     let mut is_agent = false;
     let now = chrono::Utc::now();
-    for (name, grant) in murk.grants.iter().filter(|(_, g)| g.pubkey == pubkey) {
+    for (name, grant) in murk
+        .grants
+        .iter()
+        .filter(|(_, g)| crate::recipients::same_recipient(&g.pubkey, pubkey))
+    {
         is_agent = true;
         check_grant_expiry(name, grant, now)?;
     }

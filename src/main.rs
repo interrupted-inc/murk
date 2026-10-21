@@ -198,9 +198,15 @@ fn run() {
         Command::Revoke {
             recipient,
             rotate,
+            force,
             vault,
         } => {
-            cmd_revoke(&recipient, rotate, &murk_cli::resolve_vault_path(&vault));
+            cmd_revoke(
+                &recipient,
+                rotate,
+                force,
+                &murk_cli::resolve_vault_path(&vault),
+            );
         }
         Command::Circle {
             sub: None,
@@ -231,10 +237,16 @@ fn run() {
                 Some(CircleCommand::Revoke {
                     recipient,
                     rotate,
+                    force,
                     vault,
                 }),
             ..
-        } => cmd_revoke(&recipient, rotate, &murk_cli::resolve_vault_path(&vault)),
+        } => cmd_revoke(
+            &recipient,
+            rotate,
+            force,
+            &murk_cli::resolve_vault_path(&vault),
+        ),
         Command::Group { sub } => cmd_group(sub),
         Command::Policy { sub } => cmd_policy(sub),
         Command::Env { vault } => cmd_env(&vault),

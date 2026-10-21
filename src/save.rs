@@ -49,11 +49,19 @@ fn rebuild_private(
         .map(|e| e.private.clone())
         .unwrap_or_default();
 
+    // Loading files a legacy alias spelling (SSH comment, uppercase age key)
+    // under the canonical pubkey, so a rewrite or removal replaces every
+    // spelling of that key, never leaving a stale copy behind.
+    let drop_spellings = |scoped: &mut BTreeMap<String, String>, pk: &str| {
+        scoped.retain(|k, _| !crate::recipients::same_recipient(k, pk));
+    };
+
     if let Some(key_scoped) = current.private.get(key) {
         for (pk, val) in key_scoped {
             let original_val = original.private.get(key).and_then(|m| m.get(pk));
             if original_val != Some(val) {
                 let recipient = crypto::parse_recipient(pk)?;
+                drop_spellings(&mut scoped, pk);
                 scoped.insert(pk.clone(), encrypt_value(val.as_bytes(), &[recipient])?);
             }
         }
@@ -63,7 +71,7 @@ fn rebuild_private(
         for pk in orig_key_scoped.keys() {
             let still_present = current.private.get(key).is_some_and(|m| m.contains_key(pk));
             if !still_present {
-                scoped.remove(pk);
+                drop_spellings(&mut scoped, pk);
             }
         }
     }
@@ -161,6 +169,16 @@ pub fn save_vault(
     // The full recipient set encrypts the meta blob, so every recipient —
     // including agent grants — can verify integrity and read group/grant state.
     let recipients = parse_recipients(&vault.recipients)?;
+    // age panics when encrypting to a low-order point, and an unchanged save
+    // may not encrypt at all, so check up front: never write to such a key.
+    if let Some((r, why)) = recipients
+        .iter()
+        .find_map(|r| r.weakness().map(|why| (r, why)))
+    {
+        return Err(MurkError::Recipient(format!(
+            "refusing to save: recipient {r} is unsafe ({why}) — revoke it first with `murk circle revoke \"{r}\"`"
+        )));
+    }
 
     // Agent grant pubkeys are deliberately excluded from the shared "everyone"
     // layer: a granted agent must read only the scoped values granted to it, not
@@ -290,7 +308,7 @@ fn build_meta(vault_path: &str, vault: &types::Vault, current: &types::Murk) -> 
     // be a current recipient) but shouldn't linger. Prune BEFORE signing so the
     // signed message matches the stored `signers`. (ssh-ed25519 signers are never
     // registered, so only age entries are affected.)
-    signers.retain(|pk, _| vault.recipients.iter().any(|r| r == pk));
+    signers.retain(|pk, _| crate::recipients::find_recipient(vault, pk).is_some());
     let sig = signing_identity(vault_path).and_then(|identity| {
         sign_vault(
             vault,
@@ -406,6 +424,113 @@ mod tests {
         ));
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// An older murk stored age keys as typed, so a signer's own header entry
+    /// may be uppercase while its identity's pubkey is lowercase. The signature
+    /// still verifies and the signer keeps its registry entry, so the vault
+    /// loads (and can be repaired or revoked from).
+    #[test]
+    fn signed_vault_with_uppercase_signer_header_loads() {
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let home = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        let (secret, pubkey) = generate_keypair();
+        let upper = pubkey.to_ascii_uppercase();
+        let recipient = make_recipient(&pubkey);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.murk");
+        let ps = path.to_str().unwrap();
+
+        let mut vault = signed_test_vault(&upper, &recipient);
+        let original = types::Murk {
+            values: HashMap::from([("API_KEY".into(), crate::testutil::secret("REAL"))]),
+            recipients: HashMap::from([(upper.clone(), "alice".to_string())]),
+            ..Default::default()
+        };
+        unsafe { std::env::set_var("MURK_KEY", &secret) };
+        unsafe { std::env::remove_var("MURK_KEY_FILE") };
+        let saved = save_vault(ps, &mut vault, &original, &original);
+        let loaded = load_vault(ps).map(|(_, murk, _)| murk);
+        unsafe { std::env::remove_var("MURK_KEY") };
+        match prev_home {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+
+        saved.unwrap();
+        let murk = loaded.unwrap();
+        assert!(murk.signers.contains_key(&pubkey));
+        assert!(matches!(
+            murk.signature,
+            types::SignatureState::Signed { signer, .. } if signer == pubkey
+        ));
+    }
+
+    /// A `me` override written by an older murk under another spelling of the
+    /// owner's key (here uppercase age) is still the owner's: it loads under
+    /// their canonical pubkey, and rewriting or removing it replaces that
+    /// spelling rather than leaving a stale, still-decryptable copy.
+    #[test]
+    fn own_override_keyed_by_a_legacy_spelling_loads_and_is_replaced() {
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let home = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", home.path()) };
+        unsafe { std::env::remove_var("MURK_KEY") };
+        unsafe { std::env::remove_var("MURK_KEY_FILE") };
+
+        let (sk, pubkey) = generate_keypair();
+        let upper = pubkey.to_ascii_uppercase();
+        let identity = make_identity(&sk);
+        let dir = tempfile::tempdir().unwrap();
+        let ps = dir.path().join("test.murk");
+        let ps = ps.to_str().unwrap();
+
+        let mut vault = signed_test_vault(&upper, &make_recipient(&pubkey));
+        let empty = types::Murk::default();
+        let legacy = types::Murk {
+            values: HashMap::from([("API_KEY".into(), secret("shared"))]),
+            private: HashMap::from([(
+                "API_KEY".into(),
+                HashMap::from([(upper.clone(), secret("mine"))]),
+            )]),
+            ..Default::default()
+        };
+        let results = (|| {
+            save_vault(ps, &mut vault, &empty, &legacy)?;
+            let loaded = decrypt_vault(&vault, &identity)?;
+            let mut changed = loaded.clone();
+            changed
+                .private
+                .get_mut("API_KEY")
+                .unwrap()
+                .insert(pubkey.clone(), secret("new"));
+            save_vault(ps, &mut vault, &loaded, &changed)?;
+            let after_change: Vec<String> =
+                vault.secrets["API_KEY"].private.keys().cloned().collect();
+            let reloaded = decrypt_vault(&vault, &identity)?;
+            let mut removed = reloaded.clone();
+            removed.private.remove("API_KEY");
+            save_vault(ps, &mut vault, &reloaded, &removed)?;
+            Ok::<_, MurkError>((loaded, after_change, reloaded))
+        })();
+        match prev_home {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+
+        let (loaded, after_change, reloaded) = results.unwrap();
+        assert_eq!(loaded.private["API_KEY"][&pubkey].as_str(), "mine");
+        assert_eq!(after_change, vec![pubkey.clone()]);
+        assert_eq!(reloaded.private["API_KEY"][&pubkey].as_str(), "new");
+        assert!(vault.secrets["API_KEY"].private.is_empty());
     }
 
     #[test]

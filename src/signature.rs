@@ -98,18 +98,11 @@ pub(crate) fn sign_vault(
     })
 }
 
-/// Whether `signer` names a current recipient. ssh-ed25519 signers are matched
-/// ignoring any comment on the stored recipient (a recipient may be stored as
-/// `ssh-ed25519 <b64> user@host` while `signer` is the comment-stripped form).
+/// Whether `signer` names a current recipient, in any spelling of its key (a
+/// recipient may be stored as `ssh-ed25519 <b64> user@host`, or as an uppercase
+/// age key, while `signer` is the identity's canonical pubkey).
 fn signer_is_recipient(vault: &types::Vault, signer: &str) -> bool {
-    if signer.starts_with("ssh-ed25519 ") {
-        vault
-            .recipients
-            .iter()
-            .any(|r| signing::ssh_ed25519_key_eq(r, signer))
-    } else {
-        vault.recipients.iter().any(|r| r == signer)
-    }
+    crate::recipients::find_recipient(vault, signer).is_some()
 }
 
 /// Verify a vault signature. Returns `true` only when the signed-view version is

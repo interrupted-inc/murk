@@ -87,8 +87,9 @@ pub use init::{DiscoveredKey, InitStatus, check_init_status, create_vault, disco
 pub use merge::{MergeDriverOutput, run_merge_driver};
 pub use policy::{check_agent_keys, enforce_agent_policy, is_agent_identity, is_agent_key_allowed};
 pub use recipients::{
-    RecipientEntry, RevokeResult, authorize_recipient, format_recipient_lines, key_type_label,
-    list_recipients, revoke_recipient, truncate_pubkey,
+    RecipientEntry, RevokeResult, authorize_recipient, canonical_recipient, duplicate_recipients,
+    format_recipient_lines, key_type_label, list_recipients, revoke_recipient, revoke_targets,
+    same_recipient, truncate_pubkey,
 };
 pub use secrets::{
     EXPIRY_WARN_DAYS, RotationIssue, add_grouped_secret, add_secret, describe_key, get_secret,

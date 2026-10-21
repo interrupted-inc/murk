@@ -71,7 +71,7 @@ pub fn add_grouped_secret(
         .groups
         .get(group)
         .ok_or_else(|| MurkError::Group(format!("group not found: {group}")))?;
-    if !members.iter().any(|pk| pk == operator_pubkey) {
+    if !crate::groups::is_member(members, operator_pubkey) {
         return Err(MurkError::Group(format!(
             "you must be a member of group \"{group}\" to add secrets to it"
         )));

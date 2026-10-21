@@ -347,6 +347,7 @@ set edit:completion:arg-completer[murk] = {|@words|
         &'murk;circle;revoke'= {
             cand --vault 'Vault filename'
             cand --rotate 'Rotate the secrets they had access to in the same session'
+            cand --force 'Revoke every key of a multi-key GitHub user without confirmation'
             cand -h 'Print help'
             cand --help 'Print help'
         }
@@ -372,6 +373,7 @@ set edit:completion:arg-completer[murk] = {|@words|
         &'murk;revoke'= {
             cand --vault 'Vault filename'
             cand --rotate 'Rotate the secrets they had access to in the same session'
+            cand --force 'Revoke every key of a multi-key GitHub user without confirmation'
             cand -h 'Print help'
             cand --help 'Print help'
         }

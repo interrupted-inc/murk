@@ -329,11 +329,14 @@ pub enum Command {
     /// Remove a recipient from the vault
     #[command(hide = true)]
     Revoke {
-        /// Recipient pubkey or display name
+        /// Recipient pubkey, display name, or github:username
         recipient: String,
         /// Rotate the secrets they had access to in the same session
         #[arg(long)]
         rotate: bool,
+        /// Revoke every key of a multi-key GitHub user without confirmation
+        #[arg(long)]
+        force: bool,
         /// Vault filename
         #[arg(long, env = "MURK_VAULT", default_value = ".murk")]
         vault: String,
@@ -597,11 +600,14 @@ pub enum CircleCommand {
 
     /// Remove a recipient from the vault
     Revoke {
-        /// Recipient pubkey or display name
+        /// Recipient pubkey, display name, or github:username
         recipient: String,
         /// Rotate the secrets they had access to in the same session
         #[arg(long)]
         rotate: bool,
+        /// Revoke every key of a multi-key GitHub user without confirmation
+        #[arg(long)]
+        force: bool,
         /// Vault filename
         #[arg(long, env = "MURK_VAULT", default_value = ".murk")]
         vault: String,

@@ -183,18 +183,9 @@ fn resolve_meta_state(
 
 /// Whether `pubkey` names one of the vault's public header recipients. SSH
 /// entries may be stored with a trailing comment while `pubkey_string()` drops
-/// it, so ssh keys compare by key type and blob only.
+/// it, so this compares canonical forms.
 fn is_listed_recipient(vault: &types::Vault, pubkey: &str) -> bool {
-    fn ssh_head(s: &str) -> Option<(&str, &str)> {
-        let mut it = s.split_whitespace();
-        match (it.next(), it.next()) {
-            (Some(kind), Some(blob)) if kind.starts_with("ssh-") => Some((kind, blob)),
-            _ => None,
-        }
-    }
-    vault.recipients.iter().any(|r| {
-        r == pubkey || matches!((ssh_head(r), ssh_head(pubkey)), (Some(a), Some(b)) if a == b)
-    })
+    crate::recipients::find_recipient(vault, pubkey).is_some()
 }
 
 /// Decrypt a vault using the given identity. Verifies integrity, decrypts all
@@ -235,7 +226,10 @@ pub fn decrypt_vault(
     // state (the MCP server, bindings) re-check per read in `enforce_agent_policy`.
     let mut is_agent = false;
     let now = chrono::Utc::now();
-    for (name, grant) in grants.iter().filter(|(_, g)| g.pubkey == pubkey) {
+    for (name, grant) in grants
+        .iter()
+        .filter(|(_, g)| crate::recipients::same_recipient(&g.pubkey, &pubkey))
+    {
         is_agent = true;
         policy::check_grant_expiry(name, grant, now)?;
     }
@@ -260,10 +254,13 @@ pub fn decrypt_vault(
         values.insert(key.clone(), value);
     }
 
-    // Decrypt our private (per-recipient) overrides — the `me` tier.
+    // Decrypt our private (per-recipient) overrides — the `me` tier. An older
+    // murk may have keyed ours by another spelling of our key (an SSH comment,
+    // an uppercase age key), so match by canonical key; the value is filed
+    // under our canonical pubkey either way.
     let mut private: HashMap<String, HashMap<String, Zeroizing<String>>> = HashMap::new();
     for (key, entry) in &vault.secrets {
-        if let Some(encoded) = entry.private.get(&pubkey)
+        if let Some(encoded) = crate::recipients::scoped_entry_for(entry, &pubkey)
             && let Ok(value) = decrypt_value(encoded, identity).and_then(|pt| {
                 plaintext_bytes_to_zeroizing_string(&pt)
                     .map_err(|e| MurkError::Secret(e.to_string()))

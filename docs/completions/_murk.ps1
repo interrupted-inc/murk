@@ -399,6 +399,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
         'murk;circle;revoke' {
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('--rotate', '--rotate', [CompletionResultType]::ParameterName, 'Rotate the secrets they had access to in the same session')
+            [CompletionResult]::new('--force', '--force', [CompletionResultType]::ParameterName, 'Revoke every key of a multi-key GitHub user without confirmation')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -430,6 +431,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
         'murk;revoke' {
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('--rotate', '--rotate', [CompletionResultType]::ParameterName, 'Rotate the secrets they had access to in the same session')
+            [CompletionResult]::new('--force', '--force', [CompletionResultType]::ParameterName, 'Revoke every key of a multi-key GitHub user without confirmation')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break

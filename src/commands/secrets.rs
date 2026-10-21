@@ -568,7 +568,7 @@ pub(crate) fn cmd_get(key: &str, vault_path: &str) {
     let out_of_scope = murk
         .grants
         .values()
-        .any(|g| g.pubkey == pubkey && !g.scope.iter().any(|k| k == key));
+        .any(|g| murk_cli::same_recipient(&g.pubkey, &pubkey) && !g.scope.iter().any(|k| k == key));
     if out_of_scope && vault.schema.contains_key(key) {
         die(
             &format_args!("{} is outside this grant's scope", key.bold()),
@@ -750,10 +750,16 @@ pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vau
     if let SecretTier::Group(name) = &tier {
         match current.groups.get(name) {
             None => die(&format_args!("group not found: {name}"), 1),
-            Some(members) if !members.contains(&pubkey) => die(
-                &format_args!("you must be a member of group \"{name}\" to edit it"),
-                1,
-            ),
+            Some(members)
+                if !members
+                    .iter()
+                    .any(|pk| murk_cli::same_recipient(pk, &pubkey)) =>
+            {
+                die(
+                    &format_args!("you must be a member of group \"{name}\" to edit it"),
+                    1,
+                )
+            }
             Some(_) => {}
         }
     }
