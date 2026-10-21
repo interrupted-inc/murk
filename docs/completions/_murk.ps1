@@ -32,7 +32,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             [CompletionResult]::new('rotate', 'rotate', [CompletionResultType]::ParameterValue, 'Rotate secrets with new values')
             [CompletionResult]::new('rm', 'rm', [CompletionResultType]::ParameterValue, 'Remove a secret')
             [CompletionResult]::new('get', 'get', [CompletionResultType]::ParameterValue, 'Get a single decrypted value')
-            [CompletionResult]::new('edit', 'edit', [CompletionResultType]::ParameterValue, 'Edit secrets in $EDITOR')
+            [CompletionResult]::new('edit', 'edit', [CompletionResultType]::ParameterValue, 'Edit secrets in $EDITOR (experimental)')
             [CompletionResult]::new('ls', 'ls', [CompletionResultType]::ParameterValue, 'List all key names')
             [CompletionResult]::new('export', 'export', [CompletionResultType]::ParameterValue, 'Export all secrets as shell export statements')
             [CompletionResult]::new('import', 'import', [CompletionResultType]::ParameterValue, 'Import secrets from a .env file')
@@ -40,20 +40,20 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             [CompletionResult]::new('info', 'info', [CompletionResultType]::ParameterValue, 'Show public schema and key info')
             [CompletionResult]::new('skeleton', 'skeleton', [CompletionResultType]::ParameterValue, 'Export schema-only vault with no secrets or recipients')
             [CompletionResult]::new('exec', 'exec', [CompletionResultType]::ParameterValue, 'Run a command with secrets injected as environment variables')
-            [CompletionResult]::new('agent', 'agent', [CompletionResultType]::ParameterValue, 'Give AI agents scoped, time-limited access to secrets')
-            [CompletionResult]::new('mcp', 'mcp', [CompletionResultType]::ParameterValue, 'Run an MCP (Model Context Protocol) stdio server for AI agents')
-            [CompletionResult]::new('policy', 'policy', [CompletionResultType]::ParameterValue, 'Manage the agent access policy')
+            [CompletionResult]::new('agent', 'agent', [CompletionResultType]::ParameterValue, 'Give AI agents scoped, time-limited access to secrets (experimental)')
+            [CompletionResult]::new('mcp', 'mcp', [CompletionResultType]::ParameterValue, 'Run an MCP (Model Context Protocol) stdio server for AI agents (experimental)')
+            [CompletionResult]::new('policy', 'policy', [CompletionResultType]::ParameterValue, 'Manage the agent access policy (experimental)')
             [CompletionResult]::new('circle', 'circle', [CompletionResultType]::ParameterValue, 'Manage recipients')
             [CompletionResult]::new('authorize', 'authorize', [CompletionResultType]::ParameterValue, 'Add a recipient to the vault')
             [CompletionResult]::new('revoke', 'revoke', [CompletionResultType]::ParameterValue, 'Remove a recipient from the vault')
-            [CompletionResult]::new('group', 'group', [CompletionResultType]::ParameterValue, 'Manage recipient groups')
+            [CompletionResult]::new('group', 'group', [CompletionResultType]::ParameterValue, 'Manage recipient groups (experimental)')
             [CompletionResult]::new('verify', 'verify', [CompletionResultType]::ParameterValue, 'Verify vault integrity without exporting secrets')
             [CompletionResult]::new('trust', 'trust', [CompletionResultType]::ParameterValue, 'Review who signed the vault and what changed, then trust it on this machine')
             [CompletionResult]::new('doctor', 'doctor', [CompletionResultType]::ParameterValue, 'Check the surrounding repo for hygiene issues')
             [CompletionResult]::new('scan', 'scan', [CompletionResultType]::ParameterValue, 'Scan files for leaked secret values')
-            [CompletionResult]::new('diff', 'diff', [CompletionResultType]::ParameterValue, 'Show secret and access changes vs a git ref')
-            [CompletionResult]::new('setup-merge-driver', 'setup-merge-driver', [CompletionResultType]::ParameterValue, 'Configure git to use murk''s merge driver for .murk files')
-            [CompletionResult]::new('merge-driver', 'merge-driver', [CompletionResultType]::ParameterValue, 'Git merge driver for .murk vault files (called by git)')
+            [CompletionResult]::new('diff', 'diff', [CompletionResultType]::ParameterValue, 'Show secret and access changes vs a git ref (experimental)')
+            [CompletionResult]::new('setup-merge-driver', 'setup-merge-driver', [CompletionResultType]::ParameterValue, 'Configure git to use murk''s merge driver for .murk files (experimental)')
+            [CompletionResult]::new('merge-driver', 'merge-driver', [CompletionResultType]::ParameterValue, 'Git merge driver for .murk vault files (called by git; experimental)')
             [CompletionResult]::new('completion', 'completion', [CompletionResultType]::ParameterValue, 'Generate or install shell completions')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
@@ -84,7 +84,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
         'murk;add' {
             [CompletionResult]::new('--desc', '--desc', [CompletionResultType]::ParameterName, 'Description for this key')
             [CompletionResult]::new('--example', '--example', [CompletionResultType]::ParameterName, 'Example value')
-            [CompletionResult]::new('--group', '--group', [CompletionResultType]::ParameterName, 'Who can read it: a group name, `everyone`, or `me`. Omit to keep an existing key''s tier; a new key is shared with everyone')
+            [CompletionResult]::new('--group', '--group', [CompletionResultType]::ParameterName, 'Who can read it: a group name (experimental), `everyone`, or `me`. Omit to keep an existing key''s tier; a new key is shared with everyone')
             [CompletionResult]::new('--tag', '--tag', [CompletionResultType]::ParameterName, 'Tag for grouping (repeatable)')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('--scoped', '--scoped', [CompletionResultType]::ParameterName, 'Deprecated alias for `--group me`')
@@ -96,7 +96,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             [CompletionResult]::new('--length', '--length', [CompletionResultType]::ParameterName, 'Length in bytes')
             [CompletionResult]::new('--desc', '--desc', [CompletionResultType]::ParameterName, 'Description for this key')
             [CompletionResult]::new('--example', '--example', [CompletionResultType]::ParameterName, 'Example value')
-            [CompletionResult]::new('--group', '--group', [CompletionResultType]::ParameterName, 'Who can read it: a group name, `everyone`, or `me`. Omit to keep an existing key''s tier; a new key is shared with everyone')
+            [CompletionResult]::new('--group', '--group', [CompletionResultType]::ParameterName, 'Who can read it: a group name (experimental), `everyone`, or `me`. Omit to keep an existing key''s tier; a new key is shared with everyone')
             [CompletionResult]::new('--tag', '--tag', [CompletionResultType]::ParameterName, 'Tag for grouping (repeatable)')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('--hex', '--hex', [CompletionResultType]::ParameterName, 'Encode the value as hex instead of URL-safe base64')
@@ -130,7 +130,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             break
         }
         'murk;edit' {
-            [CompletionResult]::new('--group', '--group', [CompletionResultType]::ParameterName, 'Edit values for this group instead of shared secrets')
+            [CompletionResult]::new('--group', '--group', [CompletionResultType]::ParameterName, 'Edit values for this group instead of shared secrets (experimental)')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('--scoped', '--scoped', [CompletionResultType]::ParameterName, 'Edit scoped overrides instead of shared secrets')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
@@ -155,7 +155,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             break
         }
         'murk;import' {
-            [CompletionResult]::new('--group', '--group', [CompletionResultType]::ParameterName, 'Assign imported secrets to this group (`everyone`, `me`, or a group name). Omit to keep each existing key''s tier; new keys are shared with everyone')
+            [CompletionResult]::new('--group', '--group', [CompletionResultType]::ParameterName, 'Assign imported secrets to this group (`everyone`, `me`, or a group name, which is experimental). Omit to keep each existing key''s tier; new keys are shared with everyone')
             [CompletionResult]::new('--example', '--example', [CompletionResultType]::ParameterName, 'Example value applied to every imported key')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('--force', '--force', [CompletionResultType]::ParameterName, 'Overwrite existing secrets. Without it, import stops if any key already exists')
@@ -202,14 +202,14 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
         'murk;agent' {
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
-            [CompletionResult]::new('plan', 'plan', [CompletionResultType]::ParameterValue, 'Emit schema-only context safe to paste into an AI agent prompt')
-            [CompletionResult]::new('exec', 'exec', [CompletionResultType]::ParameterValue, 'Run a command with strict agent-safe defaults (keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires --only, masks injected values in the output)')
-            [CompletionResult]::new('grant', 'grant', [CompletionResultType]::ParameterValue, 'Mint a scoped ephemeral key that can read only the named secrets')
-            [CompletionResult]::new('init', 'init', [CompletionResultType]::ParameterValue, 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely')
-            [CompletionResult]::new('ls', 'ls', [CompletionResultType]::ParameterValue, 'List active agent grants and their TTLs')
-            [CompletionResult]::new('revoke', 'revoke', [CompletionResultType]::ParameterValue, 'Revoke an agent grant')
-            [CompletionResult]::new('connect', 'connect', [CompletionResultType]::ParameterValue, 'Add `murk mcp` to an AI client''s MCP config and mint a scoped grant for it')
-            [CompletionResult]::new('disconnect', 'disconnect', [CompletionResultType]::ParameterValue, 'Remove murk''s entry from an AI editor''s MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys')
+            [CompletionResult]::new('plan', 'plan', [CompletionResultType]::ParameterValue, 'Emit schema-only context safe to paste into an AI agent prompt (experimental)')
+            [CompletionResult]::new('exec', 'exec', [CompletionResultType]::ParameterValue, 'Run a command with strict agent-safe defaults (experimental; keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires --only, masks injected values in the output)')
+            [CompletionResult]::new('grant', 'grant', [CompletionResultType]::ParameterValue, 'Mint a scoped ephemeral key that can read only the named secrets (experimental)')
+            [CompletionResult]::new('init', 'init', [CompletionResultType]::ParameterValue, 'One-shot onboarding (experimental): optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely')
+            [CompletionResult]::new('ls', 'ls', [CompletionResultType]::ParameterValue, 'List active agent grants and their TTLs (experimental)')
+            [CompletionResult]::new('revoke', 'revoke', [CompletionResultType]::ParameterValue, 'Revoke an agent grant (experimental)')
+            [CompletionResult]::new('connect', 'connect', [CompletionResultType]::ParameterValue, 'Add `murk mcp` to an AI client''s MCP config and mint a scoped grant for it (experimental)')
+            [CompletionResult]::new('disconnect', 'disconnect', [CompletionResultType]::ParameterValue, 'Remove murk''s entry from an AI editor''s MCP config (experimental). No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
@@ -291,14 +291,14 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             break
         }
         'murk;agent;help' {
-            [CompletionResult]::new('plan', 'plan', [CompletionResultType]::ParameterValue, 'Emit schema-only context safe to paste into an AI agent prompt')
-            [CompletionResult]::new('exec', 'exec', [CompletionResultType]::ParameterValue, 'Run a command with strict agent-safe defaults (keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires --only, masks injected values in the output)')
-            [CompletionResult]::new('grant', 'grant', [CompletionResultType]::ParameterValue, 'Mint a scoped ephemeral key that can read only the named secrets')
-            [CompletionResult]::new('init', 'init', [CompletionResultType]::ParameterValue, 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely')
-            [CompletionResult]::new('ls', 'ls', [CompletionResultType]::ParameterValue, 'List active agent grants and their TTLs')
-            [CompletionResult]::new('revoke', 'revoke', [CompletionResultType]::ParameterValue, 'Revoke an agent grant')
-            [CompletionResult]::new('connect', 'connect', [CompletionResultType]::ParameterValue, 'Add `murk mcp` to an AI client''s MCP config and mint a scoped grant for it')
-            [CompletionResult]::new('disconnect', 'disconnect', [CompletionResultType]::ParameterValue, 'Remove murk''s entry from an AI editor''s MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys')
+            [CompletionResult]::new('plan', 'plan', [CompletionResultType]::ParameterValue, 'Emit schema-only context safe to paste into an AI agent prompt (experimental)')
+            [CompletionResult]::new('exec', 'exec', [CompletionResultType]::ParameterValue, 'Run a command with strict agent-safe defaults (experimental; keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires --only, masks injected values in the output)')
+            [CompletionResult]::new('grant', 'grant', [CompletionResultType]::ParameterValue, 'Mint a scoped ephemeral key that can read only the named secrets (experimental)')
+            [CompletionResult]::new('init', 'init', [CompletionResultType]::ParameterValue, 'One-shot onboarding (experimental): optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely')
+            [CompletionResult]::new('ls', 'ls', [CompletionResultType]::ParameterValue, 'List active agent grants and their TTLs (experimental)')
+            [CompletionResult]::new('revoke', 'revoke', [CompletionResultType]::ParameterValue, 'Revoke an agent grant (experimental)')
+            [CompletionResult]::new('connect', 'connect', [CompletionResultType]::ParameterValue, 'Add `murk mcp` to an AI client''s MCP config and mint a scoped grant for it (experimental)')
+            [CompletionResult]::new('disconnect', 'disconnect', [CompletionResultType]::ParameterValue, 'Remove murk''s entry from an AI editor''s MCP config (experimental). No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
@@ -396,7 +396,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
         }
         'murk;circle;authorize' {
             [CompletionResult]::new('--name', '--name', [CompletionResultType]::ParameterName, 'Display name for this recipient')
-            [CompletionResult]::new('--group', '--group', [CompletionResultType]::ParameterName, 'Also add the new recipient to this group')
+            [CompletionResult]::new('--group', '--group', [CompletionResultType]::ParameterName, 'Also add the new recipient to this group (experimental)')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('--force', '--force', [CompletionResultType]::ParameterName, 'Accept changed GitHub keys. Without it, authorize stops when a user''s keys differ from the pinned set')
             [CompletionResult]::new('--allow-ssh-rsa', '--allow-ssh-rsa', [CompletionResultType]::ParameterName, 'Allow ssh-rsa keys. They are refused or skipped by default, so prefer ed25519')
@@ -593,7 +593,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             [CompletionResult]::new('rotate', 'rotate', [CompletionResultType]::ParameterValue, 'Rotate secrets with new values')
             [CompletionResult]::new('rm', 'rm', [CompletionResultType]::ParameterValue, 'Remove a secret')
             [CompletionResult]::new('get', 'get', [CompletionResultType]::ParameterValue, 'Get a single decrypted value')
-            [CompletionResult]::new('edit', 'edit', [CompletionResultType]::ParameterValue, 'Edit secrets in $EDITOR')
+            [CompletionResult]::new('edit', 'edit', [CompletionResultType]::ParameterValue, 'Edit secrets in $EDITOR (experimental)')
             [CompletionResult]::new('ls', 'ls', [CompletionResultType]::ParameterValue, 'List all key names')
             [CompletionResult]::new('export', 'export', [CompletionResultType]::ParameterValue, 'Export all secrets as shell export statements')
             [CompletionResult]::new('import', 'import', [CompletionResultType]::ParameterValue, 'Import secrets from a .env file')
@@ -601,20 +601,20 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             [CompletionResult]::new('info', 'info', [CompletionResultType]::ParameterValue, 'Show public schema and key info')
             [CompletionResult]::new('skeleton', 'skeleton', [CompletionResultType]::ParameterValue, 'Export schema-only vault with no secrets or recipients')
             [CompletionResult]::new('exec', 'exec', [CompletionResultType]::ParameterValue, 'Run a command with secrets injected as environment variables')
-            [CompletionResult]::new('agent', 'agent', [CompletionResultType]::ParameterValue, 'Give AI agents scoped, time-limited access to secrets')
-            [CompletionResult]::new('mcp', 'mcp', [CompletionResultType]::ParameterValue, 'Run an MCP (Model Context Protocol) stdio server for AI agents')
-            [CompletionResult]::new('policy', 'policy', [CompletionResultType]::ParameterValue, 'Manage the agent access policy')
+            [CompletionResult]::new('agent', 'agent', [CompletionResultType]::ParameterValue, 'Give AI agents scoped, time-limited access to secrets (experimental)')
+            [CompletionResult]::new('mcp', 'mcp', [CompletionResultType]::ParameterValue, 'Run an MCP (Model Context Protocol) stdio server for AI agents (experimental)')
+            [CompletionResult]::new('policy', 'policy', [CompletionResultType]::ParameterValue, 'Manage the agent access policy (experimental)')
             [CompletionResult]::new('circle', 'circle', [CompletionResultType]::ParameterValue, 'Manage recipients')
             [CompletionResult]::new('authorize', 'authorize', [CompletionResultType]::ParameterValue, 'Add a recipient to the vault')
             [CompletionResult]::new('revoke', 'revoke', [CompletionResultType]::ParameterValue, 'Remove a recipient from the vault')
-            [CompletionResult]::new('group', 'group', [CompletionResultType]::ParameterValue, 'Manage recipient groups')
+            [CompletionResult]::new('group', 'group', [CompletionResultType]::ParameterValue, 'Manage recipient groups (experimental)')
             [CompletionResult]::new('verify', 'verify', [CompletionResultType]::ParameterValue, 'Verify vault integrity without exporting secrets')
             [CompletionResult]::new('trust', 'trust', [CompletionResultType]::ParameterValue, 'Review who signed the vault and what changed, then trust it on this machine')
             [CompletionResult]::new('doctor', 'doctor', [CompletionResultType]::ParameterValue, 'Check the surrounding repo for hygiene issues')
             [CompletionResult]::new('scan', 'scan', [CompletionResultType]::ParameterValue, 'Scan files for leaked secret values')
-            [CompletionResult]::new('diff', 'diff', [CompletionResultType]::ParameterValue, 'Show secret and access changes vs a git ref')
-            [CompletionResult]::new('setup-merge-driver', 'setup-merge-driver', [CompletionResultType]::ParameterValue, 'Configure git to use murk''s merge driver for .murk files')
-            [CompletionResult]::new('merge-driver', 'merge-driver', [CompletionResultType]::ParameterValue, 'Git merge driver for .murk vault files (called by git)')
+            [CompletionResult]::new('diff', 'diff', [CompletionResultType]::ParameterValue, 'Show secret and access changes vs a git ref (experimental)')
+            [CompletionResult]::new('setup-merge-driver', 'setup-merge-driver', [CompletionResultType]::ParameterValue, 'Configure git to use murk''s merge driver for .murk files (experimental)')
+            [CompletionResult]::new('merge-driver', 'merge-driver', [CompletionResultType]::ParameterValue, 'Git merge driver for .murk vault files (called by git; experimental)')
             [CompletionResult]::new('completion', 'completion', [CompletionResultType]::ParameterValue, 'Generate or install shell completions')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
@@ -671,14 +671,14 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             break
         }
         'murk;help;agent' {
-            [CompletionResult]::new('plan', 'plan', [CompletionResultType]::ParameterValue, 'Emit schema-only context safe to paste into an AI agent prompt')
-            [CompletionResult]::new('exec', 'exec', [CompletionResultType]::ParameterValue, 'Run a command with strict agent-safe defaults (keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires --only, masks injected values in the output)')
-            [CompletionResult]::new('grant', 'grant', [CompletionResultType]::ParameterValue, 'Mint a scoped ephemeral key that can read only the named secrets')
-            [CompletionResult]::new('init', 'init', [CompletionResultType]::ParameterValue, 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely')
-            [CompletionResult]::new('ls', 'ls', [CompletionResultType]::ParameterValue, 'List active agent grants and their TTLs')
-            [CompletionResult]::new('revoke', 'revoke', [CompletionResultType]::ParameterValue, 'Revoke an agent grant')
-            [CompletionResult]::new('connect', 'connect', [CompletionResultType]::ParameterValue, 'Add `murk mcp` to an AI client''s MCP config and mint a scoped grant for it')
-            [CompletionResult]::new('disconnect', 'disconnect', [CompletionResultType]::ParameterValue, 'Remove murk''s entry from an AI editor''s MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys')
+            [CompletionResult]::new('plan', 'plan', [CompletionResultType]::ParameterValue, 'Emit schema-only context safe to paste into an AI agent prompt (experimental)')
+            [CompletionResult]::new('exec', 'exec', [CompletionResultType]::ParameterValue, 'Run a command with strict agent-safe defaults (experimental; keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires --only, masks injected values in the output)')
+            [CompletionResult]::new('grant', 'grant', [CompletionResultType]::ParameterValue, 'Mint a scoped ephemeral key that can read only the named secrets (experimental)')
+            [CompletionResult]::new('init', 'init', [CompletionResultType]::ParameterValue, 'One-shot onboarding (experimental): optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely')
+            [CompletionResult]::new('ls', 'ls', [CompletionResultType]::ParameterValue, 'List active agent grants and their TTLs (experimental)')
+            [CompletionResult]::new('revoke', 'revoke', [CompletionResultType]::ParameterValue, 'Revoke an agent grant (experimental)')
+            [CompletionResult]::new('connect', 'connect', [CompletionResultType]::ParameterValue, 'Add `murk mcp` to an AI client''s MCP config and mint a scoped grant for it (experimental)')
+            [CompletionResult]::new('disconnect', 'disconnect', [CompletionResultType]::ParameterValue, 'Remove murk''s entry from an AI editor''s MCP config (experimental). No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys')
             break
         }
         'murk;help;agent;plan' {

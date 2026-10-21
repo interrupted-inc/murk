@@ -15,6 +15,8 @@ murk stores encrypted secrets in a single `.murk` file designed to be committed 
 > murk is pre-1.0 and has not been independently audited. Use good judgment with production secrets.
 >
 > Deciding whether to adopt it? See [Is murk right for you?](https://murk.interrupted.sh/suitability/) for a suitability matrix and the 0.x release contract.
+>
+> Some features are experimental: they work, but their behavior or format may still change. [Feature status](https://murk.interrupted.sh/reference/feature-status/) lists what is core and what is experimental.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/interrupted-sh/murk/demo/hero.gif" alt="murk demo" width="900">
@@ -255,14 +257,14 @@ export MURK_KEY_FILE=~/.config/murk/restored.key
 
 | Command | Description |
 |---------|-------------|
-| `murk add KEY [--group me]` | Add or update a secret (prompts for value) |
+| `murk add KEY [--group me]` | Add or update a secret (prompts for value; `--group NAME` is experimental) |
 | `murk generate KEY [--hex] [--length N]` | Generate a random secret and store it |
 | `murk rotate KEY [--generate]` | Rotate a secret with a new value |
 | `murk rotate --all` | Rotate all secrets (prompts for each) |
 | `murk rotate --list [--json]` | List keys needing rotation (overdue, expiring, post-revoke) |
 | `murk rm KEY` | Remove a secret |
 | `murk get KEY` | Print a single decrypted value |
-| `murk edit [KEY] [--group me]` | Edit secrets in `$EDITOR` |
+| `murk edit [KEY] [--group me]` | Edit secrets in `$EDITOR` (experimental) |
 | `murk ls` | List key names |
 | `murk export` | Print all secrets as shell exports |
 | `murk import [FILE]` | Import secrets from a .env file |
@@ -285,28 +287,28 @@ export MURK_KEY_FILE=~/.config/murk/restored.key
 
 | Command | Description |
 |---------|-------------|
-| `murk agent plan` | Emit schema-only context for AI agent prompts (no key required) |
-| `murk agent exec --only KEY -- CMD...` | Run a command with strict agent-safe defaults (clean env, no `MURK_KEY`, injected values masked in the output; refuses an auto-discovered personal key unless you pass `--allow-operator-key`, so supply a grant key) |
-| `murk agent grant --name NAME --only KEY [--ttl DUR]` | Mint a short-lived scoped key that reads only the named secrets (`--ttl` defaults to 2h; reads fail closed after the TTL — revoke to close it for good) |
-| `murk agent init --name NAME --only KEY` | Set the agent allow-list, mint a grant and print how to run the agent |
-| `murk agent connect [CLIENT] --only KEY` | Wire `murk mcp` into an AI editor's MCP config with a scoped grant |
-| `murk agent disconnect [CLIENT] [--rotate]` | Remove murk from an AI editor's MCP config (`--rotate` also revokes the grant and rotates its keys) |
-| `murk agent ls` | List active agent grants and their TTLs |
-| `murk agent revoke NAME [--rotate]` | Revoke a grant (`--rotate` also rotates the secrets it could read) |
-| `murk mcp [--allow-exec]` | Run a stdio MCP server exposing scoped secrets to AI agents (needs a grant + `MURK_AGENT`) |
-| `murk policy show\|set\|clear` | Manage the agent allow-list (tags agents may receive) |
+| `murk agent plan` | Emit schema-only context for AI agent prompts (no key required) (experimental) |
+| `murk agent exec --only KEY -- CMD...` | Run a command with strict agent-safe defaults (clean env, no `MURK_KEY`, injected values masked in the output; refuses an auto-discovered personal key unless you pass `--allow-operator-key`, so supply a grant key) (experimental) |
+| `murk agent grant --name NAME --only KEY [--ttl DUR]` | Mint a short-lived scoped key that reads only the named secrets (`--ttl` defaults to 2h; reads fail closed after the TTL — revoke to close it for good) (experimental) |
+| `murk agent init --name NAME --only KEY` | Set the agent allow-list, mint a grant and print how to run the agent (experimental) |
+| `murk agent connect [CLIENT] --only KEY` | Wire `murk mcp` into an AI editor's MCP config with a scoped grant (experimental) |
+| `murk agent disconnect [CLIENT] [--rotate]` | Remove murk from an AI editor's MCP config (`--rotate` also revokes the grant and rotates its keys) (experimental) |
+| `murk agent ls` | List active agent grants and their TTLs (experimental) |
+| `murk agent revoke NAME [--rotate]` | Revoke a grant (`--rotate` also rotates the secrets it could read) (experimental) |
+| `murk mcp [--allow-exec]` | Run a stdio MCP server exposing scoped secrets to AI agents (needs a grant + `MURK_AGENT`) (experimental) |
+| `murk policy show\|set\|clear` | Manage the agent allow-list (tags agents may receive) (experimental) |
 
 **Recipients & groups**
 
 | Command | Description |
 |---------|-------------|
 | `murk circle` | List recipients |
-| `murk circle authorize PUBKEY [--name NAME] [--allow-ssh-rsa]` | Add a recipient (age key, `ssh:path`, or `github:user`) |
+| `murk circle authorize PUBKEY [--name NAME] [--allow-ssh-rsa]` | Add a recipient (age key, `ssh:path`, or `github:user`; `github:` is experimental) |
 | `murk circle revoke RECIPIENT` | Remove a recipient |
-| `murk group create NAME` | Create a named recipient group (encrypt a secret to a subset) |
-| `murk group ls` | List groups and their members |
-| `murk group add NAME --member M` | Add a member to a group (you must be a member of it) |
-| `murk group rm NAME [--member M]` | Remove a member, or delete the group (you must be a member of it) |
+| `murk group create NAME` | Create a named recipient group (encrypt a secret to a subset) (experimental) |
+| `murk group ls` | List groups and their members (experimental) |
+| `murk group add NAME --member M` | Add a member to a group (you must be a member of it) (experimental) |
+| `murk group rm NAME [--member M]` | Remove a member, or delete the group (you must be a member of it) (experimental) |
 
 **Checks**
 
@@ -321,8 +323,8 @@ export MURK_KEY_FILE=~/.config/murk/restored.key
 
 | Command | Description |
 |---------|-------------|
-| `murk diff [REF] [--show-values] [--json]` | Show secret, recipient and signer changes since a git ref. Prints key names only, unless you pass `--show-values`. The old revision is verified before anything in it is shown |
-| `murk setup-merge-driver` | Configure git to merge `.murk` vaults: the driver verifies both sides and signs the result |
+| `murk diff [REF] [--show-values] [--json]` | Show secret, recipient and signer changes since a git ref. Prints key names only, unless you pass `--show-values`. The old revision is verified before anything in it is shown (experimental) |
+| `murk setup-merge-driver` | Configure git to merge `.murk` vaults: the driver verifies both sides and signs the result (experimental) |
 
 **Shell**
 
@@ -419,6 +421,8 @@ See [THREAT_MODEL.md](THREAT_MODEL.md) for the full threat model.
 **AI agents** — if you're using murk with AI coding agents, see [docs/ai-agents.md](docs/ai-agents.md) for safe patterns.
 
 ## Hardware identities
+
+> Hardware and plugin identities are experimental. See [Feature status](https://murk.interrupted.sh/reference/feature-status/).
 
 By default `murk init` generates a raw age key and stores it under `~/.config/murk/keys/`. That's fine for development, but the key lives on disk as plaintext — anyone with read access to the file can decrypt everything.
 

@@ -2,11 +2,11 @@
 .el .ds Aq '
 .TH murk-agent 1  "agent " 
 .SH NAME
-murk\-agent \- Give AI agents scoped, time\-limited access to secrets
+murk\-agent \- Give AI agents scoped, time\-limited access to secrets (experimental)
 .SH SYNOPSIS
 \fBmurk agent\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
 .SH DESCRIPTION
-Give AI agents scoped, time\-limited access to secrets
+Give AI agents scoped, time\-limited access to secrets (experimental)
 .SH OPTIONS
 .TP
 \fB\-h\fR, \fB\-\-help\fR
@@ -14,28 +14,28 @@ Print help
 .SH SUBCOMMANDS
 .TP
 murk\-agent\-plan(1)
-Emit schema\-only context safe to paste into an AI agent prompt
+Emit schema\-only context safe to paste into an AI agent prompt (experimental)
 .TP
 murk\-agent\-exec(1)
-Run a command with strict agent\-safe defaults (keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires \-\-only, masks injected values in the output)
+Run a command with strict agent\-safe defaults (experimental; keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires \-\-only, masks injected values in the output)
 .TP
 murk\-agent\-grant(1)
-Mint a scoped ephemeral key that can read only the named secrets
+Mint a scoped ephemeral key that can read only the named secrets (experimental)
 .TP
 murk\-agent\-init(1)
-One\-shot onboarding: optionally set the agent allow\-list, mint a scoped grant, and print how to run the agent safely
+One\-shot onboarding (experimental): optionally set the agent allow\-list, mint a scoped grant, and print how to run the agent safely
 .TP
 murk\-agent\-ls(1)
-List active agent grants and their TTLs
+List active agent grants and their TTLs (experimental)
 .TP
 murk\-agent\-revoke(1)
-Revoke an agent grant
+Revoke an agent grant (experimental)
 .TP
 murk\-agent\-connect(1)
-Add `murk mcp` to an AI client\*(Aqs MCP config and mint a scoped grant for it
+Add `murk mcp` to an AI client\*(Aqs MCP config and mint a scoped grant for it (experimental)
 .TP
 murk\-agent\-disconnect(1)
-Remove murk\*(Aqs entry from an AI editor\*(Aqs MCP config. No CLIENT clears every configured editor. `\-\-rotate` also revokes the grant and rotates its keys
+Remove murk\*(Aqs entry from an AI editor\*(Aqs MCP config (experimental). No CLIENT clears every configured editor. `\-\-rotate` also revokes the grant and rotates its keys
 .TP
 murk\-agent\-help(1)
 Print this message or the help of the given subcommand(s)

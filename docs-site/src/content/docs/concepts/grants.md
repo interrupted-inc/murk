@@ -5,6 +5,10 @@ sidebar:
   order: 4
 ---
 
+:::caution[Experimental]
+Grants are new and their access rules changed in 0.13.1. A running `murk mcp` server does not see a revocation or policy change until it restarts, so restart it after you revoke. Treat grants as a guardrail, not a security boundary.
+:::
+
 A grant gives an agent or tool read access to a fixed set of secrets, for a limited time, through a key that is deliberately not yours.
 
 ## A grant key isn't your key

@@ -5,6 +5,10 @@ sidebar:
   order: 3
 ---
 
+:::caution[Experimental]
+Signatures, the trust pin and `murk trust` are new in 0.14 and experimental: their rules and file layout may still change in a minor release. Keys that cannot sign (hardware and `ssh-rsa`) leave a vault unsigned, and an age signer's key is trusted only once `murk trust` has confirmed it. See [Feature status](/reference/feature-status/).
+:::
+
 Three mechanisms protect a `.murk` file: the **recipient list** controls who can decrypt it, the **integrity MAC and signature** detect whether it's been tampered with, and a **trust check** on each machine decides whether the signer is someone that machine accepts.
 
 ## Adding and removing recipients

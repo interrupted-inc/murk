@@ -125,6 +125,10 @@ can do. See [Hardware-backed keys](/guides/hardware-keys/#mixed-teams).
 
 ## Authorizing via GitHub
 
+:::caution[Experimental]
+GitHub recipients (`github:`) are experimental. murk fetches GitHub keys over the network and trusts them on first use, so confirm the keys belong to the person you mean.
+:::
+
 Instead of exchanging age keys, you can authorize by GitHub username:
 
 ```bash
@@ -173,7 +177,7 @@ every spelling of a key. An `age1...` key with a non-canonical encoding (the
 high bit of its value set) is refused outright, so it can't serve as an alias
 that outlives a revocation.
 
-To share a secret with only part of the team, use a group:
+To share a secret with only part of the team, use a group (experimental):
 
 ```bash
 murk group create ops

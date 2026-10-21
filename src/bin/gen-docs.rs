@@ -96,7 +96,7 @@ const ENV_GROUPS: &[(&str, &[EnvVar])] = &[
         &[
             EnvVar {
                 name: "MURK_STRICT",
-                summary: "Fails closed rather than let a secret touch disk. On for any value except unset, empty, `0`, `false`, `no` and `off`, so a typo turns it on. Disables the automatic key lookup under `~/.config/murk/keys`, needs RAM-backed scratch for `murk edit`, refuses to write `get`, `export` or `murk diff --show-values` output to a regular file, and refuses a result that no key checked.",
+                summary: "Experimental. Fails closed rather than let a secret touch disk. On for any value except unset, empty, `0`, `false`, `no` and `off`, so a typo turns it on. Disables the automatic key lookup under `~/.config/murk/keys`, needs RAM-backed scratch for `murk edit`, refuses to write `get`, `export` or `murk diff --show-values` output to a regular file, and refuses a result that no key checked.",
             },
             EnvVar {
                 name: "MURK_AGENT",

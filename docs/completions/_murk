@@ -57,7 +57,7 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '--desc=[Description for this key]:DESC:_default' \
 '--example=[Example value]:EXAMPLE:_default' \
-'--group=[Who can read it\: a group name, \`everyone\`, or \`me\`. Omit to keep an existing key'\''s tier; a new key is shared with everyone]:GROUP:_default' \
+'--group=[Who can read it\: a group name (experimental), \`everyone\`, or \`me\`. Omit to keep an existing key'\''s tier; a new key is shared with everyone]:GROUP:_default' \
 '*--tag=[Tag for grouping (repeatable)]:TAG:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '--scoped[Deprecated alias for \`--group me\`]' \
@@ -71,7 +71,7 @@ _arguments "${_arguments_options[@]}" : \
 '--length=[Length in bytes]:LENGTH:_default' \
 '--desc=[Description for this key]:DESC:_default' \
 '--example=[Example value]:EXAMPLE:_default' \
-'--group=[Who can read it\: a group name, \`everyone\`, or \`me\`. Omit to keep an existing key'\''s tier; a new key is shared with everyone]:GROUP:_default' \
+'--group=[Who can read it\: a group name (experimental), \`everyone\`, or \`me\`. Omit to keep an existing key'\''s tier; a new key is shared with everyone]:GROUP:_default' \
 '*--tag=[Tag for grouping (repeatable)]:TAG:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '--hex[Encode the value as hex instead of URL-safe base64]' \
@@ -113,7 +113,7 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (edit)
 _arguments "${_arguments_options[@]}" : \
-'--group=[Edit values for this group instead of shared secrets]:GROUP:_default' \
+'--group=[Edit values for this group instead of shared secrets (experimental)]:GROUP:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '--scoped[Edit scoped overrides instead of shared secrets]' \
 '-h[Print help]' \
@@ -142,7 +142,7 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (import)
 _arguments "${_arguments_options[@]}" : \
-'--group=[Assign imported secrets to this group (\`everyone\`, \`me\`, or a group name). Omit to keep each existing key'\''s tier; new keys are shared with everyone]:GROUP:_default' \
+'--group=[Assign imported secrets to this group (\`everyone\`, \`me\`, or a group name, which is experimental). Omit to keep each existing key'\''s tier; new keys are shared with everyone]:GROUP:_default' \
 '--example=[Example value applied to every imported key]:EXAMPLE:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '--force[Overwrite existing secrets. Without it, import stops if any key already exists]' \
@@ -453,13 +453,13 @@ _arguments "${_arguments_options[@]}" : \
             (authorize)
 _arguments "${_arguments_options[@]}" : \
 '--name=[Display name for this recipient]:NAME:_default' \
-'--group=[Also add the new recipient to this group]:GROUP:_default' \
+'--group=[Also add the new recipient to this group (experimental)]:GROUP:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '--force[Accept changed GitHub keys. Without it, authorize stops when a user'\''s keys differ from the pinned set]' \
 '--allow-ssh-rsa[Allow ssh-rsa keys. They are refused or skipped by default, so prefer ed25519]' \
 '-h[Print help]' \
 '--help[Print help]' \
-':pubkey -- Public key (age1...), ssh\:path, ssh\: (default ~/.ssh/id_ed25519.pub), or github\:username:_default' \
+':pubkey -- Public key (age1...), ssh\:path, ssh\: (default ~/.ssh/id_ed25519.pub), or github\:username (experimental):_default' \
 && ret=0
 ;;
 (revoke)
@@ -513,7 +513,7 @@ _arguments "${_arguments_options[@]}" : \
 '--allow-ssh-rsa[Allow ssh-rsa keys. They are refused or skipped by default, so prefer ed25519]' \
 '-h[Print help]' \
 '--help[Print help]' \
-':pubkey -- Public key (age1...), ssh\:path, ssh\: (default ~/.ssh/id_ed25519.pub), or github\:username:_default' \
+':pubkey -- Public key (age1...), ssh\:path, ssh\: (default ~/.ssh/id_ed25519.pub), or github\:username (experimental):_default' \
 && ret=0
 ;;
 (revoke)
@@ -1033,7 +1033,7 @@ _murk_commands() {
 'rotate:Rotate secrets with new values' \
 'rm:Remove a secret' \
 'get:Get a single decrypted value' \
-'edit:Edit secrets in \$EDITOR' \
+'edit:Edit secrets in \$EDITOR (experimental)' \
 'ls:List all key names' \
 'export:Export all secrets as shell export statements' \
 'import:Import secrets from a .env file' \
@@ -1041,20 +1041,20 @@ _murk_commands() {
 'info:Show public schema and key info' \
 'skeleton:Export schema-only vault with no secrets or recipients' \
 'exec:Run a command with secrets injected as environment variables' \
-'agent:Give AI agents scoped, time-limited access to secrets' \
-'mcp:Run an MCP (Model Context Protocol) stdio server for AI agents' \
-'policy:Manage the agent access policy' \
+'agent:Give AI agents scoped, time-limited access to secrets (experimental)' \
+'mcp:Run an MCP (Model Context Protocol) stdio server for AI agents (experimental)' \
+'policy:Manage the agent access policy (experimental)' \
 'circle:Manage recipients' \
 'authorize:Add a recipient to the vault' \
 'revoke:Remove a recipient from the vault' \
-'group:Manage recipient groups' \
+'group:Manage recipient groups (experimental)' \
 'verify:Verify vault integrity without exporting secrets' \
 'trust:Review who signed the vault and what changed, then trust it on this machine' \
 'doctor:Check the surrounding repo for hygiene issues' \
 'scan:Scan files for leaked secret values' \
-'diff:Show secret and access changes vs a git ref' \
-'setup-merge-driver:Configure git to use murk'\''s merge driver for .murk files' \
-'merge-driver:Git merge driver for .murk vault files (called by git)' \
+'diff:Show secret and access changes vs a git ref (experimental)' \
+'setup-merge-driver:Configure git to use murk'\''s merge driver for .murk files (experimental)' \
+'merge-driver:Git merge driver for .murk vault files (called by git; experimental)' \
 'completion:Generate or install shell completions' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
@@ -1068,14 +1068,14 @@ _murk__subcmd__add_commands() {
 (( $+functions[_murk__subcmd__agent_commands] )) ||
 _murk__subcmd__agent_commands() {
     local commands; commands=(
-'plan:Emit schema-only context safe to paste into an AI agent prompt' \
-'exec:Run a command with strict agent-safe defaults (keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires --only, masks injected values in the output)' \
-'grant:Mint a scoped ephemeral key that can read only the named secrets' \
-'init:One-shot onboarding\: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely' \
-'ls:List active agent grants and their TTLs' \
-'revoke:Revoke an agent grant' \
-'connect:Add \`murk mcp\` to an AI client'\''s MCP config and mint a scoped grant for it' \
-'disconnect:Remove murk'\''s entry from an AI editor'\''s MCP config. No CLIENT clears every configured editor. \`--rotate\` also revokes the grant and rotates its keys' \
+'plan:Emit schema-only context safe to paste into an AI agent prompt (experimental)' \
+'exec:Run a command with strict agent-safe defaults (experimental; keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires --only, masks injected values in the output)' \
+'grant:Mint a scoped ephemeral key that can read only the named secrets (experimental)' \
+'init:One-shot onboarding (experimental)\: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely' \
+'ls:List active agent grants and their TTLs (experimental)' \
+'revoke:Revoke an agent grant (experimental)' \
+'connect:Add \`murk mcp\` to an AI client'\''s MCP config and mint a scoped grant for it (experimental)' \
+'disconnect:Remove murk'\''s entry from an AI editor'\''s MCP config (experimental). No CLIENT clears every configured editor. \`--rotate\` also revokes the grant and rotates its keys' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
     _describe -t commands 'murk agent commands' commands "$@"
@@ -1103,14 +1103,14 @@ _murk__subcmd__agent__subcmd__grant_commands() {
 (( $+functions[_murk__subcmd__agent__subcmd__help_commands] )) ||
 _murk__subcmd__agent__subcmd__help_commands() {
     local commands; commands=(
-'plan:Emit schema-only context safe to paste into an AI agent prompt' \
-'exec:Run a command with strict agent-safe defaults (keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires --only, masks injected values in the output)' \
-'grant:Mint a scoped ephemeral key that can read only the named secrets' \
-'init:One-shot onboarding\: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely' \
-'ls:List active agent grants and their TTLs' \
-'revoke:Revoke an agent grant' \
-'connect:Add \`murk mcp\` to an AI client'\''s MCP config and mint a scoped grant for it' \
-'disconnect:Remove murk'\''s entry from an AI editor'\''s MCP config. No CLIENT clears every configured editor. \`--rotate\` also revokes the grant and rotates its keys' \
+'plan:Emit schema-only context safe to paste into an AI agent prompt (experimental)' \
+'exec:Run a command with strict agent-safe defaults (experimental; keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires --only, masks injected values in the output)' \
+'grant:Mint a scoped ephemeral key that can read only the named secrets (experimental)' \
+'init:One-shot onboarding (experimental)\: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely' \
+'ls:List active agent grants and their TTLs (experimental)' \
+'revoke:Revoke an agent grant (experimental)' \
+'connect:Add \`murk mcp\` to an AI client'\''s MCP config and mint a scoped grant for it (experimental)' \
+'disconnect:Remove murk'\''s entry from an AI editor'\''s MCP config (experimental). No CLIENT clears every configured editor. \`--rotate\` also revokes the grant and rotates its keys' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
     _describe -t commands 'murk agent help commands' commands "$@"
@@ -1395,7 +1395,7 @@ _murk__subcmd__help_commands() {
 'rotate:Rotate secrets with new values' \
 'rm:Remove a secret' \
 'get:Get a single decrypted value' \
-'edit:Edit secrets in \$EDITOR' \
+'edit:Edit secrets in \$EDITOR (experimental)' \
 'ls:List all key names' \
 'export:Export all secrets as shell export statements' \
 'import:Import secrets from a .env file' \
@@ -1403,20 +1403,20 @@ _murk__subcmd__help_commands() {
 'info:Show public schema and key info' \
 'skeleton:Export schema-only vault with no secrets or recipients' \
 'exec:Run a command with secrets injected as environment variables' \
-'agent:Give AI agents scoped, time-limited access to secrets' \
-'mcp:Run an MCP (Model Context Protocol) stdio server for AI agents' \
-'policy:Manage the agent access policy' \
+'agent:Give AI agents scoped, time-limited access to secrets (experimental)' \
+'mcp:Run an MCP (Model Context Protocol) stdio server for AI agents (experimental)' \
+'policy:Manage the agent access policy (experimental)' \
 'circle:Manage recipients' \
 'authorize:Add a recipient to the vault' \
 'revoke:Remove a recipient from the vault' \
-'group:Manage recipient groups' \
+'group:Manage recipient groups (experimental)' \
 'verify:Verify vault integrity without exporting secrets' \
 'trust:Review who signed the vault and what changed, then trust it on this machine' \
 'doctor:Check the surrounding repo for hygiene issues' \
 'scan:Scan files for leaked secret values' \
-'diff:Show secret and access changes vs a git ref' \
-'setup-merge-driver:Configure git to use murk'\''s merge driver for .murk files' \
-'merge-driver:Git merge driver for .murk vault files (called by git)' \
+'diff:Show secret and access changes vs a git ref (experimental)' \
+'setup-merge-driver:Configure git to use murk'\''s merge driver for .murk files (experimental)' \
+'merge-driver:Git merge driver for .murk vault files (called by git; experimental)' \
 'completion:Generate or install shell completions' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
@@ -1430,14 +1430,14 @@ _murk__subcmd__help__subcmd__add_commands() {
 (( $+functions[_murk__subcmd__help__subcmd__agent_commands] )) ||
 _murk__subcmd__help__subcmd__agent_commands() {
     local commands; commands=(
-'plan:Emit schema-only context safe to paste into an AI agent prompt' \
-'exec:Run a command with strict agent-safe defaults (keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires --only, masks injected values in the output)' \
-'grant:Mint a scoped ephemeral key that can read only the named secrets' \
-'init:One-shot onboarding\: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely' \
-'ls:List active agent grants and their TTLs' \
-'revoke:Revoke an agent grant' \
-'connect:Add \`murk mcp\` to an AI client'\''s MCP config and mint a scoped grant for it' \
-'disconnect:Remove murk'\''s entry from an AI editor'\''s MCP config. No CLIENT clears every configured editor. \`--rotate\` also revokes the grant and rotates its keys' \
+'plan:Emit schema-only context safe to paste into an AI agent prompt (experimental)' \
+'exec:Run a command with strict agent-safe defaults (experimental; keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires --only, masks injected values in the output)' \
+'grant:Mint a scoped ephemeral key that can read only the named secrets (experimental)' \
+'init:One-shot onboarding (experimental)\: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely' \
+'ls:List active agent grants and their TTLs (experimental)' \
+'revoke:Revoke an agent grant (experimental)' \
+'connect:Add \`murk mcp\` to an AI client'\''s MCP config and mint a scoped grant for it (experimental)' \
+'disconnect:Remove murk'\''s entry from an AI editor'\''s MCP config (experimental). No CLIENT clears every configured editor. \`--rotate\` also revokes the grant and rotates its keys' \
     )
     _describe -t commands 'murk help agent commands' commands "$@"
 }

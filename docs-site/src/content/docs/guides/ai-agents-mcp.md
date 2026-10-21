@@ -5,6 +5,10 @@ sidebar:
   order: 10
 ---
 
+:::caution[Experimental]
+Agent grants, `murk agent exec`, `murk mcp`, `murk agent connect`/`disconnect` and the agent policy are experimental. They are new and their access rules changed in 0.13.1. A running `murk mcp` server does not see a revocation or policy change until it restarts, so restart it after you revoke. Treat them as a guardrail, not a security boundary.
+:::
+
 AI coding agents need secrets to do real work: an API key to call a service, a
 database URL to run a migration. The usual way to hand them over is to paste a
 value into a prompt or point the agent at a `.env` file. Both can leak. Prompts
@@ -108,11 +112,11 @@ Set `MURK_AGENT=1` to tell murk it's running for an agent. In an agent
 context, murk **forces strict mode**. It won't fall back to your stored key
 in `~/.config/murk/keys` (the agent must present its own
 `MURK_KEY`/`MURK_KEY_FILE`, e.g. a [grant](/concepts/grants/) key, or fail
-closed). `murk get` and `murk export` refuse to write to a stdout that is a
-regular file. `murk edit` requires a RAM-backed tmpdir. murk refuses a vault
-that was signed before and is now unsigned. Strict mode does not stop a
-process from writing values elsewhere: `murk diff --json` and
-`murk diff --show-values` print values, even into a file.
+closed). `murk get`, `murk export` and `murk diff --show-values` refuse to write to a
+stdout that is a regular file. `murk edit` requires a RAM-backed tmpdir, and
+`murk edit` itself is experimental: its lifecycle is new and its process
+handling is Unix-only. Strict mode does not stop a process from writing values
+elsewhere: a program that receives them can save them anywhere.
 
 `murk agent exec` sets `MURK_AGENT=1` and `MURK_STRICT=1` for the child, so a
 nested `murk` stays strict and won't fall back to your stored key on the

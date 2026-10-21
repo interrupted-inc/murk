@@ -18,7 +18,7 @@ A variable marked "truthy" is on when set to `1`, `true` or `yes` (any case). Ot
 
 | Variable | Description |
 | --- | --- |
-| `MURK_STRICT` | Fails closed rather than let a secret touch disk. On for any value except unset, empty, `0`, `false`, `no` and `off`, so a typo turns it on. Disables the automatic key lookup under `~/.config/murk/keys`, needs RAM-backed scratch for `murk edit`, refuses to write `get`, `export` or `murk diff --show-values` output to a regular file, and refuses a result that no key checked. |
+| `MURK_STRICT` | Experimental. Fails closed rather than let a secret touch disk. On for any value except unset, empty, `0`, `false`, `no` and `off`, so a typo turns it on. Disables the automatic key lookup under `~/.config/murk/keys`, needs RAM-backed scratch for `murk edit`, refuses to write `get`, `export` or `murk diff --show-values` output to a regular file, and refuses a result that no key checked. |
 | `MURK_AGENT` | Marks the process as running for an AI agent. Forces strict mode unconditionally. `murk agent exec` sets it on its child. Read like `MURK_STRICT`: any value except unset, empty, `0`, `false`, `no` and `off` turns it on. |
 | `MURK_SELF_SCOPE` | Holds your own key to the vault's agent allow-tag policy, as if you were an agent. Implied inside an agent context. Read like `MURK_STRICT`. |
 | `MURK_TRUSTED_SIGNERS` | Signers trusted to sign the vault on this machine, separated by commas or newlines, replacing the local trust pin's set. An age signer is `age1...:<verifying key>` and an ssh-ed25519 signer is its public key line; `murk trust --print-key` prints the entry for your own key. For CI runners and other machines with no pin (set it from a CI secret). Any other entry, including a bare age key, is an error. |

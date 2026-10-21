@@ -94,7 +94,7 @@ pub enum Command {
         /// Example value
         #[arg(long, value_parser = NewText::LINE)]
         example: Option<String>,
-        /// Who can read it: a group name, `everyone`, or `me`. Omit to keep an
+        /// Who can read it: a group name (experimental), `everyone`, or `me`. Omit to keep an
         /// existing key's tier; a new key is shared with everyone
         #[arg(long)]
         group: Option<String>,
@@ -125,7 +125,7 @@ pub enum Command {
         /// Example value
         #[arg(long, value_parser = NewText::LINE)]
         example: Option<String>,
-        /// Who can read it: a group name, `everyone`, or `me`. Omit to keep an
+        /// Who can read it: a group name (experimental), `everyone`, or `me`. Omit to keep an
         /// existing key's tier; a new key is shared with everyone
         #[arg(long)]
         group: Option<String>,
@@ -185,14 +185,14 @@ pub enum Command {
         vault: String,
     },
 
-    /// Edit secrets in $EDITOR
+    /// Edit secrets in $EDITOR (experimental)
     Edit {
         /// Edit a single key (omit to edit all)
         key: Option<String>,
         /// Edit scoped overrides instead of shared secrets
         #[arg(long)]
         scoped: bool,
-        /// Edit values for this group instead of shared secrets
+        /// Edit values for this group instead of shared secrets (experimental)
         #[arg(long)]
         group: Option<String>,
         /// Vault filename
@@ -238,8 +238,8 @@ pub enum Command {
         #[arg(long)]
         force: bool,
         /// Assign imported secrets to this group (`everyone`, `me`, or a group
-        /// name). Omit to keep each existing key's tier; new keys are shared
-        /// with everyone
+        /// name, which is experimental). Omit to keep each existing key's
+        /// tier; new keys are shared with everyone
         #[arg(long)]
         group: Option<String>,
         /// Example value applied to every imported key
@@ -327,13 +327,13 @@ pub enum Command {
     },
 
     // Agents
-    /// Give AI agents scoped, time-limited access to secrets
+    /// Give AI agents scoped, time-limited access to secrets (experimental)
     Agent {
         #[command(subcommand)]
         sub: AgentCommand,
     },
 
-    /// Run an MCP (Model Context Protocol) stdio server for AI agents
+    /// Run an MCP (Model Context Protocol) stdio server for AI agents (experimental)
     Mcp {
         /// Vault filename
         #[arg(long, env = "MURK_VAULT", default_value = ".murk")]
@@ -345,7 +345,7 @@ pub enum Command {
         allow_exec: bool,
     },
 
-    /// Manage the agent access policy
+    /// Manage the agent access policy (experimental)
     Policy {
         #[command(subcommand)]
         sub: PolicyCommand,
@@ -368,7 +368,7 @@ pub enum Command {
     /// Add a recipient to the vault
     #[command(hide = true)]
     Authorize {
-        /// Public key (age1...), ssh:path, ssh: (default ~/.ssh/id_ed25519.pub), or github:username
+        /// Public key (age1...), ssh:path, ssh: (default ~/.ssh/id_ed25519.pub), or github:username (experimental)
         pubkey: String,
         /// Display name for this recipient
         #[arg(long, value_parser = NewText::LINE)]
@@ -403,7 +403,7 @@ pub enum Command {
         vault: String,
     },
 
-    /// Manage recipient groups
+    /// Manage recipient groups (experimental)
     Group {
         #[command(subcommand)]
         sub: GroupCommand,
@@ -455,7 +455,7 @@ pub enum Command {
     },
 
     // Git integration
-    /// Show secret and access changes vs a git ref
+    /// Show secret and access changes vs a git ref (experimental)
     ///
     /// Lists recipients, signer, signing keys, policy, grants and group members
     /// that changed, then the secrets. The vault at the ref is verified first;
@@ -475,11 +475,11 @@ pub enum Command {
         vault: String,
     },
 
-    /// Configure git to use murk's merge driver for .murk files
+    /// Configure git to use murk's merge driver for .murk files (experimental)
     #[command(name = "setup-merge-driver")]
     SetupMergeDriver,
 
-    /// Git merge driver for .murk vault files (called by git)
+    /// Git merge driver for .murk vault files (called by git; experimental)
     #[command(name = "merge-driver", hide = true)]
     MergeDriver {
         /// Path to base version (%O)
@@ -516,7 +516,7 @@ pub enum CompletionAction {
 
 #[derive(Subcommand)]
 pub enum AgentCommand {
-    /// Emit schema-only context safe to paste into an AI agent prompt
+    /// Emit schema-only context safe to paste into an AI agent prompt (experimental)
     Plan {
         /// Filter by tag (repeatable)
         #[arg(long)]
@@ -532,7 +532,7 @@ pub enum AgentCommand {
         vault: String,
     },
 
-    /// Run a command with strict agent-safe defaults (keeps only PATH, HOME and
+    /// Run a command with strict agent-safe defaults (experimental; keeps only PATH, HOME and
     /// TERM from the inherited environment on Unix, or PATH and a fixed set of
     /// system variables on Windows, strips MURK_KEY, requires --only, masks
     /// injected values in the output)
@@ -556,7 +556,7 @@ pub enum AgentCommand {
         command: Vec<String>,
     },
 
-    /// Mint a scoped ephemeral key that can read only the named secrets
+    /// Mint a scoped ephemeral key that can read only the named secrets (experimental)
     Grant {
         /// Grant name (used to revoke it later)
         #[arg(long)]
@@ -581,8 +581,8 @@ pub enum AgentCommand {
         vault: String,
     },
 
-    /// One-shot onboarding: optionally set the agent allow-list, mint a scoped
-    /// grant, and print how to run the agent safely
+    /// One-shot onboarding (experimental): optionally set the agent allow-list,
+    /// mint a scoped grant, and print how to run the agent safely
     Init {
         /// Grant name (used to revoke it later)
         #[arg(long)]
@@ -607,7 +607,7 @@ pub enum AgentCommand {
         vault: String,
     },
 
-    /// List active agent grants and their TTLs
+    /// List active agent grants and their TTLs (experimental)
     Ls {
         /// Output as JSON
         #[arg(long)]
@@ -617,7 +617,7 @@ pub enum AgentCommand {
         vault: String,
     },
 
-    /// Revoke an agent grant
+    /// Revoke an agent grant (experimental)
     ///
     /// The grant's key can still decrypt old versions of the vault from git
     /// history, so rotate the secrets it could read: pass `--rotate`, or answer
@@ -637,7 +637,7 @@ pub enum AgentCommand {
         vault: String,
     },
 
-    /// Add `murk mcp` to an AI client's MCP config and mint a scoped grant for it
+    /// Add `murk mcp` to an AI client's MCP config and mint a scoped grant for it (experimental)
     Connect {
         /// Client to configure: claude, cursor, vscode, zed, gemini, omp or codex.
         /// Omit it to configure every client that already has a config file or
@@ -663,7 +663,7 @@ pub enum AgentCommand {
         vault: String,
     },
 
-    /// Remove murk's entry from an AI editor's MCP config. No CLIENT clears every
+    /// Remove murk's entry from an AI editor's MCP config (experimental). No CLIENT clears every
     /// configured editor. `--rotate` also revokes the grant and rotates its keys.
     Disconnect {
         /// Editor to disconnect. Omit for every configured editor
@@ -684,12 +684,12 @@ pub enum AgentCommand {
 pub enum CircleCommand {
     /// Add a recipient to the vault
     Authorize {
-        /// Public key (age1...), ssh:path, ssh: (default ~/.ssh/id_ed25519.pub), or github:username
+        /// Public key (age1...), ssh:path, ssh: (default ~/.ssh/id_ed25519.pub), or github:username (experimental)
         pubkey: String,
         /// Display name for this recipient
         #[arg(long, value_parser = NewText::LINE)]
         name: Option<String>,
-        /// Also add the new recipient to this group
+        /// Also add the new recipient to this group (experimental)
         #[arg(long)]
         group: Option<String>,
         /// Accept changed GitHub keys. Without it, authorize stops when a user's keys differ from the pinned set

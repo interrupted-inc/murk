@@ -90,6 +90,10 @@ The module is imported as `murk` even though the package is `murk-secrets`.
 
 ## Node.js
 
+:::caution[Experimental]
+Writing from the Node.js binding (`add`, `describe`) is experimental: the write API is new. Reading secrets is stable. The Python binding is read-only.
+:::
+
 Requires Node.js 18.17 or later on Node 18, or 20.3 or later. Node 19 is not
 supported. The addon uses Node-API version 9. TypeScript types are bundled.
 The Node binding reads

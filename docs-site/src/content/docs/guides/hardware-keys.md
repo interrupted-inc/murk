@@ -5,6 +5,10 @@ sidebar:
   order: 6
 ---
 
+:::caution[Experimental]
+Hardware and plugin identities are experimental. No test runs a real plugin yet, once a plugin recipient exists every writer needs the plugin installed, and plugin identities have no BIP39 recovery phrase.
+:::
+
 By default, `murk init` generates a raw age key and stores it under
 `~/.config/murk/keys/`. That's fine for development, but the private key
 exists as plaintext bytes on disk. Anyone with read access to the file can

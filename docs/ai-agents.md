@@ -1,5 +1,7 @@
 # Using murk with AI agents
 
+> **Experimental.** Agent grants, `murk agent exec`, `murk mcp`, `murk agent connect`/`disconnect` and the agent policy are experimental. They are new and their access rules changed in 0.13.1. A running `murk mcp` server does not see a revocation or policy change until it restarts, so restart it after you revoke. Treat them as a guardrail, not a security boundary.
+
 AI coding agents need secrets: API keys, database URLs, service tokens. The usual ways to hand them over are chat prompts and `.env` files. Prompts get logged and `.env` files get committed. Neither lets you revoke access when the session ends.
 
 murk gives an agent only the secrets a task needs, for a limited time, without handing over your key. The values still reach the agent's command (or the agent itself) in plaintext. Use a scoped grant, and keep values out of prompts and transcripts.
@@ -40,7 +42,7 @@ murk gives an agent only the secrets a task needs, for a limited time, without h
 
 ## Agent context
 
-Set `MURK_AGENT=1` to tell murk it's running for an agent. In an agent context, **strict mode is forced**. murk won't fall back to your stored key in `~/.config/murk/keys` (the agent must present its own `MURK_KEY`/`MURK_KEY_FILE`, e.g. a grant key, or fail closed). `murk get` and `murk export` refuse to write to a stdout that is a regular file. `murk edit` requires a RAM-backed tmpdir. murk refuses a vault that was signed before and is now unsigned. Strict mode does not stop a process from writing values elsewhere: `murk diff --json` and `murk diff --show-values` print values, even into a file.
+Set `MURK_AGENT=1` to tell murk it's running for an agent. In an agent context, **strict mode is forced**. murk won't fall back to your stored key in `~/.config/murk/keys` (the agent must present its own `MURK_KEY`/`MURK_KEY_FILE`, e.g. a grant key, or fail closed). `murk get`, `murk export` and `murk diff --show-values` refuse to write to a stdout that is a regular file. `murk edit` requires a RAM-backed tmpdir, and `murk edit` itself is experimental: its lifecycle is new and its process handling is Unix-only. Strict mode does not stop a process from writing values elsewhere: a program that receives them can save them anywhere.
 
 `murk agent exec` sets `MURK_AGENT=1` and `MURK_STRICT=1` for the child, so a nested `murk` stays strict and won't fall back to your stored key on the normal path. This is a safe default, **not a sandbox**: a child controls its own environment, so it can unset those vars or read `~/.config/murk/keys` directly — for real containment, run agents under a separate user or in a container (see below). If you want a non-strict shell yourself, just don't set `MURK_AGENT`. In CI, murk stays out of the way but prints a short hint toward a scoped grant key when it sees a pipeline decrypting with your personal key. `murk agent exec` does not wait for CI to object: it refuses a personal key it discovers on its own unless you pass `--allow-operator-key`, and then it prints a warning, in CI or not. It accepts any identity you supply through `MURK_KEY` or `MURK_KEY_FILE`, so supply a scoped grant key, not your personal key.
 
