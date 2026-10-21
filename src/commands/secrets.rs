@@ -428,6 +428,7 @@ pub(crate) fn cmd_rotate(
     generate: bool,
     length: usize,
     hex: bool,
+    values_from: Option<&str>,
     vault_path: &str,
 ) {
     if key.is_none() && !all {
@@ -442,8 +443,16 @@ pub(crate) fn cmd_rotate(
             1,
         );
     }
+    let source = if generate {
+        ValueSource::Generate { length, hex }
+    } else if let Some(path) = values_from {
+        ValueSource::Named(read_values_from(path))
+    } else {
+        ValueSource::Prompt
+    };
 
-    let (mut vault, murk, _identity, _lock) = load_vault_locked(vault_path);
+    let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
+    let pubkey = try_or_die(identity.pubkey_string());
     let original = murk.clone();
     let mut current = murk;
 
@@ -457,44 +466,90 @@ pub(crate) fn cmd_rotate(
         vec![k.to_string()]
     };
 
-    if keys_to_rotate.is_empty() {
+    // Plan every key before reading any value, so a refusal never leaves input
+    // half-consumed or the vault half-rotated.
+    let plans: Vec<KeyPlan> = keys_to_rotate
+        .into_iter()
+        .map(|k| {
+            let tiers = murk_cli::key_tiers(&vault, &current, &k, &pubkey);
+            match rotation_targets(&tiers) {
+                Ok(targets) => {
+                    let note = (tiers.own_override && !targets.contains(&SecretTier::Me)).then(
+                        || format!("your personal override of {k} is unchanged — `murk add {k} --group me` replaces it"),
+                    );
+                    KeyPlan {
+                        key: k,
+                        targets,
+                        skipped: Vec::new(),
+                        note,
+                    }
+                }
+                Err(msg) => KeyPlan {
+                    key: k,
+                    targets: Vec::new(),
+                    skipped: vec![msg],
+                    note: None,
+                },
+            }
+        })
+        .collect();
+
+    if !all && let Some(reason) = plans[0].skipped.first() {
+        die(
+            &format_args!("cannot rotate {}: {reason}", plans[0].key.bold()),
+            1,
+        );
+    }
+    check_batch(&vault, &plans, &source, None);
+
+    if plans.is_empty() {
         eprintln!("{}", "no secrets to rotate".dimmed());
         return;
     }
 
-    let mut rotated = 0;
-    for k in &keys_to_rotate {
-        let new_value = if generate {
-            random_secret(length, hex)
-        } else {
-            resolve_value(k)
-        };
-
-        murk_cli::add_secret(
-            &mut vault,
-            &mut current,
-            k,
-            &new_value,
-            None,
-            None,
-            false,
-            &[],
-            None,
-        );
-        rotated += 1;
-        eprintln!("{} rotated {}", "◆".magenta(), k.bold());
+    let outcome = run_rotation(&mut vault, &mut current, &pubkey, &plans, &source);
+    if outcome.rotated == 0 {
+        return;
     }
-
     save_vault(vault_path, &mut vault, &original, &current);
+    outcome.report();
 
-    if rotated > 1 {
+    if outcome.rotated > 1 {
         eprintln!();
         eprintln!(
             "{} rotated {} secrets",
             "✓".green(),
-            rotated.to_string().bold()
+            outcome.rotated.to_string().bold()
         );
     }
+}
+
+/// The tiers `rotate` replaces for a key: its base value, wherever it lives (the
+/// shared value or the groups the operator belongs to). A personal override is
+/// a deliberate per-recipient deviation, so it is rotated only when it is the
+/// key's sole value the operator holds. Errors (with the reason) when the key
+/// can't be rotated without leaving a stale value or moving it to a wider tier.
+fn rotation_targets(tiers: &murk_cli::KeyTiers) -> Result<Vec<SecretTier>, String> {
+    if let Some(group) = tiers.foreign_groups.first() {
+        return Err(format!(
+            "it is held by group {group}, which you are not a member of — a member must rotate it"
+        ));
+    }
+    let mut targets = Vec::new();
+    if tiers.shared {
+        targets.push(SecretTier::Everyone);
+    }
+    targets.extend(tiers.groups.iter().cloned().map(SecretTier::Group));
+    if targets.is_empty() {
+        if !tiers.own_override {
+            return Err(
+                "it holds only other recipients' personal overrides, which only they can rotate"
+                    .to_string(),
+            );
+        }
+        targets.push(SecretTier::Me);
+    }
+    Ok(targets)
 }
 
 /// List keys needing rotation — the same signals doctor reports, but scoped to
@@ -522,9 +577,29 @@ pub(crate) fn cmd_rotate_list(json: bool, vault_path: &str) {
 }
 
 pub(crate) fn cmd_rm(key: &str, vault_path: &str) {
-    let (mut vault, murk, _identity, _lock) = load_vault_locked(vault_path);
+    let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
+    let pubkey = try_or_die(identity.pubkey_string());
     let original = murk.clone();
     let mut current = murk;
+
+    // Removing a key drops only what the operator can read; anything else
+    // would stay on disk while `ls` stops listing it. Refuse instead.
+    try_or_die(murk_cli::require_group_access(
+        &vault, &current, key, &pubkey,
+    ));
+    let tiers = murk_cli::key_tiers(&vault, &current, key, &pubkey);
+    let holds_unreadable = vault
+        .secrets
+        .get(key)
+        .is_some_and(|e| !e.private.is_empty());
+    if holds_unreadable && !tiers.shared && tiers.groups.is_empty() && !tiers.own_override {
+        die(
+            &format_args!(
+                "{key} holds only other recipients' personal overrides, which only they can remove"
+            ),
+            1,
+        );
+    }
 
     murk_cli::remove_secret(&mut vault, &mut current, key);
 
@@ -612,8 +687,10 @@ pub(crate) fn cmd_describe(
     let rotation_patch = parse_rotate_every(rotate_every).unwrap_or_else(|e| die(&e, 2));
     let expires_patch = parse_expires(expires).unwrap_or_else(|e| die(&e, 2));
 
-    let (mut vault, murk, _identity, _lock) = load_vault_locked(vault_path);
+    let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
     let original = murk.clone();
+    let pubkey = try_or_die(identity.pubkey_string());
+    try_or_die(murk_cli::require_group_access(&vault, &murk, key, &pubkey));
 
     murk_cli::describe_key(
         &mut vault,

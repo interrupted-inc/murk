@@ -115,6 +115,7 @@ fn run() {
             generate,
             length,
             hex,
+            values_from,
             list,
             json,
             vault,
@@ -123,7 +124,15 @@ fn run() {
             if list {
                 cmd_rotate_list(json, &vault_path);
             } else {
-                cmd_rotate(key.as_deref(), all, generate, length, hex, &vault_path);
+                cmd_rotate(
+                    key.as_deref(),
+                    all,
+                    generate,
+                    length,
+                    hex,
+                    values_from.as_deref(),
+                    &vault_path,
+                );
             }
         }
         Command::Rm { key, vault } => cmd_rm(&key, &murk_cli::resolve_vault_path(&vault)),
@@ -198,9 +207,15 @@ fn run() {
         Command::Revoke {
             recipient,
             rotate,
+            values_from,
             vault,
         } => {
-            cmd_revoke(&recipient, rotate, &murk_cli::resolve_vault_path(&vault));
+            cmd_revoke(
+                &recipient,
+                rotate,
+                values_from.as_deref(),
+                &murk_cli::resolve_vault_path(&vault),
+            );
         }
         Command::Circle {
             sub: None,
@@ -231,10 +246,16 @@ fn run() {
                 Some(CircleCommand::Revoke {
                     recipient,
                     rotate,
+                    values_from,
                     vault,
                 }),
             ..
-        } => cmd_revoke(&recipient, rotate, &murk_cli::resolve_vault_path(&vault)),
+        } => cmd_revoke(
+            &recipient,
+            rotate,
+            values_from.as_deref(),
+            &murk_cli::resolve_vault_path(&vault),
+        ),
         Command::Group { sub } => cmd_group(sub),
         Command::Policy { sub } => cmd_policy(sub),
         Command::Env { vault } => cmd_env(&vault),
@@ -315,8 +336,14 @@ fn run() {
             AgentCommand::Revoke {
                 name,
                 rotate,
+                values_from,
                 vault,
-            } => cmd_agent_revoke(&name, rotate, &murk_cli::resolve_vault_path(&vault)),
+            } => cmd_agent_revoke(
+                &name,
+                rotate,
+                values_from.as_deref(),
+                &murk_cli::resolve_vault_path(&vault),
+            ),
             AgentCommand::Connect {
                 client,
                 only,

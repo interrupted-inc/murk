@@ -79,16 +79,23 @@ pub fn create_group(
     Ok(())
 }
 
-/// Delete a group. Refuses if any secret is still assigned to it — the caller
-/// should reassign or remove those secrets first, so no data is silently
-/// orphaned (group ciphertext would become unreadable).
+/// Delete a group. The operator must be a member, as for every other change to
+/// a group. Refuses if any secret is still assigned to it — the caller should
+/// reassign or remove those secrets first, so no data is silently orphaned
+/// (group ciphertext would become unreadable).
 pub fn delete_group(
     vault: &types::Vault,
     murk: &mut types::Murk,
     name: &str,
+    operator_pubkey: &str,
 ) -> Result<(), MurkError> {
-    if !murk.groups.contains_key(name) {
+    let Some(members) = murk.groups.get(name) else {
         return Err(MurkError::Group(format!("group not found: {name}")));
+    };
+    if !members.iter().any(|pk| pk == operator_pubkey) {
+        return Err(MurkError::Group(format!(
+            "you must be a member of group \"{name}\" to modify it"
+        )));
     }
     let assigned: Vec<&str> = vault
         .secrets
@@ -248,7 +255,7 @@ mod tests {
         create_group(&mut murk, "prod", "age1alice").unwrap();
 
         // No secrets yet — delete works.
-        delete_group(&vault, &mut murk, "prod").unwrap();
+        delete_group(&vault, &mut murk, "prod", "age1alice").unwrap();
 
         // Re-create and assign a secret; now delete is refused.
         create_group(&mut murk, "prod", "age1alice").unwrap();
@@ -259,7 +266,16 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert!(delete_group(&vault, &mut murk, "prod").is_err());
+        assert!(delete_group(&vault, &mut murk, "prod", "age1alice").is_err());
+    }
+
+    #[test]
+    fn delete_requires_membership() {
+        let vault = empty_vault();
+        let mut murk = empty_murk();
+        create_group(&mut murk, "prod", "age1alice").unwrap();
+        assert!(delete_group(&vault, &mut murk, "prod", "age1bob").is_err());
+        assert!(murk.groups.contains_key("prod"));
     }
 
     #[test]

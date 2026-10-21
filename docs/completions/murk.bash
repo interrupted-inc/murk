@@ -816,12 +816,16 @@ _murk() {
             return 0
             ;;
         murk__subcmd__agent__subcmd__revoke)
-            opts="-h --rotate --vault --help"
+            opts="-h --rotate --values-from --vault --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
+                --values-from)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 --vault)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
@@ -956,12 +960,16 @@ _murk() {
             return 0
             ;;
         murk__subcmd__circle__subcmd__revoke)
-            opts="-h --rotate --vault --help"
+            opts="-h --rotate --values-from --vault --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
+                --values-from)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 --vault)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
@@ -2486,12 +2494,16 @@ _murk() {
             return 0
             ;;
         murk__subcmd__revoke)
-            opts="-h --rotate --vault --help"
+            opts="-h --rotate --values-from --vault --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
+                --values-from)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 --vault)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
@@ -2522,13 +2534,17 @@ _murk() {
             return 0
             ;;
         murk__subcmd__rotate)
-            opts="-h --all --generate --length --hex --list --json --vault --help"
+            opts="-h --all --generate --length --hex --values-from --list --json --vault --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
                 --length)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --values-from)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;

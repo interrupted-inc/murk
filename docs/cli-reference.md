@@ -210,6 +210,7 @@ Rotate secrets with new values
 
   Default value: `32`
 * `--hex` — Output generated values as hex instead of base64
+* `--values-from <FILE>` — Read new values from a dotenv file of KEY=value lines (`-` for stdin), matched by key name
 * `--list` — List keys needing rotation instead of rotating (exits 1 if any)
 * `--json` — Output the listing as JSON (with --list, always exits 0)
 * `--vault <VAULT>` — Vault filename
@@ -470,7 +471,7 @@ Mint a scoped ephemeral key that can read only the named secrets
 
 * `--name <NAME>` — Grant name (used to revoke it later)
 * `--only <ONLY>` — Keys this grant can read (required — fails closed)
-* `--ttl <TTL>` — Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)
+* `--ttl <TTL>` — Time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)
 
   Default value: `2h`
 * `--renew` — Replace a live grant with this name: revoke its key, mint a fresh one
@@ -492,7 +493,7 @@ One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, a
 * `--name <NAME>` — Grant name (used to revoke it later)
 * `--only <ONLY>` — Keys the agent can read (required — fails closed)
 * `--allow-tag <ALLOW_TAG>` — Set the agent allow-list to these tags before granting (repeatable)
-* `--ttl <TTL>` — Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)
+* `--ttl <TTL>` — Time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)
 
   Default value: `2h`
 * `--out <OUT>` — Where to write the agent key: a path, or `-` for stdout
@@ -530,6 +531,7 @@ Revoke an agent grant and rotate the keys it could read
 ###### **Options:**
 
 * `--rotate` — Rotate the keys it could read in the same session
+* `--values-from <FILE>` — With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`
@@ -551,7 +553,7 @@ Wire `murk mcp` into an AI editor's MCP config, minting a scoped grant. No CLIEN
 * `--only <ONLY>` — Keys the agent may read (required — fails closed)
 * `--allow-tag <ALLOW_TAG>` — Set the agent allow-list to these tags before granting (repeatable)
 * `--allow-exec` — Also expose `murk agent exec` to the agent (adds --allow-exec)
-* `--ttl <TTL>` — Grant time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)
+* `--ttl <TTL>` — Grant time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)
 
   Default value: `2h`
 * `--name <NAME>` — Grant name (used to disconnect/revoke it later)
@@ -713,6 +715,7 @@ Remove a recipient from the vault
 ###### **Options:**
 
 * `--rotate` — Rotate the secrets they had access to in the same session
+* `--values-from <FILE>` — With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`

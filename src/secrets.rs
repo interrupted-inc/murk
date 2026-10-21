@@ -46,7 +46,7 @@ pub fn add_secret(
             .insert(key.into(), Zeroizing::new(value.to_owned()));
     }
 
-    upsert_schema(vault, key, desc, example, tags)
+    upsert_schema(vault, key, desc, example, tags, !scoped)
 }
 
 /// Add or update a secret encrypted to a named group. The operator must be a
@@ -83,18 +83,101 @@ pub fn add_grouped_secret(
     entry.clear();
     entry.insert(group.into(), Zeroizing::new(value.to_owned()));
 
-    Ok(upsert_schema(vault, key, desc, example, tags))
+    Ok(upsert_schema(vault, key, desc, example, tags, true))
+}
+
+/// Where a key's values live, as seen by the operator `pubkey`. Rotation reads
+/// this to replace each value in its own tier instead of moving it.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct KeyTiers {
+    /// The key has a shared (everyone) value.
+    pub shared: bool,
+    /// Named groups holding a value the operator can read (is a member of), sorted.
+    pub groups: Vec<String>,
+    /// Named groups holding a value the operator can't read (is not a member of),
+    /// sorted. Only a member can re-encrypt these.
+    pub foreign_groups: Vec<String>,
+    /// The operator has a personal (`me`) override of the key.
+    pub own_override: bool,
+}
+
+/// Report which tiers hold a value of `key`. Readable tiers come from the
+/// decrypted working state; group values the operator can't decrypt are found
+/// in the on-disk entry. Other recipients' overrides are not reported: the
+/// operator can neither read nor rotate them.
+pub fn key_tiers(vault: &types::Vault, murk: &types::Murk, key: &str, pubkey: &str) -> KeyTiers {
+    let readable = murk.grouped.get(key);
+    let mut groups: Vec<String> = readable
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
+    groups.sort();
+    let foreign_groups = vault
+        .secrets
+        .get(key)
+        .map(|e| {
+            e.grouped
+                .keys()
+                .filter(|g| !readable.is_some_and(|m| m.contains_key(*g)))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    KeyTiers {
+        shared: murk.values.contains_key(key),
+        groups,
+        foreign_groups,
+        own_override: murk
+            .private
+            .get(key)
+            .is_some_and(|m| m.contains_key(pubkey)),
+    }
+}
+
+/// Replace `key`'s value in `tier` without moving it: a shared value stays
+/// shared, a group value stays in that group (re-encrypted to the group's
+/// current members on save), and an override stays `pubkey`'s own. Errors when
+/// the operator holds no value of `key` in `tier`, so rotation never creates a
+/// tier and never widens who can read a value.
+pub fn rotate_secret(
+    vault: &mut types::Vault,
+    murk: &mut types::Murk,
+    key: &str,
+    value: &str,
+    tier: &crate::SecretTier,
+    pubkey: &str,
+) -> Result<(), crate::error::MurkError> {
+    use crate::SecretTier;
+
+    let slot = match tier {
+        SecretTier::Everyone => murk.values.get_mut(key),
+        SecretTier::Group(name) => murk.grouped.get_mut(key).and_then(|m| m.get_mut(name)),
+        SecretTier::Me => murk.private.get_mut(key).and_then(|m| m.get_mut(pubkey)),
+    };
+    let Some(slot) = slot else {
+        return Err(crate::error::MurkError::Secret(format!(
+            "{key} has no value you can rotate in that tier"
+        )));
+    };
+    *slot = Zeroizing::new(value.to_owned());
+    // The leaver never read your override, so writing it settles nothing.
+    let clears_revoke = !matches!(tier, SecretTier::Me);
+    upsert_schema(vault, key, None, None, &[], clears_revoke);
+    Ok(())
 }
 
 /// Insert or update the schema entry for a key, bumping `updated`. Returns true
 /// if the key was new and no description was supplied (the caller uses this to
-/// decide whether to print a "describe this key" hint).
+/// decide whether to print a "describe this key" hint). `clears_revoke` is true
+/// only for a write that replaces the value a revoked recipient could read (the
+/// shared or a group value); a personal-override write leaves that value, and so
+/// the pending-rotation marker, in place.
 fn upsert_schema(
     vault: &mut types::Vault,
     key: &str,
     desc: Option<&str>,
     example: Option<&str>,
     tags: &[String],
+    clears_revoke: bool,
 ) -> bool {
     let is_new = !vault.schema.contains_key(key);
 
@@ -114,9 +197,12 @@ fn upsert_schema(
             }
         }
         entry.updated = Some(now);
-        // A value write satisfies any outstanding post-revoke rotation, so the
-        // marker is cleared — its presence always means "still owed a rotation".
-        entry.revoked_at = None;
+        // Replacing the exposed value satisfies any outstanding post-revoke
+        // rotation, so the marker is cleared — its presence always means
+        // "still owed a rotation".
+        if clears_revoke {
+            entry.revoked_at = None;
+        }
     } else {
         vault.schema.insert(
             key.into(),
@@ -158,6 +244,25 @@ pub fn remove_secret(vault: &mut types::Vault, murk: &mut types::Murk, key: &str
     murk.private.remove(key);
     murk.grouped.remove(key);
     vault.schema.remove(key);
+}
+
+/// Refuse a change to `key`'s schema entry, or its removal, by an operator who
+/// is not a member of a group holding a value of it. The group owns the key:
+/// a non-member can't remove its ciphertext (their save preserves values they
+/// can't read, so `rm` would only hide the key) and must not rewrite metadata
+/// such as tags, which drive the agent allow-list.
+pub fn require_group_access(
+    vault: &types::Vault,
+    murk: &types::Murk,
+    key: &str,
+    pubkey: &str,
+) -> Result<(), crate::error::MurkError> {
+    match key_tiers(vault, murk, key, pubkey).foreign_groups.first() {
+        Some(group) => Err(crate::error::MurkError::Group(format!(
+            "{key} is held by group {group}, which you are not a member of — only a member can change it"
+        ))),
+        None => Ok(()),
+    }
 }
 
 /// Look up a decrypted value. Resolution order, highest priority first:

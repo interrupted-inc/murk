@@ -80,6 +80,7 @@ complete -c murk -n "__fish_murk_using_subcommand generate" -l vault -d 'Vault f
 complete -c murk -n "__fish_murk_using_subcommand generate" -l hex -d 'Output as hex instead of base64'
 complete -c murk -n "__fish_murk_using_subcommand generate" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand rotate" -l length -d 'Length in bytes for generated values (default 32)' -r
+complete -c murk -n "__fish_murk_using_subcommand rotate" -l values-from -d 'Read new values from a dotenv file of KEY=value lines (`-` for stdin), matched by key name' -r
 complete -c murk -n "__fish_murk_using_subcommand rotate" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand rotate" -l all -d 'Rotate all secrets in the vault'
 complete -c murk -n "__fish_murk_using_subcommand rotate" -l generate -d 'Generate random values instead of prompting'
@@ -147,7 +148,7 @@ complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcomm
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from exec" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l name -d 'Grant name (used to revoke it later)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l only -d 'Keys this grant can read (required — fails closed)' -r
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l ttl -d 'Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)' -r
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l ttl -d 'Time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l out -d 'Where to write the agent key: a path, or `-` for stdout' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l renew -d 'Replace a live grant with this name: revoke its key, mint a fresh one'
@@ -155,19 +156,20 @@ complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcomm
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l name -d 'Grant name (used to revoke it later)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l only -d 'Keys the agent can read (required — fails closed)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l allow-tag -d 'Set the agent allow-list to these tags before granting (repeatable)' -r
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l ttl -d 'Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)' -r
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l ttl -d 'Time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l out -d 'Where to write the agent key: a path, or `-` for stdout' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from ls" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from ls" -l json -d 'Output as JSON'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from ls" -s h -l help -d 'Print help'
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from revoke" -l values-from -d 'With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from revoke" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from revoke" -l rotate -d 'Rotate the keys it could read in the same session'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from revoke" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from connect" -l only -d 'Keys the agent may read (required — fails closed)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from connect" -l allow-tag -d 'Set the agent allow-list to these tags before granting (repeatable)' -r
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from connect" -l ttl -d 'Grant time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)' -r
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from connect" -l ttl -d 'Grant time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from connect" -l name -d 'Grant name (used to disconnect/revoke it later)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from connect" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from connect" -l allow-exec -d 'Also expose `murk agent exec` to the agent (adds --allow-exec)'
@@ -217,6 +219,7 @@ complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcom
 complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from authorize" -l force -d 'Accept changed GitHub keys without confirmation'
 complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from authorize" -l allow-ssh-rsa -d 'Allow ssh-rsa recipients (rejected by default — use ed25519)'
 complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from authorize" -s h -l help -d 'Print help'
+complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from revoke" -l values-from -d 'With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)' -r
 complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from revoke" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from revoke" -l rotate -d 'Rotate the secrets they had access to in the same session'
 complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from revoke" -s h -l help -d 'Print help'
@@ -228,6 +231,7 @@ complete -c murk -n "__fish_murk_using_subcommand authorize" -l vault -d 'Vault 
 complete -c murk -n "__fish_murk_using_subcommand authorize" -l force -d 'Accept changed GitHub keys without confirmation'
 complete -c murk -n "__fish_murk_using_subcommand authorize" -l allow-ssh-rsa -d 'Allow ssh-rsa recipients (rejected by default — use ed25519)'
 complete -c murk -n "__fish_murk_using_subcommand authorize" -s h -l help -d 'Print help'
+complete -c murk -n "__fish_murk_using_subcommand revoke" -l values-from -d 'With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)' -r
 complete -c murk -n "__fish_murk_using_subcommand revoke" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand revoke" -l rotate -d 'Rotate the secrets they had access to in the same session'
 complete -c murk -n "__fish_murk_using_subcommand revoke" -s h -l help -d 'Print help'

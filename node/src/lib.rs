@@ -258,6 +258,9 @@ impl Vault {
         let original = murk.clone();
         let current = murk;
 
+        murk_cli::require_group_access(&vault, &current, &key, &pubkey)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+
         murk_cli::describe_key(
             &mut vault,
             &key,

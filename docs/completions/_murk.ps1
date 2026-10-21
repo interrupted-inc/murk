@@ -105,6 +105,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
         }
         'murk;rotate' {
             [CompletionResult]::new('--length', '--length', [CompletionResultType]::ParameterName, 'Length in bytes for generated values (default 32)')
+            [CompletionResult]::new('--values-from', '--values-from', [CompletionResultType]::ParameterName, 'Read new values from a dotenv file of KEY=value lines (`-` for stdin), matched by key name')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('--all', '--all', [CompletionResultType]::ParameterName, 'Rotate all secrets in the vault')
             [CompletionResult]::new('--generate', '--generate', [CompletionResultType]::ParameterName, 'Generate random values instead of prompting')
@@ -230,7 +231,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
         'murk;agent;grant' {
             [CompletionResult]::new('--name', '--name', [CompletionResultType]::ParameterName, 'Grant name (used to revoke it later)')
             [CompletionResult]::new('--only', '--only', [CompletionResultType]::ParameterName, 'Keys this grant can read (required — fails closed)')
-            [CompletionResult]::new('--ttl', '--ttl', [CompletionResultType]::ParameterName, 'Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)')
+            [CompletionResult]::new('--ttl', '--ttl', [CompletionResultType]::ParameterName, 'Time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)')
             [CompletionResult]::new('--out', '--out', [CompletionResultType]::ParameterName, 'Where to write the agent key: a path, or `-` for stdout')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('--renew', '--renew', [CompletionResultType]::ParameterName, 'Replace a live grant with this name: revoke its key, mint a fresh one')
@@ -242,7 +243,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             [CompletionResult]::new('--name', '--name', [CompletionResultType]::ParameterName, 'Grant name (used to revoke it later)')
             [CompletionResult]::new('--only', '--only', [CompletionResultType]::ParameterName, 'Keys the agent can read (required — fails closed)')
             [CompletionResult]::new('--allow-tag', '--allow-tag', [CompletionResultType]::ParameterName, 'Set the agent allow-list to these tags before granting (repeatable)')
-            [CompletionResult]::new('--ttl', '--ttl', [CompletionResultType]::ParameterName, 'Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)')
+            [CompletionResult]::new('--ttl', '--ttl', [CompletionResultType]::ParameterName, 'Time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)')
             [CompletionResult]::new('--out', '--out', [CompletionResultType]::ParameterName, 'Where to write the agent key: a path, or `-` for stdout')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
@@ -257,6 +258,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             break
         }
         'murk;agent;revoke' {
+            [CompletionResult]::new('--values-from', '--values-from', [CompletionResultType]::ParameterName, 'With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('--rotate', '--rotate', [CompletionResultType]::ParameterName, 'Rotate the keys it could read in the same session')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
@@ -266,7 +268,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
         'murk;agent;connect' {
             [CompletionResult]::new('--only', '--only', [CompletionResultType]::ParameterName, 'Keys the agent may read (required — fails closed)')
             [CompletionResult]::new('--allow-tag', '--allow-tag', [CompletionResultType]::ParameterName, 'Set the agent allow-list to these tags before granting (repeatable)')
-            [CompletionResult]::new('--ttl', '--ttl', [CompletionResultType]::ParameterName, 'Grant time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)')
+            [CompletionResult]::new('--ttl', '--ttl', [CompletionResultType]::ParameterName, 'Grant time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)')
             [CompletionResult]::new('--name', '--name', [CompletionResultType]::ParameterName, 'Grant name (used to disconnect/revoke it later)')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('--allow-exec', '--allow-exec', [CompletionResultType]::ParameterName, 'Also expose `murk agent exec` to the agent (adds --allow-exec)')
@@ -397,6 +399,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             break
         }
         'murk;circle;revoke' {
+            [CompletionResult]::new('--values-from', '--values-from', [CompletionResultType]::ParameterName, 'With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('--rotate', '--rotate', [CompletionResultType]::ParameterName, 'Rotate the secrets they had access to in the same session')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
@@ -428,6 +431,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             break
         }
         'murk;revoke' {
+            [CompletionResult]::new('--values-from', '--values-from', [CompletionResultType]::ParameterName, 'With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('--rotate', '--rotate', [CompletionResultType]::ParameterName, 'Rotate the secrets they had access to in the same session')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')

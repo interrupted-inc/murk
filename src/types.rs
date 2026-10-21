@@ -64,11 +64,13 @@ pub struct SchemaEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
     /// Set to the revoke time (ISO-8601 UTC) when a recipient who could read
-    /// this key is revoked and rotation is deferred. Its *presence* is the
-    /// obligation: the revoked recipient can still decrypt the live value from
-    /// git history until it changes. Any value write (`add`/`edit`/`rotate`/
-    /// `import`) clears it, so a set `revoked_at` always means "still owed a
-    /// rotation since this revoke". `doctor` flags it until then.
+    /// this key is revoked and rotation is deferred, or is removed from the
+    /// group holding it. Its *presence* is the obligation: they can still
+    /// decrypt the live value from git history until it changes. A write that
+    /// replaces the shared or group value (`add`, `rotate`, `import`) clears it;
+    /// a personal-override write does not, since the leaver never read that
+    /// value. A set `revoked_at` always means "still owed a rotation since this
+    /// revoke". `doctor` flags it until then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoked_at: Option<String>,
 }

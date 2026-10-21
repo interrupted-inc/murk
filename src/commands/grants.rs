@@ -168,16 +168,31 @@ pub(crate) fn mint_grant(
     // live keys and no partial revoke-without-regrant state on failure.
     if renew && current.grants.contains_key(name) {
         let old = try_or_die(murk_cli::remove_grant(&mut current, name));
-        try_or_die(murk_cli::revoke_recipient(
+        let exposed = grant_exposure(&vault, &current, &old);
+        let result = try_or_die(murk_cli::revoke_recipient(
             &mut vault,
             &mut current,
             &old.pubkey,
         ));
+        // The previous key can still decrypt what it could read from git
+        // history, so those keys owe a rotation, as after `agent revoke`.
+        let owed = still_exposed(&vault, &exposed, &result.exposed_groups);
+        murk_cli::mark_revoked(&mut vault, &owed, chrono::Utc::now());
         eprintln!(
             "{} renewing {} — its previous key is revoked",
             "◆".magenta(),
             name.bold()
         );
+        if !owed.is_empty() {
+            eprintln!(
+                "  {}",
+                format!(
+                    "it could read {} — rotate them to close it fully (`murk rotate --list` tracks them)",
+                    owed.join(", ")
+                )
+                .dimmed()
+            );
+        }
     }
 
     // Set the allow-list before validating scope so a single save covers both the
@@ -535,7 +550,7 @@ pub(crate) fn cmd_agent_disconnect(
 
     if rotate {
         eprintln!();
-        cmd_agent_revoke(name, true, vault_path);
+        cmd_agent_revoke(name, true, None, vault_path);
     } else {
         eprintln!(
             "  {}",
@@ -630,8 +645,16 @@ pub(crate) fn cmd_agent_ls(json: bool, vault_path: &str) {
     }
 }
 
-pub(crate) fn cmd_agent_revoke(name: &str, rotate: bool, vault_path: &str) {
-    let (mut vault, murk, _identity, _lock) = load_vault_locked(vault_path);
+pub(crate) fn cmd_agent_revoke(
+    name: &str,
+    rotate: bool,
+    values_from: Option<&str>,
+    vault_path: &str,
+) {
+    let source = values_from.map_or(ValueSource::Prompt, |p| {
+        ValueSource::Named(read_values_from(p))
+    });
+    let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
     let original = murk.clone();
     let mut current = murk;
 
@@ -639,47 +662,126 @@ pub(crate) fn cmd_agent_revoke(name: &str, rotate: bool, vault_path: &str) {
     // the agent's scoped ciphertexts). Persist before rotating so the agent is
     // durably gone even if the rotation prompts are aborted.
     let grant = try_or_die(murk_cli::remove_grant(&mut current, name));
-    try_or_die(murk_cli::revoke_recipient(
+    let exposed = grant_exposure(&vault, &current, &grant);
+    let result = try_or_die(murk_cli::revoke_recipient(
         &mut vault,
         &mut current,
         &grant.pubkey,
     ));
-    save_vault(vault_path, &mut vault, &original, &current);
+    // Record the rotation the handed-off key now owes before persisting, as
+    // `circle revoke` does, so declining the prompt leaves it flagged.
+    let owed = still_exposed(&vault, &exposed, &result.exposed_groups);
+    murk_cli::mark_revoked(&mut vault, &owed, chrono::Utc::now());
 
-    eprintln!("{} revoked grant {}", "◆".magenta(), name.bold());
+    // Each exposed value is rotated in its own tier: the shared value (the
+    // grant's private copies were copies of it) and values in groups the grant
+    // belonged to. Overrides stay untouched. With --rotate, the batch is checked
+    // before anything is written.
+    let plan = |vault: &murk_cli::types::Vault, current: &murk_cli::types::Murk| {
+        let pubkey = try_or_die(identity.pubkey_string());
+        let plans = plan_exposed(vault, current, &pubkey, &exposed, &result.exposed_groups);
+        (pubkey, plans)
+    };
+    let mut checked = rotate.then(|| plan(&vault, &current));
+    if let Some((_, plans)) = &checked {
+        let retry = format!(
+            "to revoke now and rotate afterwards, run `murk agent revoke {name}` without --rotate, then `murk rotate --all --values-from FILE`"
+        );
+        check_batch(&vault, plans, &source, Some(&retry));
+    }
 
-    // The agent could read exactly its scope (it was never in the shared layer),
-    // so rotate those keys — that's the real close, since the handed-off key can
-    // still decrypt old `.murk` versions from git history.
-    if !grant.scope.is_empty() {
-        let n = grant.scope.len();
+    // The handed-off key can still decrypt old `.murk` versions from git
+    // history, so rotating what it could read is the real close. Decide on and
+    // collect the rotation before writing: one save covers the revoke and the
+    // rotated values.
+    let mut outcome = None;
+    if !exposed.is_empty() {
+        let n = exposed.len();
         let plural = if n == 1 { "" } else { "s" };
-        eprintln!();
         eprintln!(
             "{} the agent could read {n} secret{plural} — rotate them:",
             "⚠".yellow(),
         );
-        for key in &grant.scope {
+        for key in &exposed {
             eprintln!("  {} {}", "▸".dimmed(), key.bold());
         }
         eprintln!();
-
         let do_rotate = rotate
             || (io::stdin().is_terminal() && confirm(&format!("rotate {n} secret{plural} now?")));
         if do_rotate {
-            rotate_exposed(vault_path, &mut vault, &current, &grant.scope);
-        } else {
-            eprintln!(
-                "  {}",
-                "run `murk rotate KEY` to rotate each secret".dimmed()
-            );
+            let (pubkey, plans) = checked.take().unwrap_or_else(|| plan(&vault, &current));
+            outcome = Some(rotate_exposed(
+                &mut vault,
+                &mut current,
+                &pubkey,
+                &plans,
+                &source,
+            ));
         }
+    }
+
+    save_vault(vault_path, &mut vault, &original, &current);
+
+    eprintln!("{} revoked grant {}", "◆".magenta(), name.bold());
+    match &outcome {
+        Some(outcome) => {
+            outcome.report();
+            outcome.report_total();
+        }
+        None if !exposed.is_empty() => eprintln!(
+            "  {}",
+            "run `murk rotate KEY` to rotate each secret".dimmed()
+        ),
+        None => {}
     }
     eprintln!();
     eprintln!(
         "  {}",
         "the agent's key can still decrypt previous versions from git history".dimmed()
     );
+}
+
+/// Keys a grant's key could read, taken before it is revoked (which strips its
+/// ciphertexts): its scope, any key holding a private copy for it (a
+/// hand-edited or older vault can hold more than the scope), and keys in
+/// groups it belongs to.
+fn grant_exposure(
+    vault: &murk_cli::types::Vault,
+    current: &murk_cli::types::Murk,
+    grant: &murk_cli::types::GrantEntry,
+) -> Vec<String> {
+    vault
+        .secrets
+        .iter()
+        .filter(|(key, entry)| {
+            grant.scope.contains(key)
+                || entry.private.contains_key(&grant.pubkey)
+                || entry.grouped.keys().any(|g| {
+                    current
+                        .groups
+                        .get(g)
+                        .is_some_and(|members| members.contains(&grant.pubkey))
+                })
+        })
+        .map(|(key, _)| key.clone())
+        .collect()
+}
+
+/// The exposed keys that still hold a value the revoked key could read: a
+/// shared value, or a value in one of `groups`. These owe a rotation.
+fn still_exposed(
+    vault: &murk_cli::types::Vault,
+    keys: &[String],
+    groups: &[String],
+) -> Vec<String> {
+    keys.iter()
+        .filter(|k| {
+            vault.secrets.get(*k).is_some_and(|e| {
+                !e.shared.is_empty() || e.grouped.keys().any(|g| groups.contains(g))
+            })
+        })
+        .cloned()
+        .collect()
 }
 
 /// True if `expires_at` (ISO-8601 UTC) is in the past.

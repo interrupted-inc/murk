@@ -4,13 +4,16 @@
 .SH NAME
 revoke \- Revoke an agent grant and rotate the keys it could read
 .SH SYNOPSIS
-\fBmurk agent revoke\fR [\fB\-\-rotate\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fINAME\fR> 
+\fBmurk agent revoke\fR [\fB\-\-rotate\fR] [\fB\-\-values\-from\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fINAME\fR> 
 .SH DESCRIPTION
 Revoke an agent grant and rotate the keys it could read
 .SH OPTIONS
 .TP
 \fB\-\-rotate\fR
 Rotate the keys it could read in the same session
+.TP
+\fB\-\-values\-from\fR \fI<FILE>\fR
+With \-\-rotate, read new values from a dotenv file of KEY=value lines (`\-` for stdin)
 .TP
 \fB\-\-vault\fR \fI<VAULT>\fR [default: .murk]
 Vault filename
