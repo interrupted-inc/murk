@@ -92,7 +92,8 @@ pub struct TrustPin {
     /// or after the removal no longer lists the key. A removal also applies
     /// outside git, on a detached HEAD and on a branch this machine has no
     /// mark for (unless git shows its commit is in the history of one of these
-    /// branches); a key in `removed` with no entry here applies everywhere.
+    /// branches and the vault file is the one committed there); a key in
+    /// `removed` with no entry here applies everywhere.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub removed_on: BTreeMap<String, BTreeSet<String>>,
     /// Fingerprint ([`crate::trust::vault_fingerprint`]) of the vault accepted

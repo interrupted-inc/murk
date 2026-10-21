@@ -2325,7 +2325,9 @@ fn a_removal_on_a_feature_branch_leaves_other_branches_working() {
 /// never been accepted on a branch. She revokes Carol and rotates X on branch
 /// `theirs`, then revokes Carol on main as well, whose commit is still in
 /// `theirs`' history from before the removal. Both revokes work, and the
-/// keyed merge of the two goes through.
+/// keyed merge of the two goes through. An older vault written over main's
+/// file without a commit is not main's committed state, so the removal
+/// applies to it.
 #[test]
 fn both_branches_revoke_the_same_member_on_one_machine() {
     let base = TempDir::new().unwrap();
@@ -2335,6 +2337,7 @@ fn both_branches_revoke_the_same_member_on_one_machine() {
     let carol = Machine::new(base.path(), "carol");
     carol.init(&base.path().join("carol-scratch"), "carol");
     authorize(&alice, &repo, &carol, "carol");
+    let older = fs::read(repo.join(".murk")).unwrap();
     for args in [
         &["group", "create", "ops"][..],
         &["generate", "X", "--group", "ops"],
@@ -2358,6 +2361,15 @@ fn both_branches_revoke_the_same_member_on_one_machine() {
     commit(&repo, "theirs: revoke carol, rotate X");
 
     git_ok(&repo, &["checkout", "-q", "main"]);
+    fs::write(repo.join(".murk"), &older).unwrap();
+    alice
+        .murk(&repo)
+        .args(["export"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("rolled back"));
+    git_ok(&repo, &["checkout", "--", ".murk"]);
     alice
         .murk(&repo)
         .args(["circle", "revoke", "carol"])
