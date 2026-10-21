@@ -8,6 +8,46 @@
 
 use clap::{Parser, Subcommand};
 
+/// Value parser for text a command writes into the vault header
+/// ([`crate::new_text`]). Its error names the argument, never echoes the
+/// value: the value is the very text that could drive the terminal.
+#[derive(Clone, Copy)]
+pub struct NewText {
+    /// Allow newlines (descriptions).
+    pub multiline: bool,
+}
+
+impl NewText {
+    pub const LINE: NewText = NewText { multiline: false };
+    pub const BLOCK: NewText = NewText { multiline: true };
+}
+
+impl clap::builder::TypedValueParser for NewText {
+    type Value = String;
+
+    fn parse_ref(
+        &self,
+        cmd: &clap::Command,
+        arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<String, clap::Error> {
+        use clap::error::ErrorKind;
+        let name = arg.map_or_else(|| "value".to_string(), ToString::to_string);
+        let Some(text) = value.to_str() else {
+            return Err(clap::Error::raw(
+                ErrorKind::InvalidUtf8,
+                format!("{name} is not valid UTF-8\n"),
+            )
+            .with_cmd(cmd));
+        };
+        crate::new_text(text, self.multiline)
+            .map(|()| text.to_string())
+            .map_err(|why| {
+                clap::Error::raw(ErrorKind::InvalidValue, format!("{name} {why}\n")).with_cmd(cmd)
+            })
+    }
+}
+
 /// Encrypted secrets manager for developers.
 #[derive(Parser)]
 #[command(name = "murk", version, about)]
@@ -49,10 +89,10 @@ pub enum Command {
         /// Secret key name
         key: String,
         /// Description for this key
-        #[arg(long)]
+        #[arg(long, value_parser = NewText::BLOCK)]
         desc: Option<String>,
         /// Example value
-        #[arg(long)]
+        #[arg(long, value_parser = NewText::LINE)]
         example: Option<String>,
         /// Who can read it: a group name, `everyone`, or `me`. Omit to keep an
         /// existing key's tier; a new key is shared with everyone
@@ -62,7 +102,7 @@ pub enum Command {
         #[arg(long, hide = true)]
         scoped: bool,
         /// Tag for grouping (repeatable)
-        #[arg(long)]
+        #[arg(long, value_parser = NewText::LINE)]
         tag: Vec<String>,
         /// Vault filename
         #[arg(long, env = "MURK_VAULT", default_value = ".murk")]
@@ -80,17 +120,17 @@ pub enum Command {
         #[arg(long)]
         hex: bool,
         /// Description for this key
-        #[arg(long)]
+        #[arg(long, value_parser = NewText::BLOCK)]
         desc: Option<String>,
         /// Example value
-        #[arg(long)]
+        #[arg(long, value_parser = NewText::LINE)]
         example: Option<String>,
         /// Who can read it: a group name, `everyone`, or `me`. Omit to keep an
         /// existing key's tier; a new key is shared with everyone
         #[arg(long)]
         group: Option<String>,
         /// Tag for grouping (repeatable)
-        #[arg(long)]
+        #[arg(long, value_parser = NewText::LINE)]
         tag: Vec<String>,
         /// Vault filename
         #[arg(long, env = "MURK_VAULT", default_value = ".murk")]
@@ -203,7 +243,7 @@ pub enum Command {
         #[arg(long)]
         group: Option<String>,
         /// Example value applied to every imported key
-        #[arg(long)]
+        #[arg(long, value_parser = NewText::LINE)]
         example: Option<String>,
         /// Vault filename
         #[arg(long, env = "MURK_VAULT", default_value = ".murk")]
@@ -216,12 +256,13 @@ pub enum Command {
         /// Secret key name
         key: String,
         /// Description text
+        #[arg(value_parser = NewText::BLOCK)]
         description: String,
         /// Example value
-        #[arg(long)]
+        #[arg(long, value_parser = NewText::LINE)]
         example: Option<String>,
         /// Tag for grouping (repeatable, replaces existing tags)
-        #[arg(long)]
+        #[arg(long, value_parser = NewText::LINE)]
         tag: Vec<String>,
         /// Rotation interval, e.g. `90d` or `90` (days). `never` clears it
         #[arg(long, value_name = "DAYS")]
@@ -326,7 +367,7 @@ pub enum Command {
         /// Public key (age1...), ssh:path, ssh: (default ~/.ssh/id_ed25519.pub), or github:username
         pubkey: String,
         /// Display name for this recipient
-        #[arg(long)]
+        #[arg(long, value_parser = NewText::LINE)]
         name: Option<String>,
         /// Accept changed GitHub keys without confirmation
         #[arg(long)]
@@ -542,7 +583,7 @@ pub enum AgentCommand {
         #[arg(long, required = true)]
         only: Vec<String>,
         /// Set the agent allow-list to these tags before granting (repeatable)
-        #[arg(long = "allow-tag")]
+        #[arg(long = "allow-tag", value_parser = NewText::LINE)]
         allow_tag: Vec<String>,
         /// Time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)
         #[arg(long, default_value = "2h")]
@@ -591,7 +632,7 @@ pub enum AgentCommand {
         #[arg(long, required = true)]
         only: Vec<String>,
         /// Set the agent allow-list to these tags before granting (repeatable)
-        #[arg(long = "allow-tag")]
+        #[arg(long = "allow-tag", value_parser = NewText::LINE)]
         allow_tag: Vec<String>,
         /// Also expose `murk agent exec` to the agent (adds --allow-exec)
         #[arg(long)]
@@ -631,7 +672,7 @@ pub enum CircleCommand {
         /// Public key (age1...), ssh:path, ssh: (default ~/.ssh/id_ed25519.pub), or github:username
         pubkey: String,
         /// Display name for this recipient
-        #[arg(long)]
+        #[arg(long, value_parser = NewText::LINE)]
         name: Option<String>,
         /// Also add the new recipient to this group
         #[arg(long)]
@@ -727,7 +768,7 @@ pub enum PolicyCommand {
     /// Set the agent allow-list: agents may only receive secrets carrying one of these tags
     Set {
         /// Tag agents are allowed to receive (repeatable, required)
-        #[arg(long = "allow-tag", required = true)]
+        #[arg(long = "allow-tag", required = true, value_parser = NewText::LINE)]
         allow_tag: Vec<String>,
         /// Vault filename
         #[arg(long, env = "MURK_VAULT", default_value = ".murk")]

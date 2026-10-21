@@ -71,11 +71,6 @@ fn read_secret_file(path: &Path, label: &str) -> Result<String, String> {
 pub const ENV_MURK_KEY: &str = "MURK_KEY";
 /// Environment variable for the secret key file path.
 pub const ENV_MURK_KEY_FILE: &str = "MURK_KEY_FILE";
-/// Environment variable for the vault filename.
-pub const ENV_MURK_VAULT: &str = "MURK_VAULT";
-
-/// Keys to skip when importing from a .env file.
-const IMPORT_SKIP: &[&str] = &[ENV_MURK_KEY, ENV_MURK_KEY_FILE, ENV_MURK_VAULT];
 
 /// Remove the key variables from a child's environment. murk's subprocesses —
 /// the editor, the `exec` child, `git` — go through this, so the key never
@@ -269,47 +264,6 @@ pub fn key_from_env_only() -> Result<Option<(SecretString, KeySource)>, String> 
 pub(crate) fn read_stored_key(path: &Path) -> Result<SecretString, String> {
     let key = read_secret_file(path, "key file")?.trim().to_string();
     Ok(SecretString::from(key))
-}
-
-/// Parse a .env file into key-value pairs.
-/// Skips comments, blank lines, `MURK_*` keys, and strips quotes and `export` prefixes.
-///
-/// Values are wrapped in [`Zeroizing`] so that the plaintext is wiped from memory
-/// as soon as the caller drops them.
-pub fn parse_env(contents: &str) -> Vec<(String, Zeroizing<String>)> {
-    let mut pairs = Vec::new();
-
-    for line in contents.lines() {
-        let line = line.trim();
-
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-
-        let line = line.strip_prefix("export ").unwrap_or(line);
-
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-
-        let key = key.trim();
-        let value = value.trim();
-
-        // Strip surrounding quotes.
-        let value = value
-            .strip_prefix('"')
-            .and_then(|v| v.strip_suffix('"'))
-            .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
-            .unwrap_or(value);
-
-        if key.is_empty() || IMPORT_SKIP.contains(&key) {
-            continue;
-        }
-
-        pairs.push((key.into(), Zeroizing::new(value.to_string())));
-    }
-
-    pairs
 }
 
 /// The loose-permission warning for a `.env` mode, if it is group/other-readable
@@ -686,116 +640,6 @@ mod tests {
     use age::secrecy::ExposeSecret;
 
     use crate::testutil::{CWD_LOCK, ENV_LOCK};
-
-    #[test]
-    fn parse_env_empty() {
-        let pairs = parse_env("");
-        assert!(pairs.is_empty(), "{pairs:?}");
-    }
-
-    #[test]
-    fn parse_env_comments_and_blanks() {
-        let input = "# comment\n\n  # another\n";
-        let pairs = parse_env(input);
-        assert!(pairs.is_empty(), "{pairs:?}");
-    }
-
-    /// Compare parsed pairs against plain `(key, value)` expectations by
-    /// unwrapping the `Zeroizing` value wrappers.
-    fn assert_pairs(pairs: Vec<(String, Zeroizing<String>)>, expected: &[(&str, &str)]) {
-        // Controlled boundary: test-only comparison helper unwraps the
-        // Zeroizing values to compare plain strings (murk-lints
-        // secret_uncontrolled_escape).
-        #[cfg_attr(dylint_lib = "murk_lints", allow(secret_uncontrolled_escape))]
-        let actual: Vec<(String, String)> =
-            pairs.into_iter().map(|(k, v)| (k, (*v).clone())).collect();
-        let want: Vec<(String, String)> = expected
-            .iter()
-            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-            .collect();
-        assert_eq!(actual, want);
-    }
-
-    #[test]
-    fn parse_env_basic() {
-        assert_pairs(
-            parse_env("FOO=bar\nBAZ=qux\n"),
-            &[("FOO", "bar"), ("BAZ", "qux")],
-        );
-    }
-
-    #[test]
-    fn parse_env_double_quotes() {
-        assert_pairs(
-            parse_env("KEY=\"hello world\"\n"),
-            &[("KEY", "hello world")],
-        );
-    }
-
-    #[test]
-    fn parse_env_single_quotes() {
-        assert_pairs(parse_env("KEY='hello world'\n"), &[("KEY", "hello world")]);
-    }
-
-    #[test]
-    fn parse_env_export_prefix() {
-        assert_pairs(parse_env("export FOO=bar\n"), &[("FOO", "bar")]);
-    }
-
-    #[test]
-    fn parse_env_skips_murk_keys() {
-        let input = "MURK_KEY=secret\nMURK_KEY_FILE=/path\nMURK_VAULT=.murk\nKEEP=yes\n";
-        assert_pairs(parse_env(input), &[("KEEP", "yes")]);
-    }
-
-    #[test]
-    fn parse_env_equals_in_value() {
-        assert_pairs(
-            parse_env("URL=postgres://host?opt=1\n"),
-            &[("URL", "postgres://host?opt=1")],
-        );
-    }
-
-    #[test]
-    fn parse_env_no_equals_skipped() {
-        assert_pairs(parse_env("not-a-valid-line\nKEY=val\n"), &[("KEY", "val")]);
-    }
-
-    // ── New edge-case tests ──
-
-    #[test]
-    fn parse_env_empty_value() {
-        assert_pairs(parse_env("KEY=\n"), &[("KEY", "")]);
-    }
-
-    #[test]
-    fn parse_env_trailing_whitespace() {
-        assert_pairs(parse_env("KEY=value   \n"), &[("KEY", "value")]);
-    }
-
-    #[test]
-    fn parse_env_unicode_value() {
-        assert_pairs(parse_env("KEY=hello🔐world\n"), &[("KEY", "hello🔐world")]);
-    }
-
-    #[test]
-    fn parse_env_empty_key_skipped() {
-        let pairs = parse_env("=value\n");
-        assert!(pairs.is_empty(), "{pairs:?}");
-    }
-
-    #[test]
-    fn parse_env_mixed_quotes_unmatched() {
-        // Mismatched quotes are not stripped.
-        assert_pairs(parse_env("KEY=\"hello'\n"), &[("KEY", "\"hello'")]);
-    }
-
-    #[test]
-    fn parse_env_multiple_murk_vars() {
-        // All three MURK_ vars are skipped, other vars kept.
-        let input = "MURK_KEY=x\nMURK_KEY_FILE=y\nMURK_VAULT=z\nA=1\nB=2\n";
-        assert_pairs(parse_env(input), &[("A", "1"), ("B", "2")]);
-    }
 
     /// Helper: acquire both locks and cd to a clean temp dir.
     /// Returns guards and the previous cwd. The cwd is restored on drop
@@ -1559,16 +1403,6 @@ mod tests {
             std::env::set_current_dir(&original_dir).unwrap();
             std::fs::remove_dir_all(&dir).unwrap();
         }
-    }
-
-    #[test]
-    fn parse_env_comment_with_equals_is_skipped() {
-        // A comment line that happens to contain `=` must still be dropped;
-        // it must not be parsed into a `# FOO` key.
-        let pairs = parse_env("# FOO=bar\n");
-        assert!(pairs.is_empty(), "{pairs:?}");
-        let pairs = parse_env("   # A=B\n");
-        assert!(pairs.is_empty(), "{pairs:?}");
     }
 
     #[test]

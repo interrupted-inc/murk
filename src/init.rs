@@ -218,6 +218,9 @@ pub fn create_vault(
         signers,
         sig: None,
     };
+    // Every piece of header text here is new.
+    crate::validate::new_header_text(None, &vault, &meta.recipients)
+        .map_err(|e| MurkError::Secret(format!("refusing to write {e}")))?;
     crate::validate::meta(&meta)
         .map_err(|e| MurkError::Secret(format!("refusing to write invalid vault meta: {e}")))?;
     let meta_json =
@@ -473,6 +476,16 @@ mod tests {
                 v: crate::signature::SIGNED_VIEW_VERSION
             }
         );
+    }
+
+    #[test]
+    fn create_vault_refuses_text_that_can_forge_output() {
+        let (secret, _) = generate_keypair();
+        let identity = crate::testutil::make_identity(&secret);
+        let err = create_vault(".murk", &identity, "Bob\u{202e}").unwrap_err();
+        assert!(err.to_string().contains("meta.recipients"), "{err}");
+        let err = create_vault(".murk\r", &identity, "Bob").unwrap_err();
+        assert!(err.to_string().contains("vault_name"), "{err}");
     }
 
     // ── sanitize_remote_url tests ──

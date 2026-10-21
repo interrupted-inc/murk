@@ -831,24 +831,18 @@ pub fn recipient_changes(
 
 /// `name (age1abc…wxyz)` for a key, or just the truncated key. The name is
 /// chosen by whoever wrote the vault, so the key is always shown with it, and
-/// control characters in it (a `\r` that would overwrite the line, a `\n`
-/// that would cut the message) are replaced.
+/// the name is escaped with [`crate::validate::terminal_text`] (a `\r` that
+/// would overwrite the line, a `\n` that would cut the message, a bidi
+/// override).
 pub fn label(names: &std::collections::HashMap<String, String>, key: &str) -> String {
-    let canon = canonical_recipient(key).into_owned();
     let name = names
         .iter()
-        .find(|(pk, _)| canonical_recipient(pk).into_owned() == canon)
+        .find(|(pk, _)| crate::recipients::same_recipient(pk, key))
         .map(|(_, n)| n.as_str())
         .filter(|n| !n.is_empty());
     let short = crate::truncate_pubkey(key);
     match name {
-        Some(n) => {
-            let n: String = n
-                .chars()
-                .map(|c| if c.is_control() { '?' } else { c })
-                .collect();
-            format!("{n} ({short})")
-        }
+        Some(n) => format!("{} ({short})", crate::validate::terminal_text(n, false)),
         None => short,
     }
 }

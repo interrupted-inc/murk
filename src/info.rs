@@ -61,6 +61,40 @@ pub struct VaultInfo {
     pub entries: Vec<InfoEntry>,
 }
 
+impl VaultInfo {
+    /// A copy with every header text field passed through
+    /// [`crate::terminal_text`], for rendering to a terminal. Header text is
+    /// written by any recipient (or anyone, before a signature check), so it
+    /// must not be able to move the cursor, forge lines or reorder text.
+    #[must_use]
+    pub fn for_terminal(&self) -> VaultInfo {
+        let line = |s: &str| crate::terminal_text(s, false).into_owned();
+        VaultInfo {
+            vault_name: line(&self.vault_name),
+            codename: line(&self.codename),
+            repo: line(&self.repo),
+            created: line(&self.created),
+            recipient_count: self.recipient_count,
+            recipient_names: self.recipient_names.iter().map(|s| line(s)).collect(),
+            self_name: self.self_name.as_deref().map(line),
+            self_pubkey: self.self_pubkey.clone(),
+            entries: self
+                .entries
+                .iter()
+                .map(|e| InfoEntry {
+                    key: e.key.clone(),
+                    description: line(&e.description),
+                    example: e.example.as_deref().map(line),
+                    tags: e.tags.iter().map(|s| line(s)).collect(),
+                    rotation_interval_days: e.rotation_interval_days,
+                    expires_at: e.expires_at.clone(),
+                    scoped_recipients: e.scoped_recipients.iter().map(|s| line(s)).collect(),
+                })
+                .collect(),
+        }
+    }
+}
+
 /// Compute vault info from raw vault bytes.
 ///
 /// `raw_bytes` is the full file contents (for codename computation).
@@ -176,6 +210,7 @@ pub fn vault_info(
 /// Format vault info as plain-text lines (no ANSI colors).
 /// `has_meta` indicates whether scoped/tag columns should be shown.
 pub fn format_info_lines(info: &VaultInfo, has_meta: bool) -> Vec<String> {
+    let info = &info.for_terminal();
     let mut lines = Vec::new();
 
     lines.push(format!("▓░ {}", info.vault_name));

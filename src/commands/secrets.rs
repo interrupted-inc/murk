@@ -215,37 +215,23 @@ pub(crate) fn cmd_import(
             .unwrap_or_else(|e| die(&format_args!("cannot read {file}: {e}"), 1)),
     );
 
-    // Warn about MURK_* keys that will be skipped during import.
-    for line in contents.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let line = line.strip_prefix("export ").unwrap_or(line);
-        if let Some((key, _)) = line.split_once('=') {
-            let key = key.trim();
-            if key.starts_with("MURK_") {
-                eprintln!(
-                    "{} skipping {}: murk variables cannot be imported",
-                    "⚠".yellow(),
-                    key.bold()
-                );
-            }
-        }
+    // A malformed quoted value refuses the whole file: the lines after an
+    // unclosed quote must not turn into secrets of their own. Notices name
+    // line numbers, never the file's text.
+    let parsed = murk_cli::parse_env(&contents)
+        .unwrap_or_else(|e| die(&format_args!("{file}, {e} — nothing imported"), 1));
+    for skipped in &parsed.skipped {
+        eprintln!("{} skipping {skipped}", "⚠".yellow());
     }
-
-    let all_pairs = murk_cli::parse_env(&contents);
-
-    // Filter out keys that aren't valid shell identifiers. Values stay
-    // wrapped in Zeroizing end-to-end.
-    let mut pairs: Vec<(String, zeroize::Zeroizing<String>)> = Vec::new();
-    for (key, value) in &all_pairs {
-        if is_valid_key_name(key) {
-            warn_if_reserved(key);
-            pairs.push((key.clone(), value.clone()));
-        } else {
-            eprintln!("{} skipping invalid key name: {}", "⚠".yellow(), key.bold());
-        }
+    for notice in &parsed.hash_notices {
+        eprintln!("{} {notice}", "⚠".yellow());
+    }
+    for duplicate in &parsed.duplicates {
+        eprintln!("{} {duplicate}; the later value is kept", "⚠".yellow());
+    }
+    let pairs = parsed.pairs;
+    for (key, _) in &pairs {
+        warn_if_reserved(key);
     }
 
     if pairs.is_empty() {
@@ -593,7 +579,13 @@ pub(crate) fn cmd_get(key: &str, vault_path: &str) {
     ));
 
     if let Some(value) = murk_cli::get_secret(&murk, key, &pubkey) {
-        println!("{value}");
+        // A terminal would act on escape sequences in the value; a pipe gets
+        // the exact bytes.
+        if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+            println!("{}", murk_cli::terminal_text(value, true));
+        } else {
+            println!("{value}");
+        }
         return;
     }
 
@@ -795,7 +787,22 @@ pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vau
     let explicit = resolve_secret_tier(group, scoped);
     let tier = explicit.clone().unwrap_or(SecretTier::Everyone);
 
+    // The vault's bytes as loaded. The editor can stay open for minutes, and a
+    // `git pull` or checkout meanwhile does not take murk's lock; saving then
+    // would silently undo it (even re-adding a revoked recipient). Read before
+    // loading, so any change after this point is caught.
+    let on_disk = fs::read(vault_path).ok();
     let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
+    let refuse_if_changed = || {
+        if fs::read(vault_path).ok() != on_disk {
+            die(
+                &format_args!(
+                    "{vault_path} changed on disk while the editor was open — nothing saved\nre-run murk edit to edit the current vault"
+                ),
+                1,
+            );
+        }
+    };
     let original = murk.clone();
     let mut current = murk;
     let pubkey = identity.pubkey_string().unwrap_or_else(|e| die(&e, 1));
@@ -843,21 +850,24 @@ pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vau
         SecretTier::Group(name) => format!(" (group {name})"),
     };
 
-    // Build the edit buffer.
+    // Build the edit buffer. Values use the `.env` quoting of `murk_cli::dotenv`,
+    // so every value, multi-line or not, reads back byte for byte.
+    use murk_cli::dotenv;
+    let quoting_note = "# Values with newlines, quotes, # or spaces at either end are in \"double\n\
+                        # quotes\" with \\n \\t \\\" \\\\ escapes.\n";
     let (header, entries) = if let Some(k) = key {
-        // Single key: just the raw value.
         let value = tier_get(&current, &tier, &pubkey, k).unwrap_or_else(|| {
             die(&format_args!("key {} not found{tier_label}", k.bold()), 1);
         });
         check_listed(&vault, &current, k);
         (
             format!(
-                "# Editing {k}{tier_label}\n# Save and quit to apply. Empty value or exit non-zero to abort.\n",
+                "# Editing {k}{tier_label}\n# Save and quit to apply. Empty value or exit non-zero to abort.\n{quoting_note}{}\n",
+                dotenv::VALUE_MARKER,
             ),
             vec![(k.to_string(), value)] as Vec<(String, zeroize::Zeroizing<String>)>,
         )
     } else {
-        // All keys: KEY=VALUE format.
         let entries = tier_list(&current, &tier, &pubkey);
         let scope_note = match &tier {
             SecretTier::Everyone => String::new(),
@@ -867,6 +877,7 @@ pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vau
         let header = format!(
             "# Edit secrets below. Lines starting with # are ignored.\n\
              # Format: KEY=VALUE (one per line).\n\
+             {quoting_note}\
              # Delete a line to remove that secret. Add KEY=VALUE to create.\n\
              # Save and quit to apply. Exit non-zero to abort.\n{scope_note}\n",
         );
@@ -874,27 +885,35 @@ pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vau
     };
 
     let single_key = key.is_some();
-    let buffer: zeroize::Zeroizing<String> = if single_key {
-        zeroize::Zeroizing::new(format!("{}{}", header, entries[0].1.as_str()))
+    let mut buffer = zeroize::Zeroizing::new(header);
+    if single_key {
+        dotenv::push_value(&mut buffer, &entries[0].1);
     } else {
-        let mut buf = header;
         for (k, v) in &entries {
-            buf.push_str(&format!("{k}={}\n", v.as_str()));
+            buffer.push_str(k);
+            buffer.push('=');
+            dotenv::push_value(&mut buffer, v);
+            buffer.push('\n');
         }
-        zeroize::Zeroizing::new(buf)
-    };
+    }
 
-    // Prefer XDG_RUNTIME_DIR (typically tmpfs, not written to disk) over /tmp.
+    // The scratch dir: XDG_RUNTIME_DIR if set (typically tmpfs), else a
+    // RAM-backed /dev/shm, else the system temp dir.
     let dir = std::env::var("XDG_RUNTIME_DIR")
         .ok()
         .map(std::path::PathBuf::from)
         .filter(|p| p.is_dir())
+        .or_else(|| {
+            let shm = std::path::PathBuf::from("/dev/shm");
+            (cfg!(unix) && shm.is_dir() && murk_cli::hardening::is_ram_backed(&shm)).then_some(shm)
+        })
         .unwrap_or_else(std::env::temp_dir);
+    let ram_backed = murk_cli::hardening::is_ram_backed(&dir);
 
     // Strict mode: refuse to write the decrypted secret anywhere but RAM. The
     // best-effort wipe below can't undo a write to a journaled/CoW disk, so when
     // MURK_STRICT is set we fail closed rather than fall back to a disk temp dir.
-    if murk_cli::hardening::strict_mode() && !murk_cli::hardening::is_ram_backed(&dir) {
+    if murk_cli::hardening::strict_mode() && !ram_backed {
         eprintln!(
             "{} MURK_STRICT is set but {} is not RAM-backed",
             "error".red().bold(),
@@ -910,6 +929,19 @@ pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vau
         );
         std::process::exit(1);
     }
+    if !ram_backed {
+        eprintln!(
+            "{} the plaintext goes to a scratch file in {}, which is not RAM-backed",
+            "⚠".yellow(),
+            dir.display()
+        );
+        eprintln!(
+            "  {}",
+            "murk wipes it afterwards, but a journaling or copy-on-write disk can keep a copy; \
+             point XDG_RUNTIME_DIR at a tmpfs, or set MURK_STRICT=1 to refuse"
+                .dimmed()
+        );
+    }
 
     use super::editor::{EditAbort, edit_in_scratch_file};
     let edited = match edit_in_scratch_file(&dir, &buffer) {
@@ -923,24 +955,21 @@ pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vau
         }
     };
 
-    // Parse and apply changes.
+    // Parse and apply changes. A buffer that does not parse saves nothing.
+    fn refused(e: &murk_cli::dotenv::ParseError) -> ! {
+        die(
+            &format_args!(
+                "edited file, {e} — nothing saved\nsee the quoting notes at the top of the file"
+            ),
+            1,
+        )
+    }
     if single_key {
         let k = key.unwrap();
-        // Strip comment header, trim trailing newline.
-        let mut new_value: zeroize::Zeroizing<String> = zeroize::Zeroizing::new(
-            edited
-                .lines()
-                .filter(|l| !l.starts_with('#'))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        );
-        let trimmed_len = new_value.trim_end_matches('\n').len();
-        new_value.truncate(trimmed_len);
-
-        if new_value.is_empty() {
+        let Some(new_value) = dotenv::parse_single(&edited).unwrap_or_else(|e| refused(&e)) else {
             eprintln!("{} empty value — no changes", "◆".magenta());
             return;
-        }
+        };
 
         let old_value = tier_get(&current, &tier, &pubkey, k);
 
@@ -960,34 +989,16 @@ pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vau
             &pubkey,
         ));
 
+        refuse_if_changed();
         save_vault(vault_path, &mut vault, &original, &current);
         eprintln!("{} updated {}{tier_label}", "◆".magenta(), k.bold());
     } else {
-        // Multi-key: parse KEY=VALUE lines, diff against original.
-        let mut new_entries: std::collections::BTreeMap<String, zeroize::Zeroizing<String>> =
-            std::collections::BTreeMap::new();
-        for line in edited.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-            let (k, v) = match trimmed.split_once('=') {
-                Some((k, v)) => (k.trim(), v),
-                None => {
-                    eprintln!(
-                        "{} skipping malformed line: {}",
-                        "⚠".yellow(),
-                        trimmed.dimmed()
-                    );
-                    continue;
-                }
-            };
-            if !is_valid_key_name(k) {
-                eprintln!("{} skipping invalid key name: {}", "⚠".yellow(), k.bold());
-                continue;
-            }
-            new_entries.insert(k.to_string(), zeroize::Zeroizing::new(v.to_string()));
-        }
+        // Multi-key: diff the parsed entries against the original.
+        let new_entries: std::collections::BTreeMap<String, zeroize::Zeroizing<String>> =
+            dotenv::parse_edit_buffer(&edited)
+                .unwrap_or_else(|e| refused(&e))
+                .into_iter()
+                .collect();
 
         // Compute diff.
         let old_entries: std::collections::BTreeMap<String, zeroize::Zeroizing<String>> =
@@ -1066,6 +1077,7 @@ pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vau
             return;
         }
 
+        refuse_if_changed();
         save_vault(vault_path, &mut vault, &original, &current);
 
         let mut parts = vec![];

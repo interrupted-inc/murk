@@ -122,7 +122,7 @@ const ENV_GROUPS: &[(&str, &[EnvVar])] = &[
             },
             EnvVar {
                 name: "XDG_RUNTIME_DIR",
-                summary: "Preferred (typically tmpfs) scratch location for `murk edit`'s temporary file, over `/tmp`.",
+                summary: "Scratch location for `murk edit`'s temporary file when it is a directory (typically tmpfs). Otherwise murk uses `/dev/shm` if it is RAM-backed, then the system temp dir, and warns when the file will not be in RAM.",
             },
             EnvVar {
                 name: "HOME (USERPROFILE on Windows)",

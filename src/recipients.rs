@@ -422,7 +422,7 @@ pub fn format_recipient_lines(entries: &[RecipientEntry]) -> Vec<String> {
 
     let name_width = groups
         .iter()
-        .map(|g| g.name.map_or(0, str::len))
+        .map(|g| g.name.map_or(0, |n| crate::terminal_text(n, false).len()))
         .max()
         .unwrap_or(0);
 
@@ -430,7 +430,7 @@ pub fn format_recipient_lines(entries: &[RecipientEntry]) -> Vec<String> {
         .iter()
         .map(|g| {
             let marker = if g.is_self { "◆" } else { " " };
-            let label = g.name.unwrap_or("");
+            let label = crate::terminal_text(g.name.unwrap_or(""), false);
             let label_padded = format!("{label:<name_width$}");
             let key_type = key_type_label(&g.entries[0].pubkey);
             let key_info = if g.entries.len() == 1 {

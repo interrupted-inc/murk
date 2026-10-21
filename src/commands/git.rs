@@ -219,11 +219,20 @@ pub(crate) fn cmd_diff(git_ref: &str, show_values: bool, json: bool, vault_path:
         }
         return;
     }
+
+    // Values are shown in `.env` quoting: one line each, with control and
+    // invisible characters escaped, so a value cannot drive the terminal or
+    // pass for other output. `--json` carries the exact bytes.
+    let shown = |v: Option<&zeroize::Zeroizing<String>>| {
+        let mut out = zeroize::Zeroizing::new(String::new());
+        murk_cli::dotenv::push_value(&mut out, v.map_or("", |v| v.as_str()));
+        out
+    };
     for entry in &entries {
-        let key = murk_cli::show_untrusted(&entry.key);
-        let old = entry.old_value.as_ref().map_or("", |v| v.as_str());
-        let new = entry.new_value.as_ref().map_or("", |v| v.as_str());
-        let (old, new) = (value_text(old), value_text(new));
+        let key = murk_cli::terminal_text(&entry.key, false);
+        let old = shown(entry.old_value.as_ref());
+        let new = shown(entry.new_value.as_ref());
+        let (old, new) = (old.as_str(), new.as_str());
         match entry.kind {
             DiffKind::Added if show_values => {
                 println!("{} {} = {}", "+".magenta().bold(), key.bold(), new);
@@ -285,11 +294,6 @@ fn diff_kind(kind: &DiffKind) -> &'static str {
         DiffKind::Removed => "removed",
         DiffKind::Changed => "changed",
     }
-}
-
-/// A secret value for a terminal line: escaped, never truncated.
-fn value_text(v: &str) -> String {
-    v.chars().flat_map(char::escape_debug).collect()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -395,18 +399,18 @@ impl Change {
             } => format!(
                 "{} grant {}",
                 sign(&Op::Removed),
-                murk_cli::show_untrusted(name)
+                murk_cli::terminal_text(name, false)
             ),
             Change::Grant { name, key, .. } => format!(
                 "{} grant {} ({})",
                 sign(&Op::Changed),
-                murk_cli::show_untrusted(name),
+                murk_cli::terminal_text(name, false),
                 key.as_deref().map(label).unwrap_or_default()
             ),
             Change::GroupMember { op, group, key } => format!(
                 "{} group {} member {}",
                 sign(op),
-                murk_cli::show_untrusted(group),
+                murk_cli::terminal_text(group, false),
                 label(key)
             ),
         }

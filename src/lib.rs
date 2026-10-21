@@ -26,6 +26,7 @@ pub mod cli;
 pub(crate) mod codename;
 pub mod connect;
 pub mod crypto;
+pub mod dotenv;
 pub(crate) mod env;
 pub mod error;
 pub(crate) mod export;
@@ -64,9 +65,10 @@ mod property_tests;
 
 // Re-exports: keep the flat murk_cli::foo() API for main.rs
 pub use agent::{AgentPlan, AgentPlanKey, agent_plan, format_agent_plan_text};
+pub use dotenv::parse_env;
 pub use env::{
     EnvrcStatus, KeySource, agent_key_file_path, agent_keys_dir, create_key_file,
-    dotenv_has_murk_key, env_permission_warning, home_short, key_file_path, locate_key, parse_env,
+    dotenv_has_murk_key, env_permission_warning, home_short, key_file_path, locate_key,
     resolve_key, resolve_key_for_vault, resolve_key_with_source, secret_file_loose_mode,
     strip_key_env, write_envrc, write_key_ref_to_dotenv, write_key_to_dotenv, write_key_to_file,
 };
@@ -102,6 +104,7 @@ pub use secrets::{
     check_foreign_groups, describe_key, get_secret, key_tiers, list_keys, mark_revoked,
     remove_secret, require_group_access, rotate_secret, rotation_health, set_secret,
 };
+pub use validate::{is_deceptive, new_text, terminal_text, unsafe_text_fields};
 
 use std::path::Path;
 
@@ -113,15 +116,14 @@ mod signature;
 pub use load::{
     InspectedVault, RevisionTrust, decrypt_vault, decrypt_vault_revision, inspect_vault, load_vault,
 };
-pub(crate) use mac::{compute_mac, decode_mac_key, generate_mac_key, verify_mac};
-pub use save::save_vault;
-pub(crate) use signature::{register_signer, sign_vault, signing_identity, verify_vault_signature};
 /// Escape and truncate vault-supplied text for display (see `validate::show`).
-pub use validate::show as show_untrusted;
 // Internal helpers surfaced at the crate root only for the split-out unit and
 // property tests to reach across module boundaries.
 #[cfg(test)]
 pub(crate) use mac::compute_mac_v5;
+pub(crate) use mac::{compute_mac, decode_mac_key, generate_mac_key, verify_mac};
+pub use save::save_vault;
+pub(crate) use signature::{register_signer, sign_vault, signing_identity, verify_vault_signature};
 
 /// Check whether a key name is a valid shell identifier (safe for `export KEY=...`).
 /// Must start with a letter or underscore, and contain only `[A-Za-z0-9_]`.

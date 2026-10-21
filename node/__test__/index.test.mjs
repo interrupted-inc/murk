@@ -344,6 +344,17 @@ test("vault.add by a non-member to a group's key throws and changes nothing", ()
 
 process.env.MURK_KEY = testKey
 
+test('add and describe refuse text that could forge or reorder output', () => {
+  const vault = load()
+  assert.throws(() => vault.add('SPOOF', 'x', { desc: 'ok\rforged' }), /schema\.SPOOF\.description: contains control/)
+  assert.throws(() => vault.add('SPOOF', 'x', { tags: ['a\u202eb'] }), /schema\.SPOOF\.tags\[0\]: contains invisible/)
+  assert.throws(() => vault.describe('SPOOF', 'a\u200bb'), /schema\.SPOOF\.description: contains invisible/)
+  assert.strictEqual(load().has('SPOOF'), false)
+  // Newlines are fine in a description.
+  vault.describe('MULTILINE', 'first line\nsecond line')
+  assert.strictEqual(load().has('MULTILINE'), true)
+})
+
 // Agent policy enforcement: a granted agent identity is gated by the vault's
 // policy from the binding, just like the CLI gates it at `agent exec`.
 console.log('\nSetting up agent policy vault...')

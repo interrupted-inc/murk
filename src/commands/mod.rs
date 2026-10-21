@@ -367,9 +367,11 @@ impl RotationOutcome {
 }
 
 /// Read `--values-from` input (`-` for stdin) with the `murk import` parser.
-/// The raw contents are wiped as soon as they are parsed. A file is refused if
-/// it is a symlink, and a warning names it if others can read it: it holds new
-/// plaintext credentials, and `-` avoids writing them to disk at all.
+/// The raw contents are wiped as soon as they are parsed. A parse error or a
+/// key named twice aborts with nothing rotated; skipped entries and unquoted
+/// " #" values are reported by line number, never by value. A file is refused
+/// if it is a symlink, and a warning names it if others can read it: it holds
+/// new plaintext credentials, and `-` avoids writing them to disk at all.
 pub(crate) fn read_values_from(path: &str) -> Vec<(String, zeroize::Zeroizing<String>)> {
     let mut contents = zeroize::Zeroizing::new(String::new());
     if path == "-" {
@@ -395,7 +397,26 @@ pub(crate) fn read_values_from(path: &str) -> Vec<(String, zeroize::Zeroizing<St
         *contents = std::fs::read_to_string(file)
             .unwrap_or_else(|e| die(&format_args!("cannot read {path}: {e}"), 1));
     }
-    murk_cli::parse_env(&contents)
+    let label = if path == "-" { "stdin" } else { path };
+    let parsed = murk_cli::parse_env(&contents)
+        .unwrap_or_else(|e| die(&format_args!("{label}, {e} — nothing rotated"), 1));
+    for s in &parsed.skipped {
+        eprintln!("{} skipping {s}", "⚠".yellow());
+    }
+    for notice in &parsed.hash_notices {
+        eprintln!("{} {notice}", "⚠".yellow());
+    }
+    if !parsed.duplicates.is_empty() {
+        let lines: Vec<String> = parsed.duplicates.iter().map(ToString::to_string).collect();
+        die(
+            &format_args!(
+                "{label} names a key more than once, so nothing was rotated\n{}\nkeep one line per key",
+                lines.join("\n")
+            ),
+            1,
+        );
+    }
+    parsed.pairs
 }
 
 /// Refuse a rotation batch whose values could land on the wrong key, before
@@ -442,29 +463,22 @@ pub(crate) fn check_batch(
             }
         }
         ValueSource::Named(pairs) => {
-            let mut seen = std::collections::HashSet::new();
             let mut problems = Vec::new();
             for (k, v) in pairs {
                 let plan = plans.iter().find(|p| p.key == *k);
-                let reason = if !seen.insert(k.as_str()) {
-                    Some("named more than once".to_string())
-                } else {
-                    match plan {
-                        None if !vault.secrets.contains_key(k) => {
-                            Some("not in this vault".to_string())
-                        }
-                        None => Some("not part of this rotation".to_string()),
-                        Some(p) if !p.skipped.is_empty() => Some(p.skipped.join("; ")),
-                        Some(p) if p.targets.is_empty() => {
-                            Some("nothing of it is left to rotate".to_string())
-                        }
-                        Some(p) if p.targets.len() > 1 => Some(
-                            "it holds values in more than one tier; rotate it interactively"
-                                .to_string(),
-                        ),
-                        Some(_) if v.is_empty() => Some("empty value".to_string()),
-                        Some(_) => None,
+                let reason = match plan {
+                    None if !vault.secrets.contains_key(k) => Some("not in this vault".to_string()),
+                    None => Some("not part of this rotation".to_string()),
+                    Some(p) if !p.skipped.is_empty() => Some(p.skipped.join("; ")),
+                    Some(p) if p.targets.is_empty() => {
+                        Some("nothing of it is left to rotate".to_string())
                     }
+                    Some(p) if p.targets.len() > 1 => Some(
+                        "it holds values in more than one tier; rotate it interactively"
+                            .to_string(),
+                    ),
+                    Some(_) if v.is_empty() => Some("empty value".to_string()),
+                    Some(_) => None,
                 };
                 if let Some(reason) = reason {
                     problems.push(format!("{k}: {reason}"));
