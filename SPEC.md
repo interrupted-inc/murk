@@ -168,7 +168,7 @@ Optional agent access policy, in the plaintext header so it is readable without 
 
 - `agent_allow_tags` — in agent mode, a secret may be injected or granted only if its schema carries at least one of these tags. Once a policy is set it is default-deny: an untagged or wrong-tagged key is refused with a clear error (no override — the operator edits the policy). An empty list locks agents out entirely.
 
-The policy is covered by the integrity MAC (see Integrity), so it cannot be stripped or weakened without a key. The field is omitted entirely when no policy is set, keeping policy-free vaults byte-identical to pre-policy murk.
+The policy is covered by the integrity MAC (see Integrity), so it cannot be stripped or weakened without a key. The field is omitted entirely when no policy is set, keeping policy-free vaults in the same layout as pre-policy murk.
 
 ### Secrets
 
@@ -223,7 +223,7 @@ The `meta` field is a single age blob encrypted to all recipients. It contains:
 
 `signers` maps a recipient pubkey to its base64 Ed25519 verifying key, recorded when that recipient signs. `sig` is the current Ed25519 signature: `signer` (the recipient pubkey that produced it), `v` (signed-view version), and `sig` (base64). Both are omitted when the last writer had no signing-capable identity. See Signatures below.
 
-`groups` maps a group name to its member pubkeys (a subset of `recipients`). Stored here, not in the plaintext header, so org structure — who is in which group — does not leak. Members are covered by the MAC. The field is omitted entirely when the vault has no named groups, keeping group-free vaults byte-identical to pre-groups murk.
+`groups` maps a group name to its member pubkeys (a subset of `recipients`). Stored here, not in the plaintext header, so org structure — who is in which group — does not leak. Members are covered by the MAC. The field is omitted entirely when the vault has no named groups, keeping group-free vaults in the same layout as pre-groups murk.
 
 `grants` maps an agent grant name to its metadata: the agent's ephemeral `pubkey` (also a `recipients` entry), the `scope` of keys it may read, `issued_at`/`expires_at` timestamps, and the `issuer` pubkey. The agent is excluded from the `everyone` layer — its access is the set of `scoped` ciphertexts encrypted to its pubkey, one per scope key. Stored here (not in the header) so an agent's existence and scope don't leak. Covered by the MAC so TTL/scope/issuer can't be altered undetected. The field is omitted entirely when the vault has no grants. The `expires_at` TTL is enforced by the murk binary at read time — an expired grant fails closed — though not cryptographically (see THREAT_MODEL.md).
 
