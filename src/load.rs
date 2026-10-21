@@ -384,6 +384,56 @@ pub fn load_vault(
     Ok((vault, murk, identity))
 }
 
+/// Verify and decrypt vault contents that are not the working file, such as a
+/// git revision read by `murk diff`.
+///
+/// Runs the same checks as [`load_vault`]: schema validation, the MAC, the
+/// signature, grant expiry, and the signer pin for `vault_path`, including the
+/// `MURK_STRICT` refusal of an unsigned vault that was signed before. The pin is
+/// only read: a revision never records signers (see [`pins::check`]). Any
+/// failure is an error, so a revision that cannot be verified is never
+/// decrypted.
+pub fn decrypt_vault_revision(
+    vault_path: &str,
+    contents: &str,
+    identity: &crypto::MurkIdentity,
+) -> Result<(types::Vault, types::Murk), MurkError> {
+    let vault = crate::vault::parse(contents)?;
+    let mut murk = decrypt_vault(&vault, identity)?;
+
+    let signed = matches!(murk.signature, types::SignatureState::Signed { .. });
+    match pins::check(vault_path, &murk.signers, signed) {
+        pins::PinVerdict::Conflict { signer } => {
+            return Err(MurkError::Integrity(format!(
+                "signer {signer}'s verifying key differs from the one pinned for {vault_path} — \
+                 the signer registry at this revision may have been tampered with to forge a \
+                 signature"
+            )));
+        }
+        pins::PinVerdict::Ok {
+            first_use,
+            downgraded,
+        } => {
+            if let types::SignatureState::Signed { signer, anchored } = &mut murk.signature
+                && !*anchored
+                && !first_use.contains(signer.as_str())
+            {
+                *anchored = true;
+            }
+            if downgraded {
+                if crate::hardening::strict_mode() {
+                    return Err(MurkError::Integrity(format!(
+                        "this revision of {vault_path} is unsigned, but the vault has been \
+                         signed on this machine before. Refusing under MURK_STRICT"
+                    )));
+                }
+                murk.signature_downgraded = true;
+            }
+        }
+    }
+    Ok((vault, murk))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

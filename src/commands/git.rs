@@ -106,55 +106,82 @@ pub(crate) fn cmd_setup_merge_driver() {
 }
 
 pub(crate) fn cmd_diff(git_ref: &str, show_values: bool, json: bool, vault_path: &str) {
-    let (_vault, current_murk, identity) = load_vault(vault_path);
+    if show_values {
+        super::secrets::strict_guard_plaintext_stdout(
+            "pipe the output to a program instead of redirecting it to a file",
+        );
+    }
+    let (vault, current_murk, identity) = load_vault(vault_path);
+    let pubkey = identity.pubkey_string().unwrap_or_else(|e| die(&e, 1));
 
-    // Get the old vault contents from git.
-    let output = murk_cli::git_command()
-        .args(["show", &format!("{git_ref}:{vault_path}")])
-        .output()
-        .unwrap_or_else(|e| die(&format_args!("running git: {e}"), 1));
-
-    let old_values: HashMap<String, zeroize::Zeroizing<String>> = if output.status.success() {
-        let old_contents = String::from_utf8_lossy(&output.stdout);
-        match murk_cli::parse_and_decrypt_values(&old_contents, &identity) {
-            Ok(values) => {
-                if values.is_empty() {
-                    // Check if the old vault had secrets — if so, we couldn't decrypt.
-                    if let Ok(old_vault) = vault::parse(&old_contents)
-                        && !old_vault.secrets.is_empty()
-                    {
-                        eprintln!(
-                            "{} cannot decrypt vault at {git_ref} — you may not have been a recipient",
-                            "⚠".yellow()
-                        );
-                    }
-                }
-                values
-            }
-            Err(e) => die(&format_args!("parsing vault at {git_ref}: {e}"), 1),
+    let old_contents =
+        murk_cli::vault_at_revision(git_ref, vault_path).unwrap_or_else(|e| die(&e, 1));
+    let old_values: HashMap<String, zeroize::Zeroizing<String>> = match old_contents {
+        None => {
+            eprintln!(
+                "{} {vault_path} does not exist at {git_ref} — every secret shows as added",
+                "◆".magenta()
+            );
+            HashMap::new()
         }
-    } else {
-        HashMap::<String, zeroize::Zeroizing<String>>::new()
+        Some(contents) => {
+            // The revision gets the same verification as the working vault, so
+            // diff never decrypts content that `murk get` would refuse.
+            let (old_vault, old_murk) = murk_cli::decrypt_vault_revision(
+                vault_path, &contents, &identity,
+            )
+            .unwrap_or_else(|e| match e {
+                murk_cli::MurkError::Vault(_) => {
+                    die(&format_args!("parsing vault at {git_ref}: {e}"), 1)
+                }
+                murk_cli::MurkError::Integrity(_) => die(
+                    &format_args!(
+                        "vault at {git_ref} failed verification, so it is not shown: {e}"
+                    ),
+                    1,
+                ),
+                _ => die(&format_args!("cannot decrypt vault at {git_ref}: {e}"), 1),
+            });
+            if old_murk.signature_downgraded {
+                eprintln!(
+                    "{} vault at {git_ref} is unsigned, but this vault was signed before on this machine — its integrity rests on git",
+                    "warn".yellow().bold()
+                );
+            } else if matches!(old_murk.signature, types::SignatureState::Unsigned)
+                && !old_vault.secrets.is_empty()
+            {
+                eprintln!(
+                    "{} vault at {git_ref} is unsigned — its integrity rests on git",
+                    "warn".yellow().bold()
+                );
+            }
+            murk_cli::resolve_secrets(&old_vault, &old_murk, &pubkey, &[])
+                .into_iter()
+                .collect()
+        }
     };
 
-    let pubkey = identity.pubkey_string().unwrap_or_else(|e| die(&e, 1));
     let current_values: HashMap<String, zeroize::Zeroizing<String>> =
-        murk_cli::resolve_secrets(&_vault, &current_murk, &pubkey, &[])
+        murk_cli::resolve_secrets(&vault, &current_murk, &pubkey, &[])
             .into_iter()
             .collect();
     let entries = murk_cli::diff_secrets(&old_values, &current_values);
 
     if json {
+        // Values only with --show-values, as in the human output.
         // serde_json copies into its own owned String; zeroization ends at this boundary.
         let list: Vec<serde_json::Value> = entries
             .iter()
             .map(|e| {
-                serde_json::json!({
+                let mut obj = serde_json::json!({
                     "key": e.key,
                     "kind": format!("{:?}", e.kind).to_lowercase(),
-                    "old_value": e.old_value.as_ref().map(|v| v.as_str()),
-                    "new_value": e.new_value.as_ref().map(|v| v.as_str()),
-                })
+                });
+                if show_values {
+                    obj["old_value"] = e.old_value.as_ref().map(|v| v.as_str()).into();
+                    obj["new_value"] = e.new_value.as_ref().map(|v| v.as_str()).into();
+                }
+                obj
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&list).unwrap());

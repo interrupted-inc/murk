@@ -108,6 +108,29 @@ pub fn reconcile(
     signers: &BTreeMap<String, String>,
     currently_signed: bool,
 ) -> PinVerdict {
+    evaluate(vault_path, signers, currently_signed, true)
+}
+
+/// Check a signer registry against the local pin without recording anything.
+///
+/// Same verdict as [`reconcile`], for vault contents that are not the working
+/// file (e.g. a git revision read by `murk diff`). A historical revision must
+/// not extend the pin: its signers were never trusted on this machine, and
+/// recording them would let old or attacker-supplied history poison it.
+pub fn check(
+    vault_path: &str,
+    signers: &BTreeMap<String, String>,
+    currently_signed: bool,
+) -> PinVerdict {
+    evaluate(vault_path, signers, currently_signed, false)
+}
+
+fn evaluate(
+    vault_path: &str,
+    signers: &BTreeMap<String, String>,
+    currently_signed: bool,
+    record: bool,
+) -> PinVerdict {
     // No anchor available → nothing is anchored and we can't detect a downgrade.
     let all_unanchored = || PinVerdict::Ok {
         first_use: signers.keys().cloned().collect(),
@@ -155,7 +178,7 @@ pub fn reconcile(
     if newly_signed {
         pin.was_signed = true;
     }
-    if !first_use.is_empty() || newly_signed {
+    if record && (!first_use.is_empty() || newly_signed) {
         write_pin(&path, &pin);
     }
 
@@ -304,6 +327,30 @@ mod tests {
                 PinVerdict::Conflict {
                     signer: "age1alice".into()
                 }
+            );
+        });
+    }
+
+    #[test]
+    fn check_detects_conflicts_but_never_records() {
+        with_home(|_| {
+            reconcile("/proj/.murk", &map(&[("age1alice", "vkALICE")]), true);
+            assert_eq!(
+                check("/proj/.murk", &map(&[("age1alice", "vkATTACKER")]), true),
+                PinVerdict::Conflict {
+                    signer: "age1alice".into()
+                }
+            );
+            // A revision's unseen signer is checked, not pinned: the attacker's
+            // key is still first-use on the next real load, and alice's pin stands.
+            check("/proj/.murk", &map(&[("age1mallory", "vkMALLORY")]), true);
+            assert_eq!(
+                first_use_of(reconcile(
+                    "/proj/.murk",
+                    &map(&[("age1alice", "vkALICE"), ("age1mallory", "vkOTHER")]),
+                    true
+                )),
+                BTreeSet::from(["age1mallory".to_string()])
             );
         });
     }

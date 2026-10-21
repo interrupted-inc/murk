@@ -39,7 +39,7 @@ Existing secrets tools are either too complex (SOPS, Vault), tied to a runtime (
 | `MURK_KEY`     | No       | Raw age private key (`AGE-SECRET-KEY-1...`). Dev-mode convenience — the key is plaintext on disk. |
 | `MURK_KEY_FILE`| Yes      | Path to a private key file. Set by `murk init`. May be a raw age key, an SSH PEM key, or an age plugin identity file with a `# Recipient: age1...` (or `# public key: age1...`) header. |
 | `MURK_VAULT`   | No       | Vault filename. Defaults to `.murk`.                    |
-| `MURK_STRICT`  | No       | When `1`/`true`/`yes`, fail closed rather than let a secret touch disk: requires `murk edit`'s scratch file to live on a RAM-backed filesystem, and refuses `export`/`get` when stdout is a regular file (plaintext to disk). |
+| `MURK_STRICT`  | No       | When `1`/`true`/`yes`, fail closed rather than let a secret touch disk: requires `murk edit`'s scratch file to live on a RAM-backed filesystem, and refuses `export`/`get`/`diff --show-values` when stdout is a regular file (plaintext to disk). |
 
 Your identity is your key. murk derives your public key from `MURK_KEY` or `MURK_KEY_FILE` to determine which private secrets are yours and to identify you in the recipient list. Set one, not both: when both are non-empty murk refuses to resolve a key instead of picking one, and an empty value counts as unset.
 
@@ -128,7 +128,7 @@ The `version` field is `2.MINOR` or `2.MINOR.PATCH` (decimal, no leading zeros).
 
 ### Load-time validation
 
-A `.murk` file arrives through git and is untrusted. Every reader (the working vault, `git show` revisions for `diff`, and all three merge-driver inputs) checks each field against an allowlist and refuses the whole vault on the first failure, naming the field. `murk` applies the same checks before it writes, so it never commits a vault it cannot load.
+A `.murk` file arrives through git and is untrusted. Every reader (the working vault, git revisions read by `diff`, and all three merge-driver inputs) checks each field against an allowlist and refuses the whole vault on the first failure, naming the field. `murk` applies the same checks before it writes, so it never commits a vault it cannot load.
 
 - File size: at most 64 MiB, checked before parsing.
 - `version`: as above.
@@ -351,7 +351,7 @@ The overwrite-and-delete is best-effort — it can't undo a write to a journaled
 
 Prints all secrets as `export KEY=VALUE` statements to stdout. Scoped values override shared values for the current identity. Errors go to stderr. `--tag` filters by tag (repeatable). `--json` outputs JSON instead of shell exports.
 
-When `MURK_STRICT` is set, `export` refuses to run if stdout is a regular file (e.g. `murk export > .env`), since that persists plaintext secrets to disk; piping to a process (the direnv flow) and printing to a terminal are still allowed. `get` is guarded the same way. This is a guardrail against accidental redirects, not an airtight control — an explicit `murk export | tee .env` still writes the file.
+When `MURK_STRICT` is set, `export` refuses to run if stdout is a regular file (e.g. `murk export > .env`), since that persists plaintext secrets to disk; piping to a process (the direnv flow) and printing to a terminal are still allowed. `get` and `diff --show-values` are guarded the same way. This is a guardrail against accidental redirects, not an airtight control — an explicit `murk export | tee .env` still writes the file.
 
 Primary usage via direnv:
 
@@ -512,7 +512,9 @@ Lists the secrets the revoked recipient had access to. With `--rotate`, prompts 
 
 ### `murk diff [REF] [--show-values] [--json] [--vault NAME]`
 
-Shows which secrets changed between the current vault and a git ref (defaults to `HEAD`). `--show-values` prints the actual values, not just key names. `--json` outputs JSON.
+Shows which secrets changed between the current vault and a git ref (defaults to `HEAD`). `--show-values` prints the actual values, not just key names. `--json` outputs JSON: each entry has `key` and `kind` (`added`, `removed`, `changed`), plus `old_value` and `new_value` only with `--show-values`.
+
+The vault at the ref gets the same checks as the working vault: schema validation, the MAC, the signature, grant expiry, and the local signer pin (read, never extended), including the `MURK_STRICT` refusal of an unsigned vault that was signed before. `diff` exits non-zero rather than show a revision that fails them or that your key cannot decrypt, and also when the ref does not name a commit or git fails. The vault path is resolved inside the repository that holds it, so `diff` works from a subdirectory. Only a vault that git shows is absent from the ref (or a repository with no commits yet) counts as empty, and then every secret shows as added. A ref that starts with `-` is refused, so it can never reach git as an option.
 
 ---
 

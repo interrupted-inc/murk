@@ -2038,6 +2038,253 @@ fn diff_no_git_vault_shows_all_added() {
         .stdout(predicate::str::contains("FRESH"));
 }
 
+/// Add `name = value` to `test.murk` in `dir`, with any extra `add` arguments.
+fn add_to_test_vault(dir: &TempDir, key: &str, name: &str, value: &str, extra: &[&str]) {
+    murk(dir, key)
+        .args(["add", name, "--vault", "test.murk"])
+        .args(extra)
+        .write_stdin(format!("{value}\n"))
+        .assert()
+        .success();
+}
+
+/// Commit `test.murk` as it stands into a fresh git repository in `dir`.
+fn commit_test_vault(dir: &std::path::Path) {
+    git_ok(dir, &["init", "-q"]);
+    git_ok(dir, &["add", "test.murk"]);
+    git_ok(
+        dir,
+        &["-c", "commit.gpgsign=false", "commit", "-qm", "vault"],
+    );
+}
+
+#[test]
+fn diff_reads_group_secrets_at_the_ref() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    murk(&dir, &key)
+        .args(["group", "create", "ops", "--vault", "test.murk"])
+        .assert()
+        .success();
+    add_to_test_vault(&dir, &key, "GRP", "group-value", &["--group", "ops"]);
+    commit_test_vault(dir.path());
+
+    // Nothing changed, so the group secret must not show as added.
+    murk(&dir, &key)
+        .args(["diff", "--vault", "test.murk"])
+        .env("NO_COLOR", "1")
+        .assert()
+        .success()
+        .stdout("")
+        .stderr(predicate::str::contains("no changes"));
+}
+
+#[test]
+fn diff_fails_on_an_unknown_ref() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    add_to_test_vault(&dir, &key, "DB", "db-value", &[]);
+    commit_test_vault(dir.path());
+
+    murk(&dir, &key)
+        .args(["diff", "no-such-ref", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains(
+            "no-such-ref does not name a git commit",
+        ));
+}
+
+#[test]
+fn diff_from_a_subdirectory_reads_the_vault_at_the_ref() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    add_to_test_vault(&dir, &key, "DB", "db-value", &[]);
+    commit_test_vault(dir.path());
+    let sub = dir.path().join("sub");
+    fs::create_dir(&sub).unwrap();
+
+    murk(&dir, &key)
+        .current_dir(&sub)
+        // A bare name is discovered in the parent directory, as an absolute path.
+        .args(["diff", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout("")
+        .stderr(predicate::str::contains("no changes"));
+}
+
+/// A ref is untrusted input: one that starts with `-` must never reach git as
+/// an option (here `git show --output=FILE` would write a file).
+#[test]
+fn diff_refuses_a_ref_that_is_a_git_option() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    add_to_test_vault(&dir, &key, "DB", "db-value", &[]);
+    commit_test_vault(dir.path());
+    let target = dir.path().join("injected");
+
+    murk(&dir, &key)
+        .args(["diff", "--vault", "test.murk", "--"])
+        .arg(format!("--output={}", target.display()))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid git revision"));
+    let written: Vec<_> = fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("injected"))
+        .collect();
+    assert!(written.is_empty(), "git wrote {written:?}");
+}
+
+/// A revision that fails the MAC check must not be decrypted, even though its
+/// ciphertexts are still readable.
+#[test]
+fn diff_refuses_a_tampered_revision() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    add_to_test_vault(&dir, &key, "A", "value-of-a", &[]);
+    add_to_test_vault(&dir, &key, "B", "value-of-b", &[]);
+    let vault_path = dir.path().join("test.murk");
+    let good = fs::read_to_string(&vault_path).unwrap();
+
+    // Swap two ciphertexts: each still decrypts, but under the other key.
+    let mut bad: serde_json::Value = serde_json::from_str(&good).unwrap();
+    let a = bad["secrets"]["A"]["shared"].take();
+    let b = bad["secrets"]["B"]["shared"].take();
+    bad["secrets"]["A"]["shared"] = b;
+    bad["secrets"]["B"]["shared"] = a;
+    fs::write(&vault_path, bad.to_string()).unwrap();
+    commit_test_vault(dir.path());
+    fs::write(&vault_path, &good).unwrap();
+
+    murk(&dir, &key)
+        .args(["diff", "--show-values", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains(
+            "vault at HEAD failed verification",
+        ));
+}
+
+#[cfg(unix)]
+#[test]
+fn diff_strict_refuses_values_into_a_file() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    add_to_test_vault(&dir, &key, "DB", "old-value", &[]);
+    commit_test_vault(dir.path());
+    add_to_test_vault(&dir, &key, "DB", "new-value", &[]);
+
+    let leak = dir.path().join("diff.txt");
+    let status = run_with_stdout_file(
+        &dir,
+        &key,
+        &["diff", "--show-values", "--vault", "test.murk"],
+        &leak,
+    );
+    assert!(
+        !status.success(),
+        "strict diff --show-values to a file should fail"
+    );
+    assert_eq!(fs::read_to_string(&leak).unwrap(), "", "values leaked");
+}
+
+/// Commit the current `test.murk` on top of the repository's history.
+fn commit_test_vault_again(dir: &std::path::Path, message: &str) {
+    git_ok(
+        dir,
+        &["-c", "commit.gpgsign=false", "commit", "-qam", message],
+    );
+}
+
+/// A HEAD branch that exists but points at a missing object is a broken
+/// repository, not one without commits: diff must fail, not show every
+/// secret as added.
+#[test]
+fn diff_fails_when_head_points_at_a_missing_commit() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    add_to_test_vault(&dir, &key, "DB", "db-value", &[]);
+    commit_test_vault(dir.path());
+    let branch = std::process::Command::new("git")
+        .args(["symbolic-ref", "HEAD"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let branch = String::from_utf8(branch.stdout).unwrap();
+    fs::write(
+        dir.path().join(".git").join(branch.trim()),
+        "1111111111111111111111111111111111111111\n",
+    )
+    .unwrap();
+
+    murk(&dir, &key)
+        .args(["diff", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("HEAD does not name a git commit"));
+}
+
+/// History written by an ordinary later save still verifies.
+#[test]
+fn diff_against_the_previous_save_succeeds() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    add_to_test_vault(&dir, &key, "DB", "first", &[]);
+    commit_test_vault(dir.path());
+    add_to_test_vault(&dir, &key, "DB", "second", &[]);
+    commit_test_vault_again(dir.path(), "second save");
+
+    murk(&dir, &key)
+        .args(["diff", "HEAD~1", "--show-values", "--vault", "test.murk"])
+        .env("NO_COLOR", "1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("~ DB first → second"));
+}
+
+/// A revision signed by a teammate who was revoked later was legitimate when
+/// written, so it still verifies.
+#[test]
+fn diff_across_a_revoke_of_the_old_signer_succeeds() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    let bob_home = TempDir::new().unwrap();
+    let (bob_key, bob_pk) = init_vault(&bob_home);
+    add_to_test_vault(&dir, &key, "DB", "db-value", &[]);
+    murk(&dir, &key)
+        .args(["circle", "authorize", &bob_pk, "--name", "bob"])
+        .args(["--vault", "test.murk"])
+        .assert()
+        .success();
+    // Bob writes last, so the committed revision carries his signature.
+    add_to_test_vault(&dir, &bob_key, "API", "api-value", &[]);
+    murk(&dir, &key)
+        .args(["verify", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("signed by bob"));
+    commit_test_vault(dir.path());
+
+    murk(&dir, &key)
+        .args(["circle", "revoke", "bob", "--vault", "test.murk"])
+        .assert()
+        .success();
+    commit_test_vault_again(dir.path(), "revoke bob");
+
+    murk(&dir, &key)
+        .args(["diff", "HEAD~1", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout("")
+        .stderr(predicate::str::contains("no changes"));
+}
+
 /// git runs hooks, filters and helpers with its own environment, so murk must
 /// not hand it the key. A stand-in `git` first on `PATH` records what it sees.
 #[cfg(unix)]
@@ -2059,12 +2306,12 @@ fn git_does_not_inherit_the_key() {
     fs::set_permissions(&git, fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
 
-    // Key passed inline.
+    // Key passed inline. The stand-in git fails, and diff fails with it.
     murk(&dir, &key)
         .args(["diff", "--vault", "test.murk"])
         .env("PATH", &path)
         .assert()
-        .success();
+        .failure();
     let env = fs::read_to_string(&seen).unwrap();
     assert!(!env.contains(&key), "git saw MURK_KEY's value");
     assert!(!env.contains("MURK_KEY"), "git env: {env}");
@@ -2080,7 +2327,7 @@ fn git_does_not_inherit_the_key() {
         .env("MURK_KEY_FILE", &key_file)
         .env("PATH", &path)
         .assert()
-        .success();
+        .failure();
     let env = fs::read_to_string(&seen).unwrap();
     assert!(!env.contains("MURK_KEY_FILE"), "git env: {env}");
 }
