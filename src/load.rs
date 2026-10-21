@@ -1643,4 +1643,160 @@ mod tests {
 
         fs::remove_dir_all(&dir).unwrap();
     }
+
+    /// One person's machine: their HOME (and so their trust pin) and key.
+    struct Machine {
+        home: tempfile::TempDir,
+        secret: String,
+        pubkey: String,
+    }
+
+    impl Machine {
+        fn new() -> Self {
+            let (secret, pubkey) = generate_keypair();
+            Self {
+                home: tempfile::tempdir().unwrap(),
+                secret,
+                pubkey,
+            }
+        }
+
+        /// Run `f` as this person. Caller holds ENV_LOCK.
+        fn run<T>(&self, f: impl FnOnce() -> T) -> T {
+            unsafe {
+                std::env::set_var("HOME", self.home.path());
+                std::env::set_var("MURK_KEY", &self.secret);
+                std::env::remove_var("MURK_KEY_FILE");
+                std::env::remove_var("MURK_NO_SIGNER_PIN");
+                std::env::remove_var("MURK_TRUSTED_SIGNERS");
+            }
+            f()
+        }
+
+        /// Load, apply `change`, save.
+        fn write(&self, path: &str, change: impl FnOnce(&mut types::Vault, &mut types::Murk)) {
+            self.run(|| {
+                let (mut vault, original, _) = load_vault(path).unwrap();
+                let mut current = original.clone();
+                change(&mut vault, &mut current);
+                save_vault(path, &mut vault, &original, &current).unwrap();
+            });
+        }
+
+        /// Accept whatever the vault is now, as `murk trust` does.
+        fn trust(&self, path: &str) {
+            self.run(|| {
+                inspect_vault(path)
+                    .unwrap()
+                    .record_trust(path, false)
+                    .unwrap();
+            });
+        }
+
+        fn pin_bytes(&self, path: &str) -> Vec<u8> {
+            self.run(|| fs::read(crate::pins::pin_path(path).unwrap()).unwrap())
+        }
+    }
+
+    fn grant_to(pubkey: &str, issuer: &str) -> types::GrantEntry {
+        types::GrantEntry {
+            pubkey: pubkey.into(),
+            scope: vec!["DB_URL".into()],
+            issued_at: "2026-01-01T00:00:00Z".into(),
+            expires_at: "2099-01-01T00:00:00Z".into(),
+            issuer: issuer.into(),
+        }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // one scenario across three machines
+    fn a_grant_record_bound_to_a_trusted_signer_is_refused_without_touching_the_pin() {
+        // Bob, a trusted signer, writes a grant record bound to Alice's
+        // operator key and signs it. Carol's machine must refuse that vault
+        // as tampering and leave her pin as it was, so Alice's later signed
+        // vaults still load there. A genuine grant still pins as a grant.
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let prev_home = std::env::var_os("HOME");
+        let (alice, bob, carol) = (Machine::new(), Machine::new(), Machine::new());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("team.murk");
+        let path = path.to_str().unwrap();
+
+        alice.run(|| {
+            let id = crypto::parse_identity(&alice.secret).unwrap();
+            let v = crate::create_vault("team.murk", &id, "alice").unwrap();
+            vault::write(std::path::Path::new(path), &v).unwrap();
+            crate::pin_created_vault(path, &v, &id).unwrap();
+        });
+        alice.write(path, |vault, murk| {
+            for (pk, name) in [(&bob.pubkey, "bob"), (&carol.pubkey, "carol")] {
+                vault.recipients.push(pk.clone());
+                murk.recipients.insert(pk.clone(), name.into());
+            }
+            murk.values
+                .insert("DB_URL".into(), crate::testutil::secret("prod-db"));
+        });
+        for m in [&bob, &carol] {
+            m.trust(path);
+        }
+        // Bob's first write; Carol and Alice confirm his key.
+        bob.write(path, |_, murk| {
+            murk.values.insert("B".into(), crate::testutil::secret("1"));
+        });
+        for m in [&carol, &alice] {
+            m.trust(path);
+        }
+        carol.run(|| load_vault(path).unwrap());
+        let good = fs::read(path).unwrap();
+
+        // The ghost grant: Bob binds a grant record to Alice's key.
+        bob.write(path, |_, murk| {
+            murk.grants
+                .insert("ghost".into(), grant_to(&alice.pubkey, &bob.pubkey));
+        });
+        let pin_before = carol.pin_bytes(path);
+        let err = carol.run(|| load_vault(path).map(|_| ()).unwrap_err());
+        assert!(
+            err.to_string().contains("ghost") && err.to_string().contains("alice"),
+            "{err}"
+        );
+        assert_eq!(
+            carol.pin_bytes(path),
+            pin_before,
+            "nothing recorded from it"
+        );
+        // murk trust will not accept it either.
+        let refusal = carol.run(|| inspect_vault(path).unwrap().refusal().cloned());
+        assert!(refusal.is_some_and(|r| !r.acceptable()));
+
+        // The vault is restored; Alice's next signed write loads at Carol's.
+        fs::write(path, &good).unwrap();
+        alice.write(path, |_, murk| {
+            murk.values.insert("A".into(), crate::testutil::secret("2"));
+        });
+        let (_, murk, _) = carol.run(|| load_vault(path).unwrap());
+        assert_eq!(murk.values["A"].as_str(), "2");
+
+        // A genuine grant (a fresh agent key) still pins as a grant.
+        let (_, agent) = generate_keypair();
+        alice.write(path, |vault, murk| {
+            vault.recipients.push(agent.clone());
+            murk.recipients.insert(agent.clone(), "agent:ci".into());
+            murk.grants
+                .insert("ci".into(), grant_to(&agent, &alice.pubkey));
+        });
+        carol.run(|| load_vault(path).unwrap());
+        let pin = carol.run(|| crate::pins::read(path).unwrap().unwrap());
+        assert!(pin.grants.contains(&agent));
+        assert!(!pin.grants.contains(&alice.pubkey));
+        assert!(pin.trusted.contains(&alice.pubkey));
+
+        unsafe { std::env::remove_var("MURK_KEY") };
+        match prev_home {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+    }
 }
