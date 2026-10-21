@@ -535,16 +535,6 @@ mod tests {
         (secret.expose_secret().to_string(), pubkey)
     }
 
-    /// The five low-order X25519 `u` values (the eight-torsion points' images,
-    /// deduplicated, plus u = p − 1 on the twist), as age recipient strings.
-    pub(crate) const LOW_ORDER_AGE_RECIPIENTS: [&str; 5] = [
-        "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq5cu47z",
-        "age1qyqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqj7vrya",
-        "age1t7wft09r2zxzfvwsk92eeql0tvzyghxytqwgapkcyf8dm5ylz9ts6wm9s8",
-        "age1ur4h5lpmgxu2u9jku0a0r87ydtdqnr0tnsetrlvxvgz3vh6fhqqqzyt4v9",
-        "age1anlllllllllllllllllllllllllllllllllllllllllllllllals4n2t7m",
-    ];
-
     fn age_recipient_from_u(u: &[u8; 32]) -> String {
         bech32::encode::<bech32::Bech32>(bech32::Hrp::parse("age").unwrap(), u).unwrap()
     }
@@ -553,7 +543,7 @@ mod tests {
     /// murk flags them all and `encrypt` returns an error instead.
     #[test]
     fn low_order_age_recipients_are_weak_and_never_encrypted_to() {
-        for pk in LOW_ORDER_AGE_RECIPIENTS {
+        for pk in crate::testutil::LOW_ORDER_AGE_RECIPIENTS {
             let r = parse_recipient(pk).unwrap_or_else(|e| panic!("{pk}: {e}"));
             assert!(r.weakness().is_some(), "{pk}");
             let err = encrypt(b"x", &[r]).unwrap_err().to_string();

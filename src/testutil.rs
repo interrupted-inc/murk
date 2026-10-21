@@ -150,3 +150,13 @@ pub const SSH_ED25519_PK: &str =
 /// A syntactically valid age X25519 recipient (the age README example key) for
 /// vault fixtures that must pass load-time validation but never decrypt.
 pub const AGE_PK: &str = "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p";
+
+/// The five low-order X25519 `u` values (the eight-torsion points' images,
+/// deduplicated, plus u = p − 1 on the twist), as age recipient strings.
+pub const LOW_ORDER_AGE_RECIPIENTS: [&str; 5] = [
+    "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq5cu47z",
+    "age1qyqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqj7vrya",
+    "age1t7wft09r2zxzfvwsk92eeql0tvzyghxytqwgapkcyf8dm5ylz9ts6wm9s8",
+    "age1ur4h5lpmgxu2u9jku0a0r87ydtdqnr0tnsetrlvxvgz3vh6fhqqqzyt4v9",
+    "age1anlllllllllllllllllllllllllllllllllllllllllllllllals4n2t7m",
+];

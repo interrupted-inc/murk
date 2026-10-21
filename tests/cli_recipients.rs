@@ -313,69 +313,52 @@ fn authorize_refuses_low_order_age_keys() {
     }
 }
 
-/// A vault whose header already lists a low-order key (written by an older
-/// murk, or by anyone with repo write access) still loads. `verify` names the
-/// bad recipient, a save refuses cleanly instead of panicking, and revoking
-/// the bad key repairs the vault.
+/// A low-order key can never reach a signed vault: authorize refuses it (see
+/// above) and every save refuses to encrypt to it. Splicing one into the
+/// header by hand breaks the signature, so every command refuses the vault
+/// cleanly (no age panic) and nothing is written.
 #[test]
-fn vault_with_a_low_order_recipient_loads_flags_and_refuses_to_save() {
+fn hand_added_low_order_recipient_is_refused_cleanly() {
     let dir = TempDir::new().unwrap();
-    let (key, alice) = init_vault(&dir);
+    let (key, _) = init_vault(&dir);
+    murk(&dir, &key)
+        .args(["add", "TOKEN", "--vault", "test.murk"])
+        .write_stdin("v\n")
+        .assert()
+        .success();
     let path = dir.path().join("test.murk");
-    let weak = LOW_ORDER_AGE_RECIPIENTS[0];
-
-    // Header lists the weak key; the meta stays encrypted to alice only (age
-    // cannot encrypt to the weak key). A secret-less vault needs no MAC.
-    let identity = murk_cli::crypto::parse_identity(&key).unwrap();
-    let mut vault = murk_cli::vault::read(&path).unwrap();
-    let mut meta = murk_cli::decrypt_meta(&vault, &identity).unwrap().unwrap();
-    meta.mac = String::new();
-    meta.sig = None;
-    vault.recipients.push(weak.into());
-    vault.meta = murk_cli::encrypt_value(
-        &serde_json::to_vec(&meta).unwrap(),
-        &[murk_cli::crypto::parse_recipient(&alice).unwrap()],
-    )
-    .unwrap();
-    murk_cli::vault::write(&path, &vault).unwrap();
-
-    murk(&dir, &key)
-        .args(["ls", "--vault", "test.murk"])
-        .assert()
-        .success();
-    murk(&dir, &key)
-        .args(["verify", "--vault", "test.murk"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("unsafe recipient"))
-        .stderr(predicate::str::contains(weak));
-
+    let mut json = vault_json(&dir);
+    json["recipients"]
+        .as_array_mut()
+        .unwrap()
+        .push(LOW_ORDER_AGE_RECIPIENTS[0].into());
+    fs::write(&path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
     let before = fs::read(&path).unwrap();
-    murk(&dir, &key)
-        .args(["add", "TOKEN", "--vault", "test.murk"])
-        .write_stdin("v\n")
-        .assert()
-        .code(1)
-        .stderr(predicate::str::contains("refusing to save"))
-        .stderr(predicate::str::contains("panicked").not());
-    assert_eq!(fs::read(&path).unwrap(), before);
 
-    murk(&dir, &key)
-        .args(["circle", "revoke", weak, "--vault", "test.murk"])
-        .assert()
-        .success();
-    murk(&dir, &key)
-        .args(["add", "TOKEN", "--vault", "test.murk"])
-        .write_stdin("v\n")
-        .assert()
-        .success();
+    for (args, stdin) in [
+        (&["verify"][..], ""),
+        (&["get", "TOKEN"][..], ""),
+        (&["add", "OTHER"][..], "w\n"),
+        (&["circle", "revoke", LOW_ORDER_AGE_RECIPIENTS[0]][..], ""),
+    ] {
+        murk(&dir, &key)
+            .args(args)
+            .args(["--vault", "test.murk"])
+            .write_stdin(stdin)
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains("panicked").not());
+        assert_eq!(fs::read(&path).unwrap(), before, "{args:?}");
+    }
 }
 
-/// A vault written by an older murk can list one SSH key twice (with and
-/// without a comment). `verify` flags it, and revoking the key removes every
-/// copy and each copy's scoped override, so the leaver keeps no access.
+/// An older murk stored an SSH key as typed, comment included, and keyed the
+/// holder's `me` override by that same string. Revoking the key by its bare
+/// form removes the header entry and the override, so the leaver keeps no
+/// access. (Two spellings in the header are refused at load, so a single
+/// commented entry is the legacy state that can still occur.)
 #[test]
-fn revoke_removes_every_stored_copy_of_an_ssh_key() {
+fn revoke_by_bare_key_removes_a_commented_legacy_entry_and_its_override() {
     let dir = TempDir::new().unwrap();
     let (key, _) = init_vault(&dir);
     murk(&dir, &key)
@@ -384,28 +367,17 @@ fn revoke_removes_every_stored_copy_of_an_ssh_key() {
         .assert()
         .success();
     let bob = ssh_pubkey(1);
-    authorize(&dir, &key, &bob, Some("bob"));
-
-    // Recreate the legacy state: a commented twin with its own override.
-    let path = dir.path().join("test.murk");
-    let identity = murk_cli::crypto::parse_identity(&key).unwrap();
-    let mut vault = murk_cli::vault::read(&path).unwrap();
-    let original = murk_cli::decrypt_vault(&vault, &identity).unwrap();
-    let mut current = original.clone();
-    let twin = format!("{bob} bob@laptop");
-    vault.recipients.push(twin.clone());
-    current.recipients.insert(twin.clone(), "bob".into());
-    current.private.insert(
-        "TOKEN".into(),
-        std::collections::HashMap::from([(twin.clone(), "bob's override".to_string().into())]),
+    let legacy = format!("{bob} bob@laptop");
+    write_legacy_ssh_entry(&dir, &key, &legacy);
+    let json = vault_json(&dir);
+    assert!(
+        json["recipients"].to_string().contains("bob@laptop"),
+        "{json}"
     );
-    murk_cli::save_vault(path.to_str().unwrap(), &mut vault, &original, &current).unwrap();
-    assert!(vault_json(&dir)["secrets"]["TOKEN"]["scoped"][&twin].is_string());
-
-    murk(&dir, &key)
-        .args(["verify", "--vault", "test.murk"])
-        .assert()
-        .stderr(predicate::str::contains("listed 2 times as a recipient"));
+    assert!(
+        json["secrets"]["TOKEN"]["scoped"][&legacy].is_string(),
+        "{json}"
+    );
 
     murk(&dir, &key)
         .args(["circle", "revoke", &bob, "--vault", "test.murk"])
@@ -414,20 +386,57 @@ fn revoke_removes_every_stored_copy_of_an_ssh_key() {
 
     let json = vault_json(&dir);
     let blob = bob.split(' ').nth(1).unwrap();
-    assert!(
-        !json["recipients"].to_string().contains(blob),
-        "every copy of the key must go: {}",
-        json["recipients"]
-    );
-    assert!(
-        !json["secrets"].to_string().contains(blob),
-        "the twin's override must go: {}",
-        json["secrets"]
-    );
+    assert!(!json["recipients"].to_string().contains(blob), "{json}");
+    assert!(!json["secrets"].to_string().contains(blob), "{json}");
     murk(&dir, &key)
         .args(["verify", "--vault", "test.murk"])
         .assert()
-        .stderr(predicate::str::contains("times as a recipient").not());
+        .success();
+}
+
+/// Add `legacy` (an ssh key with a comment) to the header, named bob, with an
+/// override for TOKEN keyed by that exact string. save_vault signs with
+/// MURK_KEY from the environment, so the write runs in a child process.
+fn write_legacy_ssh_entry(dir: &TempDir, key: &str, legacy: &str) {
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "write_legacy_ssh_entry_child",
+            "--nocapture",
+            "--ignored",
+        ])
+        .env("MURK_KEY", key)
+        .env("HOME", dir.path())
+        .env("LEGACY_VAULT", dir.path().join("test.murk"))
+        .env("LEGACY_KEY", legacy)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The library write for [`write_legacy_ssh_entry`].
+#[test]
+#[ignore = "run by write_legacy_ssh_entry"]
+fn write_legacy_ssh_entry_child() {
+    let path = std::env::var("LEGACY_VAULT").unwrap();
+    let legacy = std::env::var("LEGACY_KEY").unwrap();
+    let key = std::env::var("MURK_KEY").unwrap();
+    let identity = murk_cli::crypto::parse_identity(&key).unwrap();
+    let mut vault = murk_cli::vault::read(Path::new(&path)).unwrap();
+    let original = murk_cli::decrypt_vault(&vault, &identity).unwrap();
+    let mut current = original.clone();
+    vault.recipients.push(legacy.clone());
+    current.recipients.insert(legacy.clone(), "bob".into());
+    current.private.insert(
+        "TOKEN".into(),
+        std::collections::HashMap::from([(legacy, "bob's override".to_string().into())]),
+    );
+    murk_cli::save_vault(&path, &mut vault, &original, &current).unwrap();
 }
 
 /// A GitHub user's keys all carry `<user>@github`. Revoking that name (or

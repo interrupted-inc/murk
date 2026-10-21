@@ -388,19 +388,19 @@ fn meta_recipients(
     ))
 }
 
-/// age panics when encrypting to a low-order point, and an unchanged save may
-/// not encrypt at all, so every recipient is checked up front: never write to
-/// such a key.
+/// Refuse to save to a vault listing an unsafe (low-order or torsion)
+/// recipient. age panics when encrypting to a low-order point, and an
+/// unchanged save may not encrypt at all, so check every recipient up front.
 fn refuse_unsafe_recipients(vault: &types::Vault) -> Result<(), MurkError> {
-    if let Some((r, why)) = parse_recipients(&vault.recipients)?
+    match parse_recipients(&vault.recipients)?
         .iter()
         .find_map(|r| r.weakness().map(|why| (r.to_string(), why)))
     {
-        return Err(MurkError::Recipient(format!(
+        Some((r, why)) => Err(MurkError::Recipient(format!(
             "refusing to save: recipient {r} is unsafe ({why}) — revoke it first with `murk circle revoke \"{r}\"`"
-        )));
+        ))),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 /// Save the vault: compare against original state and only re-encrypt changed values.
@@ -844,6 +844,57 @@ mod tests {
             murk.signature,
             types::SignatureState::Signed { signer, .. } if signer == pubkey
         ));
+    }
+
+    /// The save-time guard against a low-order recipient, which the CLI can no
+    /// longer reach (authorize refuses the key, and a hand-added one breaks the
+    /// signature): each of the five refuses with an error naming the key, and
+    /// nothing reaches age, which would panic.
+    #[test]
+    fn save_refuses_a_low_order_recipient_instead_of_panicking() {
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let home = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", home.path()) };
+        unsafe { std::env::remove_var("MURK_KEY_FILE") };
+        let (sk, pubkey) = generate_keypair();
+        unsafe { std::env::set_var("MURK_KEY", &sk) };
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.murk");
+        let results: Vec<_> = crate::testutil::LOW_ORDER_AGE_RECIPIENTS
+            .iter()
+            .map(|weak| {
+                let mut vault = signed_test_vault(&pubkey, &make_recipient(&pubkey));
+                vault.recipients.push((*weak).to_string());
+                let murk = types::Murk {
+                    values: HashMap::from([("API_KEY".into(), secret("REAL"))]),
+                    ..Default::default()
+                };
+                let before = vault.clone();
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    save_vault(path.to_str().unwrap(), &mut vault, &murk, &murk)
+                }));
+                (*weak, r, path.exists(), vault.meta == before.meta)
+            })
+            .collect();
+        unsafe { std::env::remove_var("MURK_KEY") };
+        match prev_home {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+
+        for (weak, r, written, meta_unchanged) in results {
+            let err = r.unwrap_or_else(|_| panic!("{weak}: save panicked"));
+            let err = err.expect_err(weak).to_string();
+            assert!(
+                err.contains("unsafe") && err.contains(weak),
+                "{weak}: {err}"
+            );
+            assert!(!written && meta_unchanged, "{weak}");
+        }
     }
 
     /// A `me` override written by an older murk under another spelling of the
