@@ -147,6 +147,70 @@ pub const SSH_ED25519_SK: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNza
 pub const SSH_ED25519_PK: &str =
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHsKLqeplhpW+uObz5dvMgjz1OxfM/XXUB+VHtZ6isGN";
 
+/// Two small-order Ed25519 points, as verifying keys: the identity (y = 1)
+/// and a point of order 4 (y = 0). Under either, signatures can be forged.
+pub const WEAK_ED25519_KEYS: [(&str, [u8; 32]); 2] = [
+    ("identity", {
+        let mut b = [0u8; 32];
+        b[0] = 1;
+        b
+    }),
+    ("order 4", [0u8; 32]),
+];
+
+/// `ssh-ed25519 <base64>` for a raw 32-byte point, whatever the point is.
+pub fn ssh_ed25519_line(point: &[u8; 32]) -> String {
+    use base64::Engine;
+    let mut blob = Vec::new();
+    for field in [b"ssh-ed25519".as_slice(), point.as_slice()] {
+        blob.extend(u32::try_from(field.len()).unwrap().to_be_bytes());
+        blob.extend(field);
+    }
+    format!(
+        "ssh-ed25519 {}",
+        base64::engine::general_purpose::STANDARD.encode(blob)
+    )
+}
+
+/// A signature on `msg` under the small-order key `point`, made without any
+/// secret: `R = [s]B − [j]A` for the first `s`, `j` where `[k]A = [j]A`, with
+/// `k = H(R ‖ A ‖ msg)`. ed25519-dalek's `verify` accepts it; `verify_strict`
+/// does not.
+pub fn forged_small_order_signature(point: &[u8; 32], msg: &[u8]) -> [u8; 64] {
+    use curve25519_dalek::edwards::{CompressedEdwardsY, EdwardsPoint};
+    use curve25519_dalek::scalar::Scalar;
+    use sha2::{Digest, Sha512};
+
+    let a = CompressedEdwardsY(*point)
+        .decompress()
+        .expect("a curve point");
+    assert!(
+        a.is_small_order(),
+        "only a small-order key can be forged for"
+    );
+    for s in 1u64.. {
+        let s = Scalar::from(s);
+        for j in 0u64..8 {
+            let ja = Scalar::from(j) * a;
+            let r = (EdwardsPoint::mul_base(&s) - ja).compress();
+            let digest = Sha512::new()
+                .chain_update(r.as_bytes())
+                .chain_update(point)
+                .chain_update(msg)
+                .finalize();
+            let mut wide = [0u8; 64];
+            wide.copy_from_slice(&digest);
+            if Scalar::from_bytes_mod_order_wide(&wide) * a == ja {
+                let mut sig = [0u8; 64];
+                sig[..32].copy_from_slice(r.as_bytes());
+                sig[32..].copy_from_slice(s.as_bytes());
+                return sig;
+            }
+        }
+    }
+    unreachable!("a small-order key has at most 8 multiples")
+}
+
 /// A syntactically valid age X25519 recipient (the age README example key) for
 /// vault fixtures that must pass load-time validation but never decrypt.
 pub const AGE_PK: &str = "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p";

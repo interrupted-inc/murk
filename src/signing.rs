@@ -21,9 +21,14 @@
 //! (see the ssh-ed25519 section below). `ssh-rsa` and hardware/plugin identities
 //! cannot sign, so their saves are left unsigned (a warning, not an error). A
 //! *present* signature must verify — an invalid one is tampering and hard-fails.
+//!
+//! Every verifying key passes [`checked_verifying_key`] before murk trusts it
+//! or checks a signature with it, and signatures are checked with
+//! `verify_strict`: a small-order key admits signatures that verify for any
+//! message, and a non-canonical encoding is a second spelling of a key.
 
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use zeroize::Zeroizing;
 
 /// Domain-separation context for deriving the Ed25519 signing seed from the raw
@@ -51,18 +56,46 @@ pub fn sign(sk: &SigningKey, message: &[u8]) -> String {
     BASE64.encode(sk.sign(message).to_bytes())
 }
 
-/// Verify a base64-encoded signature against a base64-encoded verifying key.
+/// The one check every Ed25519 verifying key passes before murk trusts it or
+/// verifies a signature with it, wherever it comes from: the vault's signer
+/// registry, a trust pin, `MURK_TRUSTED_SIGNERS`, a grant key file's anchor,
+/// or an ssh-ed25519 public key. Refuses a key that is not a curve point, a
+/// non-canonical encoding of one (a second spelling of the same key), and a
+/// weak (small-order) key, under which a forged signature verifies for any
+/// message. An honestly generated key is never any of these. The error says
+/// which.
+pub fn checked_verifying_key(bytes: &[u8]) -> Result<VerifyingKey, &'static str> {
+    let Ok(bytes) = <[u8; 32]>::try_from(bytes) else {
+        return Err("not a 32-byte Ed25519 key");
+    };
+    let Ok(vk) = VerifyingKey::from_bytes(&bytes) else {
+        return Err("not a point on the Ed25519 curve");
+    };
+    if vk.to_edwards().compress().to_bytes() != bytes {
+        return Err("non-canonical Ed25519 point encoding");
+    }
+    if vk.is_weak() {
+        return Err("weak (small-order) Ed25519 key");
+    }
+    Ok(vk)
+}
+
+/// [`checked_verifying_key`] for a base64-encoded verifying key.
+pub fn check_verifying_key(verifying_key_b64: &str) -> Result<VerifyingKey, &'static str> {
+    let Ok(bytes) = BASE64.decode(verifying_key_b64) else {
+        return Err("not base64");
+    };
+    checked_verifying_key(&bytes)
+}
+
+/// Verify a base64-encoded signature against a base64-encoded verifying key,
+/// with `verify_strict`.
 ///
-/// Returns false on any decode error, wrong length, or signature mismatch —
-/// callers treat a present-but-invalid signature as tampering.
+/// Returns false on any decode error, wrong length, a key
+/// [`checked_verifying_key`] refuses, or signature mismatch — callers treat a
+/// present-but-invalid signature as tampering.
 pub fn verify(verifying_key_b64: &str, signature_b64: &str, message: &[u8]) -> bool {
-    let Ok(vk_bytes) = BASE64.decode(verifying_key_b64) else {
-        return false;
-    };
-    let Ok(vk_arr) = <[u8; 32]>::try_from(vk_bytes.as_slice()) else {
-        return false;
-    };
-    let Ok(vk) = VerifyingKey::from_bytes(&vk_arr) else {
+    let Ok(vk) = check_verifying_key(verifying_key_b64) else {
         return false;
     };
     let Ok(sig_bytes) = BASE64.decode(signature_b64) else {
@@ -72,7 +105,7 @@ pub fn verify(verifying_key_b64: &str, signature_b64: &str, message: &[u8]) -> b
         return false;
     };
     let sig = Signature::from_bytes(&sig_arr);
-    vk.verify(message, &sig).is_ok()
+    vk.verify_strict(message, &sig).is_ok()
 }
 
 // -- the seam --
@@ -124,15 +157,6 @@ pub fn fingerprint(verifying_key_b64: &str) -> Option<String> {
     ))
 }
 
-/// Whether `verifying_key_b64` is a well-formed verifying key.
-pub fn is_verifying_key(verifying_key_b64: &str) -> bool {
-    BASE64
-        .decode(verifying_key_b64)
-        .ok()
-        .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok())
-        .is_some_and(|b| VerifyingKey::from_bytes(&b).is_ok())
-}
-
 // -- ssh-ed25519 signing --
 //
 // Unlike age keys, an ssh-ed25519 key IS an Ed25519 signing key, so we sign with
@@ -154,12 +178,31 @@ pub fn ed25519_signing_key_from_openssh(pem: &str) -> Option<SigningKey> {
 }
 
 /// Extract the base64 Ed25519 verifying key from an `ssh-ed25519 <base64> [comment]`
-/// recipient string. Tolerates a trailing comment. Returns `None` for non-ed25519
-/// or unparseable input. The encoding matches what [`verify`] expects.
-pub fn ed25519_verifying_key_b64_from_ssh_recipient(recipient: &str) -> Option<String> {
-    let key = ssh_key::PublicKey::from_openssh(recipient).ok()?;
-    let pk = key.key_data().ed25519()?;
-    Some(BASE64.encode(pk.as_ref()))
+/// recipient string. Tolerates a trailing comment. Errors for non-ed25519 or
+/// unparseable input, and for a key [`checked_verifying_key`] refuses. The
+/// encoding matches what [`verify`] expects.
+pub fn ed25519_verifying_key_b64_from_ssh_recipient(
+    recipient: &str,
+) -> Result<String, &'static str> {
+    let key = ssh_key::PublicKey::from_openssh(recipient).map_err(|_| "not an ssh public key")?;
+    let pk = key.key_data().ed25519().ok_or("not an ssh-ed25519 key")?;
+    checked_verifying_key(pk.as_ref())?;
+    Ok(BASE64.encode(pk.as_ref()))
+}
+
+/// Whether `key` — a base64 verifying key, or an `ssh-ed25519 …` line — is a
+/// well-formed 32-byte Ed25519 key that [`checked_verifying_key`] refuses.
+/// A string that does not decode to one is `false`: it never verifies a
+/// signature, so it is junk rather than a dangerous key.
+pub fn is_refused_signing_key(key: &str) -> bool {
+    let bytes = if key.starts_with("ssh-") {
+        ssh_key::PublicKey::from_openssh(key)
+            .ok()
+            .and_then(|k| k.key_data().ed25519().map(|pk| pk.as_ref().to_vec()))
+    } else {
+        BASE64.decode(key).ok()
+    };
+    bytes.is_some_and(|b| b.len() == 32 && checked_verifying_key(&b).is_err())
 }
 
 /// `ssh-ed25519 <base64>` for a well-formed ssh-ed25519 public key line, with
@@ -288,8 +331,74 @@ mod tests {
     #[test]
     fn ssh_helpers_reject_non_ed25519_and_garbage() {
         assert!(ed25519_signing_key_from_openssh("not a key").is_none());
-        assert!(ed25519_verifying_key_b64_from_ssh_recipient("ssh-rsa AAAAB3xyz").is_none());
-        assert!(ed25519_verifying_key_b64_from_ssh_recipient("garbage").is_none());
+        assert!(ed25519_verifying_key_b64_from_ssh_recipient("ssh-rsa AAAAB3xyz").is_err());
+        assert!(ed25519_verifying_key_b64_from_ssh_recipient("garbage").is_err());
+    }
+
+    /// A signature forged without a secret under a weak key: dalek's `verify`
+    /// accepts it, murk's never does.
+    #[test]
+    fn verify_refuses_signatures_forged_under_a_weak_key() {
+        use ed25519_dalek::Verifier;
+        for (name, point) in crate::testutil::WEAK_ED25519_KEYS {
+            let sig = crate::testutil::forged_small_order_signature(&point, b"any vault");
+            let vk = VerifyingKey::from_bytes(&point).unwrap();
+            assert!(
+                vk.verify(b"any vault", &Signature::from_bytes(&sig))
+                    .is_ok(),
+                "{name}: the forgery passes the lax check"
+            );
+            assert!(
+                !verify(&BASE64.encode(point), &BASE64.encode(sig), b"any vault"),
+                "{name}"
+            );
+        }
+    }
+
+    /// A key with a torsion component is neither weak nor non-canonical, and
+    /// its holder can make a signature whose `R` is a small-order point:
+    /// `R = T` and `s = k·a`, where `[s]B − [k]A = −[k]T₈` equals `T` for
+    /// the right message. dalek's `verify` accepts it; `verify_strict`, and so
+    /// murk, refuses it.
+    #[test]
+    fn verify_refuses_a_small_order_signature_point() {
+        use curve25519_dalek::constants::EIGHT_TORSION;
+        use curve25519_dalek::edwards::EdwardsPoint;
+        use curve25519_dalek::scalar::Scalar;
+        use ed25519_dalek::Verifier;
+        use sha2::{Digest, Sha512};
+
+        let a = Scalar::from_bytes_mod_order([7u8; 32]);
+        let key = (EdwardsPoint::mul_base(&a) + EIGHT_TORSION[1])
+            .compress()
+            .to_bytes();
+        let vk = VerifyingKey::from_bytes(&key).unwrap();
+        assert!(!vk.is_weak(), "a key with a torsion component is not weak");
+        let (msg, sig) = (0u32..)
+            .flat_map(|n| EIGHT_TORSION.map(move |t| (format!("vault {n}").into_bytes(), t)))
+            .find_map(|(msg, t)| {
+                let r = t.compress();
+                let digest = Sha512::new()
+                    .chain_update(r.as_bytes())
+                    .chain_update(key)
+                    .chain_update(&msg)
+                    .finalize();
+                let mut wide = [0u8; 64];
+                wide.copy_from_slice(&digest);
+                let k = Scalar::from_bytes_mod_order_wide(&wide);
+                (-(k * EIGHT_TORSION[1]) == t).then(|| {
+                    let mut sig = [0u8; 64];
+                    sig[..32].copy_from_slice(r.as_bytes());
+                    sig[32..].copy_from_slice((k * a).as_bytes());
+                    (msg, sig)
+                })
+            })
+            .unwrap();
+        assert!(
+            vk.verify(&msg, &Signature::from_bytes(&sig)).is_ok(),
+            "the lax check accepts it"
+        );
+        assert!(!verify(&BASE64.encode(key), &BASE64.encode(sig), &msg));
     }
 
     #[test]

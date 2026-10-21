@@ -207,14 +207,20 @@ pub fn parse_trusted_signer(entry: &str) -> Result<(String, Option<String>), Str
             crate::truncate_pubkey(key)
         ));
     }
-    match vk {
-        Some(vk) if crate::signing::is_verifying_key(vk) => {
-            Ok((canonical_recipient(key).into_owned(), Some(vk.to_string())))
-        }
-        Some(_) => Err(format!(
-            "not a verifying key after {}:",
+    if is_ssh && let Err(why) = crate::signing::ed25519_verifying_key_b64_from_ssh_recipient(key) {
+        return Err(format!(
+            "{} cannot be a trusted signer: {why}",
             crate::truncate_pubkey(key)
-        )),
+        ));
+    }
+    match vk {
+        Some(vk) => match crate::signing::check_verifying_key(vk) {
+            Ok(_) => Ok((canonical_recipient(key).into_owned(), Some(vk.to_string()))),
+            Err(why) => Err(format!(
+                "{}: unusable verifying key: {why}",
+                crate::truncate_pubkey(key)
+            )),
+        },
         None if is_ssh => Ok((canonical_recipient(key).into_owned(), None)),
         None => Err(format!(
             "{} needs its verifying key: write it as `age1…:<verifying key>` (`murk trust --print-key` prints it)",
@@ -1621,6 +1627,30 @@ mod tests {
             Ok((ssh.to_string(), None))
         );
         assert!(parse_trusted_signer("not-a-key").is_err());
+    }
+
+    /// The format `MURK_TRUSTED_SIGNERS` and anchors share refuses a weak
+    /// verifying key, a weak ssh-ed25519 key, and a non-canonical encoding of
+    /// a point (y = p + 1, the identity spelled another way).
+    #[test]
+    fn trusted_signer_entries_refuse_weak_and_non_canonical_keys() {
+        use base64::Engine;
+        let b64 = |b: &[u8; 32]| base64::engine::general_purpose::STANDARD.encode(b);
+        let (_, age) = crate::testutil::generate_keypair();
+        for (name, point) in crate::testutil::WEAK_ED25519_KEYS {
+            for entry in [
+                format!("{age}:{}", b64(&point)),
+                crate::testutil::ssh_ed25519_line(&point),
+            ] {
+                let err = parse_trusted_signer(&entry).unwrap_err();
+                assert!(err.contains("weak (small-order)"), "{name}: {err}");
+            }
+        }
+        let mut p_plus_one = [0xffu8; 32];
+        p_plus_one[0] = 0xee;
+        p_plus_one[31] = 0x7f;
+        let err = parse_trusted_signer(&format!("{age}:{}", b64(&p_plus_one))).unwrap_err();
+        assert!(err.contains("non-canonical"), "{err}");
     }
 
     fn assessment(pin: Option<TrustPin>, external: Option<TrustedSigners>) -> Assessment {
