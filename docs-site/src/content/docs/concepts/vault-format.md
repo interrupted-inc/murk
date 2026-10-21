@@ -26,11 +26,11 @@ Each key in `secrets` carries up to three ciphertext fields, one age blob per ti
 
 A secret has at most one base tier: `shared` or a single `grouped` entry. Assigning it to a named group drops any existing shared value. A secret can also have only private (`me`) values, with an empty `shared` and no `grouped` entry. The private (`me`) override layers on top of any base tier. Because age determines readability from the ciphertext's recipients, a non-member of a group can't decrypt its `grouped` entry. There's no separate access check.
 
-A top-level **`agents`** map *(optional)* maps a grant pubkey to a ciphertext encrypted to that grant only. It is omitted when empty.
+A top-level **`agents`** map *(optional)* maps each grant pubkey to an age blob encrypted to that grant only. The blob holds the grant's own record: its name, scope, issue and expiry times, and issuer. It holds no values and nothing else from the meta. It is omitted when the vault has no grants.
 
 ## The encrypted meta blob
 
-`meta` is a single age blob, encrypted to every recipient, holding everything that shouldn't be visible in the plaintext header:
+`meta` is a single age blob, encrypted to every recipient except agent grants, holding everything that shouldn't be visible in the plaintext header:
 
 - **`recipients`**: the only place public keys are mapped to display names.
 - **`groups`**: group name → member pubkeys, kept out of the header so org structure (who's in which group) doesn't leak to a non-recipient.
