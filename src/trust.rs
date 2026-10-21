@@ -1406,6 +1406,76 @@ mod tests {
         (a, b)
     }
 
+    /// Run `f` with a sandboxed HOME holding `pin` for `vault_path`.
+    fn with_pin<T>(vault_path: &str, pin: &TrustPin, f: impl FnOnce() -> T) -> T {
+        let _lock = crate::testutil::ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let home = tempfile::tempdir().unwrap();
+        let prev = std::env::var_os("HOME");
+        unsafe {
+            std::env::set_var("HOME", home.path());
+            std::env::remove_var("MURK_NO_SIGNER_PIN");
+            std::env::remove_var("MURK_TRUSTED_SIGNERS");
+        }
+        pins::write(vault_path, pin).unwrap();
+        let out = f();
+        match prev {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        out
+    }
+
+    #[test]
+    fn a_pinned_vault_refuses_an_id_less_merge_side_even_unchanged() {
+        // The pin has seen the vault in 0.14 form. A side without a vault id
+        // (a 0.13 revision) is refused even when it equals the ancestor:
+        // only the ancestor may be pre-0.14 history.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".murk");
+        let path = path.to_str().unwrap();
+        let pin = pin_for(&Case::new(&[A], 3, A));
+        let mut legacy = Case::new(&[A], 0, A);
+        legacy.vault.vault_id.clear();
+        let base = legacy.vault.clone();
+        let refused = with_pin(path, &pin, || {
+            check_merge_side(path, &legacy.loaded(), Some((&base, None)), false, false)
+        });
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|e| e.contains("murk 0.13 revision")),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn a_pinned_vault_refuses_a_merge_side_from_another_vault() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".murk");
+        let path = path.to_str().unwrap();
+        let pin = pin_for(&Case::new(&[A], 3, A));
+        let mut other = Case::new(&[A], 5, A);
+        other.vault.vault_id = "ffeeddccbbaa99887766554433221100".into();
+        let base = Case::new(&[A], 3, A).vault;
+        let refused = with_pin(path, &pin, || {
+            check_merge_side(path, &other.loaded(), Some((&base, None)), true, true)
+        });
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|e| e.contains("different vault")),
+            "{refused:?}"
+        );
+        // The pinned vault's own side is accepted.
+        let own = Case::new(&[A], 5, A);
+        let accepted = with_pin(path, &pin, || {
+            check_merge_side(path, &own.loaded(), Some((&base, None)), true, true)
+        });
+        assert_eq!(accepted, Ok(()));
+    }
+
     #[test]
     fn a_trusted_signers_first_key_waits_for_confirmation_then_is_pinned() {
         let (vk_a, vk_b) = vks();
