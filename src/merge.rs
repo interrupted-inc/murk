@@ -2738,6 +2738,7 @@ mod tests {
         let mut base = base_vault();
         base.recipients = vec![pubkey.clone()];
         base.generation = 1;
+        base.vault_id = "00112233445566778899aabbccddeeff".into();
         let mut ours = base.clone();
         let mut theirs = base.clone();
         seal(&mut base, &with_ops, &identity);
@@ -2804,6 +2805,7 @@ mod tests {
         let mut base = base_vault();
         base.recipients = vec![alice.clone(), bob.clone()];
         base.generation = 1;
+        base.vault_id = "00112233445566778899aabbccddeeff".into();
         let mut ours = base.clone();
         let mut theirs = base.clone();
         seal(&mut base, &crate::types::Meta::default(), &alice_identity);
