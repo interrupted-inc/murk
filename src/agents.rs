@@ -79,6 +79,54 @@ pub fn anchor_lines(signers: &TrustedSigners) -> String {
     out
 }
 
+/// The key-file line that names the grant the key belongs to (its name).
+pub const GRANT_ID_PREFIX: &str = "# murk-grant-id:";
+
+/// The key-file line that carries the grant's expiry (RFC 3339, UTC).
+pub const GRANT_EXPIRES_PREFIX: &str = "# murk-grant-expires:";
+
+/// The grant a key file says it holds, from its `# murk-grant-id:` and
+/// `# murk-grant-expires:` lines. Both are `None` for a key file written
+/// before murk recorded them, or a bare `AGE-SECRET-KEY-1` line.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct KeyFileGrant {
+    pub id: Option<String>,
+    pub expires: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// The grant id and expiry a grant key file carries. A malformed or repeated
+/// line is an error: the key file bounds the grant, so a bound murk can't
+/// read fails closed rather than silently falling back to the vault's record.
+pub fn grant_from_key_text(text: &str) -> Result<KeyFileGrant, String> {
+    let mut out = KeyFileGrant::default();
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(id) = line.strip_prefix(GRANT_ID_PREFIX) {
+            let id = id.trim();
+            if id.is_empty() {
+                return Err("grant key file: empty grant id".into());
+            }
+            if out.id.replace(id.to_string()).is_some() {
+                return Err("grant key file: more than one grant id line".into());
+            }
+        } else if let Some(exp) = line.strip_prefix(GRANT_EXPIRES_PREFIX) {
+            let exp = exp.trim();
+            let parsed = chrono::DateTime::parse_from_rfc3339(exp)
+                .map_err(|_| format!("grant key file: unreadable grant expiry {exp:?}"))?;
+            if out.expires.replace(parsed.to_utc()).is_some() {
+                return Err("grant key file: more than one grant expiry line".into());
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The `# murk-grant-id:` and `# murk-grant-expires:` lines for the grant
+/// `name` expiring at `expires_at`, to head its key file.
+pub fn grant_lines(name: &str, expires_at: &str) -> String {
+    format!("{GRANT_ID_PREFIX} {name}\n{GRANT_EXPIRES_PREFIX} {expires_at}\n")
+}
+
 /// The `agents` entry for `pubkey`, matched canonically.
 pub(crate) fn blob_for<'a>(vault: &'a types::Vault, pubkey: &str) -> Option<&'a String> {
     let want = crate::recipients::canonical_recipient(pubkey).into_owned();
@@ -195,5 +243,33 @@ mod tests {
         assert_eq!(anchor.get(&pk), Some(&Some(vk)));
         assert_eq!(anchor.len(), 1);
         assert!(anchor_from_key_text(&format!("{ANCHOR_PREFIX} {pk}\n")).is_err());
+    }
+
+    #[test]
+    fn grant_lines_round_trip_and_malformed_lines_fail() {
+        let text = format!(
+            "{}AGE-SECRET-KEY-1ABC\n",
+            grant_lines("bot", "2026-06-16T02:00:00Z")
+        );
+        let grant = grant_from_key_text(&text).unwrap();
+        assert_eq!(grant.id.as_deref(), Some("bot"));
+        assert_eq!(
+            grant.expires.unwrap().to_rfc3339(),
+            "2026-06-16T02:00:00+00:00"
+        );
+        assert_eq!(
+            grant_from_key_text("AGE-SECRET-KEY-1ABC\n").unwrap(),
+            KeyFileGrant::default()
+        );
+        for bad in [
+            format!("{GRANT_EXPIRES_PREFIX} soon\n"),
+            format!("{GRANT_ID_PREFIX}\n"),
+            format!("{GRANT_ID_PREFIX} a\n{GRANT_ID_PREFIX} b\n"),
+            format!(
+                "{GRANT_EXPIRES_PREFIX} 2026-06-16T02:00:00Z\n{GRANT_EXPIRES_PREFIX} 2099-01-01T00:00:00Z\n"
+            ),
+        ] {
+            assert!(grant_from_key_text(&bad).is_err(), "{bad}");
+        }
     }
 }
