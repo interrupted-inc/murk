@@ -881,8 +881,15 @@ fn diverged_vault_repo(theirs_change: &[&str]) -> (TempDir, String) {
 
 /// Run each `murk` command against `test.murk` with `v` on stdin.
 fn murk_steps(dir: &Path, key: &str, steps: &[&[&str]]) {
+    murk_steps_on(dir, dir, key, steps);
+}
+
+/// [`murk_steps`] on the machine whose home is `home`.
+fn murk_steps_on(dir: &Path, home: &Path, key: &str, steps: &[&[&str]]) {
     for step in steps {
-        murk(dir, key)
+        murk_bin(home)
+            .current_dir(dir)
+            .env("MURK_KEY", key)
             .args(*step)
             .args(["--vault", "test.murk"])
             .write_stdin("v\n")
@@ -895,6 +902,17 @@ fn murk_steps(dir: &Path, key: &str, steps: &[&[&str]]) {
 /// vault on `main`, then branch `theirs` runs `theirs` and `main` runs `ours`,
 /// each committed. Every step is a `murk` command (see [`murk_steps`]).
 fn vault_repo(base: &[&[&str]], theirs: &[&[&str]], ours: &[&[&str]]) -> (TempDir, String) {
+    vault_repo_on(base, theirs, ours, None)
+}
+
+/// [`vault_repo`], with `theirs` run on another machine when `theirs_home` is
+/// given (a teammate's), so this machine's trust pin sees only base and ours.
+fn vault_repo_on(
+    base: &[&[&str]],
+    theirs: &[&[&str]],
+    ours: &[&[&str]],
+    theirs_home: Option<&Path>,
+) -> (TempDir, String) {
     let dir = TempDir::new().unwrap();
     let (key, _) = init_vault(&dir);
     murk_steps(dir.path(), &key, base);
@@ -917,7 +935,12 @@ fn vault_repo(base: &[&[&str]], theirs: &[&[&str]], ours: &[&[&str]]) -> (TempDi
     // that commit their own change there.
     git(dir.path(), &["checkout", "-q", "-b", "theirs"]);
     if !theirs.is_empty() {
-        murk_steps(dir.path(), &key, theirs);
+        let home = theirs_home.unwrap_or(dir.path());
+        if theirs_home.is_some() {
+            // A teammate trusts the shared vault once, as on a fresh checkout.
+            murk_steps_on(dir.path(), home, &key, &[&["trust", "--yes"]]);
+        }
+        murk_steps_on(dir.path(), home, &key, theirs);
         commit_vault(dir.path());
     }
 
@@ -1126,8 +1149,11 @@ fn keyed_merge_keeps_theirs_rotation_when_both_sides_revoke_the_same_recipient()
     // `ops`, which carol is not in: a revoke stamps every key carol could read
     // with a second-precision `revoked_at`, and stamps made in different
     // seconds would make X's schema conflict before its value is compared.
+    // Theirs is a teammate's machine: on one machine, the trust pin would
+    // record carol's removal and refuse ours' still-listing-carol revision.
     let revoke: &[&str] = &["circle", "revoke", "carol"];
-    let (dir, key) = vault_repo(
+    let teammate = TempDir::new().unwrap();
+    let (dir, key) = vault_repo_on(
         &[
             &["circle", "authorize", FOREIGN_PK, "--name", "carol"],
             &["group", "create", "ops"],
@@ -1135,6 +1161,7 @@ fn keyed_merge_keeps_theirs_rotation_when_both_sides_revoke_the_same_recipient()
         ],
         &[revoke, &["rotate", "X", "--generate"]],
         &[revoke, &["add", "Z"]],
+        Some(teammate.path()),
     );
     assert_merge_keeps_theirs_x(dir.path(), &key);
 }
