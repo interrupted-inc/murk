@@ -107,7 +107,7 @@ A new vault gets a random id at `murk init`. A vault written by 0.13 has none, s
 
 ## What this doesn't cover
 
-A trusted signer can still change values or add recipients. That's authorized by design, and a compromised trusted key is a compromised signer. A rollback onto a branch or detached HEAD this machine never recorded isn't detected, for example when you review a PR branch. The commands that read the unauthenticated header without a key (`ls`, `info`, `rotate --list`, `agent plan`, `doctor`) don't run the check.
+A trusted signer can still change values or add recipients. That's authorized by design, and a compromised trusted key is a compromised signer. A rollback onto a branch or detached HEAD this machine never recorded isn't detected, for example when you review a PR branch. The commands that only read the plaintext header (`ls`, `info`, `circle`, `skeleton`, `agent plan`, `policy show`, `doctor`) don't run the check. Run without a key, each prints a `warn unverified header` line on stderr, so what they show isn't mistaken for checked data. `rotate --list` is the exception: with a key it verifies the vault before reporting and fails on a header that was edited; without one it prints the same warning, and `MURK_STRICT` refuses the result.
 
 ## Where this fits
 

@@ -80,5 +80,12 @@ independent of any single offboarding event). See `murk doctor` for broader
 repo hygiene scanning, and the [CLI reference](/reference/cli/#murk-circle-revoke)
 for the full flag surface on `circle revoke` and `rotate`.
 
+Human output exits 1 when anything needs rotating, so it works as a CI gate.
+With a key, `rotate --list` verifies the vault first, so deleting a `revoked_at`
+or `expires_at` marker from the header fails the command instead of turning the
+gate green. Without a key it can only read the header as written: it prints
+`warn unverified header`, `--json` reports `"verified": false`, and under
+`MURK_STRICT` it exits 1. `--json` prints `{"verified": ..., "issues": [...]}`.
+
 For adding and authorizing teammates in the first place, see [working in
 teams](/guides/teams/).

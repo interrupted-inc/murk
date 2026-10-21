@@ -102,6 +102,7 @@ fn write_new_output(path: &str, contents: &str, vault_path: &str) -> Result<(), 
 
 pub(crate) fn cmd_skeleton(output: Option<&str>, vault_path: &str) {
     let vault = murk_cli::vault::read(Path::new(vault_path)).unwrap_or_else(|e| die(&e, 1));
+    warn_if_keyless(vault_path);
 
     let skeleton = murk_cli::types::Vault {
         version: vault.version,
@@ -918,6 +919,7 @@ pub(crate) fn human_duration(d: chrono::Duration) -> String {
 
 pub(crate) fn cmd_agent_plan(tags: &[String], json: bool, output: Option<&str>, vault_path: &str) {
     let vault = murk_cli::vault::read(Path::new(vault_path)).unwrap_or_else(|e| die(&e, 1));
+    warn_if_keyless(vault_path);
     let plan = murk_cli::agent_plan(&vault, tags);
 
     let rendered = if json {

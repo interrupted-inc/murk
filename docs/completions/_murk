@@ -88,7 +88,7 @@ _arguments "${_arguments_options[@]}" : \
 '--generate[Generate random values instead of prompting]' \
 '--hex[Output generated values as hex instead of base64]' \
 '(--all --generate --hex)--list[List keys needing rotation instead of rotating (exits 1 if any)]' \
-'(--all --generate --hex)--json[Output the listing as JSON (with --list, always exits 0)]' \
+'(--all --generate --hex)--json[Output the listing as JSON, an object with \`verified\` and \`issues\` (with --list, exits 0 even when keys need rotating)]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '::key -- Secret key name (omit for --all):_default' \

@@ -111,7 +111,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             [CompletionResult]::new('--generate', '--generate', [CompletionResultType]::ParameterName, 'Generate random values instead of prompting')
             [CompletionResult]::new('--hex', '--hex', [CompletionResultType]::ParameterName, 'Output generated values as hex instead of base64')
             [CompletionResult]::new('--list', '--list', [CompletionResultType]::ParameterName, 'List keys needing rotation instead of rotating (exits 1 if any)')
-            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Output the listing as JSON (with --list, always exits 0)')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Output the listing as JSON, an object with `verified` and `issues` (with --list, exits 0 even when keys need rotating)')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break

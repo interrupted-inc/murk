@@ -289,17 +289,18 @@ fn rotate_list_reports_expired_keys() {
     let (key, _) = init_vault(&dir);
     add(&dir, &key, "TOKEN", "v", &[]);
 
-    // Clean vault: human mode exits 0, JSON is an empty array.
+    // Clean vault: human mode exits 0; JSON has no issues and says a key verified it.
     murk(&dir, &key)
         .args(["rotate", "--list", "--vault", "test.murk"])
         .assert()
         .success()
         .stderr(predicate::str::contains("no keys need rotation"));
-    murk(&dir, &key)
+    let clean = murk(&dir, &key)
         .args(["rotate", "--list", "--json", "--vault", "test.murk"])
         .assert()
-        .success()
-        .stdout("[]\n");
+        .success();
+    let clean: serde_json::Value = serde_json::from_slice(&clean.get_output().stdout).unwrap();
+    assert_eq!(clean, serde_json::json!({ "verified": true, "issues": [] }));
 
     murk(&dir, &key)
         .args([
@@ -325,7 +326,8 @@ fn rotate_list_reports_expired_keys() {
         .assert()
         .success()
         .stdout(
-            predicate::str::contains(r#""reason": "expired""#)
+            predicate::str::contains(r#""verified": true"#)
+                .and(predicate::str::contains(r#""reason": "expired""#))
                 .and(predicate::str::contains(r#""key": "TOKEN""#))
                 .and(predicate::str::contains(
                     r#""expired_at": "2020-01-01T23:59:59Z""#,

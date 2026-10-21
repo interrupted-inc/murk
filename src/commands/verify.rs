@@ -316,7 +316,10 @@ pub(crate) fn cmd_doctor(vault_path: &str) {
     // ── Rotation / expiry drift ──
     // Read-only over the plaintext schema (no decryption). Skipped silently when
     // there's no readable vault — doctor still reports the repo-hygiene findings.
+    // With no key nothing checks that schema, so say so: a stripped expiry or
+    // revoke marker would otherwise read as a clean bill of health.
     if let Ok((vault, _raw)) = murk_cli::vault::read_with_raw(Path::new(vault_path)) {
+        warn_if_keyless(vault_path);
         for issue in murk_cli::rotation_health(&vault, chrono::Utc::now()) {
             findings.push(rotation_finding(&issue));
         }

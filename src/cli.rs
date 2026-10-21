@@ -114,7 +114,7 @@ pub enum Command {
         /// List keys needing rotation instead of rotating (exits 1 if any)
         #[arg(long, conflicts_with_all = ["key", "all", "generate", "hex"])]
         list: bool,
-        /// Output the listing as JSON (with --list, always exits 0)
+        /// Output the listing as JSON, an object with `verified` and `issues` (with --list, exits 0 even when keys need rotating)
         #[arg(long, requires = "list", conflicts_with_all = ["key", "all", "generate", "hex"])]
         json: bool,
         /// Vault filename

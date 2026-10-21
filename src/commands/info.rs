@@ -20,6 +20,9 @@ pub(crate) fn cmd_info(tags: &[String], json: bool, vault_path: &str) {
         tags,
         secret_key.as_deref(),
     ));
+    if key_with_source.is_none() {
+        warn_unverified();
+    }
 
     if json {
         let entries: Vec<serde_json::Value> = info
