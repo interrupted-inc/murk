@@ -3793,7 +3793,8 @@ fn agent_exec_injects_only_specified_keys() {
         .assert()
         .success();
 
-    let output = murk(&dir, &key)
+    let grant = mint_exec_grant(&dir, &key, "exec", &["DB_URL"]);
+    let output = murk(&dir, &grant)
         .args([
             "agent",
             "exec",
@@ -3825,7 +3826,8 @@ fn agent_exec_clears_inherited_environment() {
         .assert()
         .success();
 
-    let output = murk(&dir, &key)
+    let grant = mint_exec_grant(&dir, &key, "exec", &["DB_URL"]);
+    let output = murk(&dir, &grant)
         .env("UNRELATED_VAR", "should-not-appear")
         .args([
             "agent",
@@ -3860,7 +3862,8 @@ fn agent_exec_sets_murk_agent_for_child() {
         .assert()
         .success();
 
-    let output = murk(&dir, &key)
+    let grant = mint_exec_grant(&dir, &key, "exec", &["DB_URL"]);
+    let output = murk(&dir, &grant)
         .args([
             "agent",
             "exec",
@@ -3892,7 +3895,8 @@ fn agent_exec_announces_keys_on_stderr() {
         .assert()
         .success();
 
-    murk(&dir, &key)
+    let grant = mint_exec_grant(&dir, &key, "exec", &["DB_URL"]);
+    murk(&dir, &grant)
         .args([
             "agent",
             "exec",
@@ -3950,7 +3954,7 @@ fn operator_shell(dir: &TempDir) -> assert_cmd::Command {
 /// murk while it runs (assert_cmd only runs to completion).
 #[cfg(unix)]
 fn spawn_agent_exec_sh(dir: &TempDir, script: &str) -> std::process::Command {
-    let key = fs::read_to_string(stored_key_file(dir)).unwrap();
+    let key = exec_grant_key(dir);
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("murk"));
     for var in MURK_CONTEXT_VARS {
         cmd.env_remove(var);
@@ -3984,7 +3988,8 @@ fn stored_key_file(dir: &TempDir) -> std::path::PathBuf {
         .path()
 }
 
-/// Add `DB_URL` and return the dir, ready for agent exec.
+/// Add `DB_URL`, mint an `exec` grant for it (key at `exec.key`, read back with
+/// [`exec_grant_key`]), and return the dir, ready for agent exec.
 fn agent_exec_vault() -> TempDir {
     let dir = TempDir::new().unwrap();
     let (key, _) = init_vault(&dir);
@@ -3993,7 +3998,30 @@ fn agent_exec_vault() -> TempDir {
         .write_stdin("postgres://prod-sentinel\n")
         .assert()
         .success();
+    mint_exec_grant(&dir, &key, "exec", &["DB_URL"]);
     dir
+}
+
+/// Mint grant `name` over `only` with the operator `key`, writing its key to
+/// `<name>.key` in `dir`, and return the grant key. `agent exec` needs one.
+fn mint_exec_grant(dir: &TempDir, key: &str, name: &str, only: &[&str]) -> String {
+    let path = dir.path().join(format!("{name}.key"));
+    let mut cmd = murk(dir, key);
+    cmd.args(["agent", "grant", "--name", name]);
+    for k in only {
+        cmd.args(["--only", k]);
+    }
+    cmd.arg("--out")
+        .arg(&path)
+        .args(["--vault", "test.murk"])
+        .assert()
+        .success();
+    read_agent_key(&path)
+}
+
+/// The `exec` grant key minted by [`agent_exec_vault`].
+fn exec_grant_key(dir: &TempDir) -> String {
+    read_agent_key(&dir.path().join("exec.key"))
 }
 
 #[test]
@@ -4058,11 +4086,43 @@ fn agent_exec_allow_operator_key_runs_and_always_warns() {
 }
 
 #[test]
-fn agent_exec_runs_with_an_explicit_key_file() {
+fn agent_exec_refuses_an_operator_key_from_an_explicit_key_file() {
+    // A key handed over in MURK_KEY_FILE (say by direnv from `murk init`'s
+    // .env) is still the operator's: agent exec decides by identity, not by
+    // where the key came from.
+    let dir = agent_exec_vault();
+
+    let assertion = operator_shell(&dir)
+        .env("MURK_KEY_FILE", stored_key_file(&dir))
+        .args([
+            "agent",
+            "exec",
+            "--only",
+            "DB_URL",
+            "--vault",
+            "test.murk",
+            "--",
+            "sh",
+            "-c",
+            "echo \"leaked=$DB_URL\"",
+        ])
+        .assert()
+        .failure()
+        .stdout("");
+    let stderr = String::from_utf8(assertion.get_output().stderr.clone()).unwrap();
+    assert!(
+        stderr.contains("agent exec needs an agent grant key"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("--allow-operator-key"), "{stderr}");
+}
+
+#[test]
+fn agent_exec_runs_with_a_grant_key_file() {
     let dir = agent_exec_vault();
 
     operator_shell(&dir)
-        .env("MURK_KEY_FILE", stored_key_file(&dir))
+        .env("MURK_KEY_FILE", dir.path().join("exec.key"))
         .args([
             "agent",
             "exec",
@@ -4131,6 +4191,8 @@ fn agent_exec_masks_injected_values_on_both_streams() {
         .assert()
         .success();
 
+    let grant = mint_exec_grant(&dir, &key, "mask", &["DB_URL", "SHORT"]);
+
     let script = r#"
         echo "DB_URL=$DB_URL DB_URL=$DB_URL$DB_URL"
         printf %s "$(printf %s "$DB_URL" | cut -c1-12)"
@@ -4139,7 +4201,7 @@ fn agent_exec_masks_injected_values_on_both_streams() {
         echo "SHORT=$SHORT"
         printf 'err %s' "$DB_URL" >&2
     "#;
-    let assertion = murk(&dir, &key)
+    let assertion = murk(&dir, &grant)
         .args([
             "agent",
             "exec",
@@ -4171,7 +4233,7 @@ fn agent_exec_masks_injected_values_on_both_streams() {
 #[test]
 fn agent_exec_propagates_exit_code() {
     let dir = agent_exec_vault();
-    let key = fs::read_to_string(stored_key_file(&dir)).unwrap();
+    let key = exec_grant_key(&dir);
 
     #[cfg(unix)]
     let command = ["sh", "-c", "exit 7"];
@@ -4199,7 +4261,7 @@ fn agent_exec_propagates_signal_death() {
     use std::os::unix::process::ExitStatusExt;
 
     let dir = agent_exec_vault();
-    let key = fs::read_to_string(stored_key_file(&dir)).unwrap();
+    let key = exec_grant_key(&dir);
 
     let output = murk(&dir, &key)
         .args([
@@ -4225,7 +4287,7 @@ fn agent_exec_propagates_signal_death() {
 #[test]
 fn agent_exec_large_output_on_both_streams_does_not_hang() {
     let dir = agent_exec_vault();
-    let key = fs::read_to_string(stored_key_file(&dir)).unwrap();
+    let key = exec_grant_key(&dir);
 
     let assertion = murk(&dir, &key)
         .timeout(std::time::Duration::from_secs(60))
@@ -5488,6 +5550,672 @@ fn agent_grant_scopes_access_to_only_keys() {
 }
 
 #[test]
+fn agent_grant_key_cannot_change_the_vault() {
+    // A grant reads its scope and nothing else. Every write path must refuse
+    // it and leave the vault byte-identical. On 0.13.0 `add --group me` with a
+    // grant key blanked every shared secret, and policy/group/circle changes
+    // went through. No MURK_AGENT here: the gate reads the grant list from the
+    // vault, not the environment.
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    let (_, other_pk) = init_vault(TempDir::new().unwrap());
+    for (k, v) in [("A", "aval"), ("B", "bval")] {
+        murk(&dir, &key)
+            .args(["add", k, "--vault", "test.murk"])
+            .write_stdin(format!("{v}\n"))
+            .assert()
+            .success();
+    }
+    murk(&dir, &key)
+        .args(["group", "create", "ops", "--vault", "test.murk"])
+        .assert()
+        .success();
+    murk(&dir, &key)
+        .args(["add", "G", "--group", "ops", "--vault", "test.murk"])
+        .write_stdin("gval\n")
+        .assert()
+        .success();
+    // An editor wired up by the operator, so a refused disconnect shows whether
+    // it touched the config first.
+    murk(&dir, &key)
+        .args([
+            "agent",
+            "connect",
+            "claude",
+            "--only",
+            "A",
+            "--vault",
+            "test.murk",
+        ])
+        .assert()
+        .success();
+    let agent_key_path = dir.path().join("agent.key");
+    murk(&dir, &key)
+        .args(["agent", "grant", "--name", "bot", "--only", "A", "--out"])
+        .arg(&agent_key_path)
+        .args(["--vault", "test.murk"])
+        .assert()
+        .success();
+    let agent_key = read_agent_key(&agent_key_path);
+
+    let vault_path = dir.path().join("test.murk");
+    let mcp_path = dir.path().join(".mcp.json");
+    let vault_before = fs::read(&vault_path).unwrap();
+    let mcp_before = fs::read(&mcp_path).unwrap();
+    let env_file = dir.path().join("agent.env");
+    fs::write(&env_file, "C=cval\n").unwrap();
+    let env_file = env_file.to_str().unwrap();
+
+    let attempts: &[(&[&str], &str)] = &[
+        (&["add", "C", "--group", "me"], "cval\n"),
+        (&["add", "A"], "new\n"),
+        (&["generate", "D"], ""),
+        (&["describe", "A", "changed"], ""),
+        (&["rm", "B"], ""),
+        (&["import", env_file], ""),
+        (&["edit", "A"], ""),
+        (&["rotate", "A"], "new\n"),
+        (&["circle", "authorize", &other_pk], ""),
+        (&["circle", "revoke", "testuser"], ""),
+        (&["group", "create", "evil"], ""),
+        (&["group", "add", "ops", "--member", &other_pk], ""),
+        (&["group", "rm", "ops"], ""),
+        (&["policy", "set", "--allow-tag", "x"], ""),
+        (&["policy", "clear"], ""),
+        (
+            &[
+                "agent", "grant", "--name", "bot2", "--only", "A", "--out", "-",
+            ],
+            "",
+        ),
+        (&["agent", "revoke", "bot"], ""),
+        (&["agent", "connect", "claude", "--only", "A"], ""),
+        (&["agent", "disconnect", "claude", "--rotate"], ""),
+    ];
+    for (args, stdin) in attempts {
+        // The key file path, as in the field report.
+        murk_bin(dir.path())
+            .current_dir(dir.path())
+            .env("MURK_KEY_FILE", &agent_key_path)
+            .env("EDITOR", "true")
+            .args(*args)
+            .args(["--vault", "test.murk"])
+            .write_stdin(*stdin)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(
+                "agent grants are read-only; ask the operator to make this change",
+            ));
+        assert_eq!(
+            fs::read(&vault_path).unwrap(),
+            vault_before,
+            "{args:?} changed the vault"
+        );
+        assert_eq!(
+            fs::read(&mcp_path).unwrap(),
+            mcp_before,
+            "{args:?} changed .mcp.json"
+        );
+    }
+
+    // Reads still work for the grant, and the operator's values are intact.
+    murk(&dir, &agent_key)
+        .args(["get", "A", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("aval"));
+    for (k, v) in [("A", "aval"), ("B", "bval"), ("G", "gval")] {
+        murk(&dir, &key)
+            .args(["get", k, "--vault", "test.murk"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(v));
+    }
+}
+
+#[test]
+fn agent_grant_is_held_to_the_policy_without_murk_agent() {
+    // The allow-tag policy applies to a grant key on every CLI read path even
+    // when MURK_AGENT is unset (the harness strips it), as it already did in
+    // the bindings and MCP. On 0.13.0 `get`/`export`/`exec` with a grant key
+    // ignored the policy outside agent mode.
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    for (k, v, tags) in [
+        ("OK", "okval", &["agents", "keep"][..]),
+        ("NOPE", "nopeval", &["agents"][..]),
+    ] {
+        murk(&dir, &key)
+            .args(["add", k, "--vault", "test.murk"])
+            .write_stdin(format!("{v}\n"))
+            .assert()
+            .success();
+        let mut describe = murk(&dir, &key);
+        describe.args(["describe", k, "d", "--vault", "test.murk"]);
+        for t in tags {
+            describe.args(["--tag", t]);
+        }
+        describe.assert().success();
+    }
+    murk(&dir, &key)
+        .args([
+            "policy",
+            "set",
+            "--allow-tag",
+            "agents",
+            "--vault",
+            "test.murk",
+        ])
+        .assert()
+        .success();
+    let agent_key_path = dir.path().join("agent.key");
+    murk(&dir, &key)
+        .args([
+            "agent", "grant", "--name", "bot", "--only", "OK", "--only", "NOPE",
+        ])
+        .args(["--out"])
+        .arg(&agent_key_path)
+        .args(["--vault", "test.murk"])
+        .assert()
+        .success();
+    // Tighten the policy: NOPE stays in the grant's scope but is now forbidden.
+    murk(&dir, &key)
+        .args([
+            "policy",
+            "set",
+            "--allow-tag",
+            "keep",
+            "--vault",
+            "test.murk",
+        ])
+        .assert()
+        .success();
+    let agent_key = read_agent_key(&agent_key_path);
+
+    murk(&dir, &agent_key)
+        .args(["get", "NOPE", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("nopeval").not())
+        .stderr(predicate::str::contains("policy forbids NOPE"));
+    murk(&dir, &agent_key)
+        .args(["get", "OK", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("okval"));
+    murk(&dir, &agent_key)
+        .args(["export", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("okval").and(predicate::str::contains("nopeval").not()))
+        .stderr(predicate::str::contains(
+            "withholding 1 key(s) not allowed by policy: NOPE",
+        ));
+    murk(&dir, &agent_key)
+        .args(["exec", "--vault", "test.murk", "--", "true"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("policy forbids NOPE"));
+}
+
+/// The public key of a grant key file, as it appears in the vault.
+fn grant_pubkey(agent_key: &str) -> String {
+    let secret = agent_key
+        .lines()
+        .find(|l| l.starts_with("AGE-SECRET-KEY-"))
+        .unwrap();
+    let id: age::x25519::Identity = secret.parse().unwrap();
+    id.to_public().to_string()
+}
+
+/// The vault file as JSON, for checks on who holds which ciphertext.
+fn vault_json(dir: &TempDir) -> serde_json::Value {
+    serde_json::from_str(&fs::read_to_string(dir.path().join("test.murk")).unwrap()).unwrap()
+}
+
+#[test]
+fn an_expired_grant_never_receives_a_rotated_value() {
+    // Past its TTL a grant must be cut off for good: the next write drops it,
+    // so a rotation is not encrypted to the expired key. On 0.13.0 every
+    // rotation after expiry was re-encrypted to it (raw age decrypted it).
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    murk(&dir, &key)
+        .args(["add", "A", "--vault", "test.murk"])
+        .write_stdin("v1\n")
+        .assert()
+        .success();
+    let agent_key_path = dir.path().join("agent.key");
+    murk(&dir, &key)
+        .args([
+            "agent", "grant", "--name", "bot", "--only", "A", "--ttl", "1s",
+        ])
+        .arg("--out")
+        .arg(&agent_key_path)
+        .args(["--vault", "test.murk"])
+        .assert()
+        .success();
+    let bot = grant_pubkey(&read_agent_key(&agent_key_path));
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+
+    murk(&dir, &key)
+        .args(["rotate", "A", "--vault", "test.murk"])
+        .write_stdin("v2\n")
+        .assert()
+        .success();
+
+    let v = vault_json(&dir);
+    assert!(
+        v["secrets"]["A"]["scoped"].get(&bot).is_none(),
+        "rotated value encrypted to the expired grant: {}",
+        v["secrets"]["A"]
+    );
+    assert!(
+        !v["recipients"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r == &bot),
+        "expired grant is still a recipient"
+    );
+    murk(&dir, &key)
+        .args(["agent", "ls", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("bot").not());
+}
+
+#[test]
+fn moving_a_granted_key_to_a_group_drops_the_agents_copy() {
+    // Scope binds to the shared secret that was granted. Moving the key to a
+    // group must take it away from the agent, not leave its old copy readable.
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    for (k, v) in [("X", "sharedval"), ("Y", "other")] {
+        murk(&dir, &key)
+            .args(["add", k, "--vault", "test.murk"])
+            .write_stdin(format!("{v}\n"))
+            .assert()
+            .success();
+    }
+    let agent_key = mint_exec_grant(&dir, &key, "bot", &["X", "Y"]);
+    murk(&dir, &key)
+        .args(["group", "create", "prod", "--vault", "test.murk"])
+        .assert()
+        .success();
+    murk(&dir, &key)
+        .args(["add", "X", "--group", "prod", "--vault", "test.murk"])
+        .write_stdin("prod-only\n")
+        .assert()
+        .success();
+
+    murk(&dir, &agent_key)
+        .args(["get", "X", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("sharedval").not());
+    let v = vault_json(&dir);
+    assert!(
+        v["secrets"]["X"]["scoped"]
+            .get(grant_pubkey(&agent_key))
+            .is_none()
+    );
+    // The rest of the grant is untouched.
+    murk(&dir, &agent_key)
+        .args(["get", "Y", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("other"));
+    murk(&dir, &key)
+        .args(["agent", "ls", "--json", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"Y\"").and(predicate::str::contains("\"X\"").not()));
+}
+
+#[test]
+fn a_removed_then_re_added_key_is_not_handed_to_the_agent() {
+    // `rm X` then `add X` is a different secret under a reused name; the
+    // grant for the old X must not pick it up.
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    for (k, v) in [("X", "old"), ("Y", "other")] {
+        murk(&dir, &key)
+            .args(["add", k, "--vault", "test.murk"])
+            .write_stdin(format!("{v}\n"))
+            .assert()
+            .success();
+    }
+    let agent_key = mint_exec_grant(&dir, &key, "bot", &["X", "Y"]);
+    murk(&dir, &key)
+        .args(["rm", "X", "--vault", "test.murk"])
+        .assert()
+        .success();
+    murk(&dir, &key)
+        .args(["add", "X", "--vault", "test.murk"])
+        .write_stdin("unrelated-new-secret\n")
+        .assert()
+        .success();
+
+    murk(&dir, &agent_key)
+        .args(["get", "X", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("unrelated-new-secret").not());
+}
+
+/// Decrypt a base64 age ciphertext from the vault with a grant key file's key.
+fn decrypt_with_grant(agent_key: &str, ciphertext_b64: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    let secret = agent_key
+        .lines()
+        .find(|l| l.starts_with("AGE-SECRET-KEY-"))
+        .unwrap();
+    let id: age::x25519::Identity = secret.parse().unwrap();
+    let ct = base64::engine::general_purpose::STANDARD
+        .decode(ciphertext_b64)
+        .unwrap();
+    age::decrypt(&id, &ct).ok()
+}
+
+#[test]
+fn an_agent_grant_cannot_read_the_team_structure() {
+    // A grant gets its own record and its scoped values, nothing else: not the
+    // meta (MAC key, recipient names, groups, signers, other grants). On 0.13 a
+    // grant was a meta recipient and `circle`/`info` listed every name.
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    let (_, bob_pk) = init_vault(TempDir::new().unwrap());
+    murk(&dir, &key)
+        .args(["add", "A", "--vault", "test.murk"])
+        .write_stdin("v1\n")
+        .assert()
+        .success();
+    murk(&dir, &key)
+        .args([
+            "circle",
+            "authorize",
+            &bob_pk,
+            "--name",
+            "bobby",
+            "--vault",
+            "test.murk",
+        ])
+        .assert()
+        .success();
+    murk(&dir, &key)
+        .args(["group", "create", "opsteam", "--vault", "test.murk"])
+        .assert()
+        .success();
+    let bot = mint_exec_grant(&dir, &key, "bot", &["A"]);
+    mint_exec_grant(&dir, &key, "othergrant", &["A"]);
+
+    for args in [
+        &["circle"][..],
+        &["info"][..],
+        &["group", "ls"][..],
+        &["agent", "ls"][..],
+    ] {
+        let out = murk(&dir, &bot)
+            .args(args)
+            .args(["--vault", "test.murk"])
+            .output()
+            .unwrap();
+        let all = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        for secret_name in ["testuser", "bobby", "opsteam", "othergrant"] {
+            assert!(
+                !all.contains(secret_name),
+                "{args:?} showed {secret_name}: {all}"
+            );
+        }
+    }
+
+    let v = vault_json(&dir);
+    assert!(
+        decrypt_with_grant(&bot, v["meta"].as_str().unwrap()).is_none(),
+        "the meta must not be encrypted to a grant"
+    );
+    let record = decrypt_with_grant(&bot, v["agents"][grant_pubkey(&bot)].as_str().unwrap())
+        .expect("the grant opens its own record");
+    let record = String::from_utf8(record).unwrap();
+    assert!(record.contains("\"bot\""), "{record}");
+    for leaked in ["othergrant", "mac_key", "bobby", "opsteam"] {
+        assert!(!record.contains(leaked), "record leaks {leaked}: {record}");
+    }
+    // It still reads its scope.
+    murk(&dir, &bot)
+        .args(["get", "A", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("v1"));
+}
+
+/// A vault with `A`, recipient `bob`, an expired grant `old` and a live grant
+/// `bot`, both over `A`.
+fn vault_with_an_expired_grant() -> (TempDir, String) {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    let (_, bob_pk) = init_vault(TempDir::new().unwrap());
+    murk(&dir, &key)
+        .args(["add", "A", "--vault", "test.murk"])
+        .write_stdin("v1\n")
+        .assert()
+        .success();
+    murk(&dir, &key)
+        .args([
+            "circle",
+            "authorize",
+            &bob_pk,
+            "--name",
+            "bob",
+            "--vault",
+            "test.murk",
+        ])
+        .assert()
+        .success();
+    murk(&dir, &key)
+        .args([
+            "agent", "grant", "--name", "old", "--only", "A", "--ttl", "1s",
+        ])
+        .args(["--out", "-", "--vault", "test.murk"])
+        .assert()
+        .success();
+    mint_exec_grant(&dir, &key, "bot", &["A"]);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    (dir, key)
+}
+
+#[test]
+fn revoke_and_rotate_work_with_an_expired_grant_present() {
+    // Each of these saves the revoke, then saves again for the rotation. The
+    // first save drops the expired grant; the second, from the same loaded
+    // state, must not fail trying to drop it again ("recipient not found").
+    let cases: &[&[&str]] = &[
+        &["circle", "revoke", "bob", "--rotate"],
+        &["agent", "revoke", "bot", "--rotate"],
+        &["agent", "disconnect", "--name", "bot", "--rotate"],
+    ];
+    for args in cases {
+        let (dir, key) = vault_with_an_expired_grant();
+        murk(&dir, &key)
+            .args(*args)
+            .args(["--vault", "test.murk"])
+            .write_stdin("v2\n")
+            .assert()
+            .success()
+            .stderr(predicate::str::contains("rotated A"));
+        murk(&dir, &key)
+            .args(["get", "A", "--vault", "test.murk"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("v2"));
+        murk(&dir, &key)
+            .args(["agent", "ls", "--vault", "test.murk"])
+            .assert()
+            .success()
+            .stderr(predicate::str::contains("old").not());
+    }
+}
+
+#[test]
+fn a_grant_trusts_only_the_signers_in_its_key_file() {
+    // A grant can't read the meta, so it trusts a vault only by its signature,
+    // and only against the signers its key file names. A vault last signed by
+    // anyone else, a teammate or the agent itself, is refused until the
+    // operator re-mints or MURK_TRUSTED_SIGNERS names the signer.
+    let dir = TempDir::new().unwrap();
+    let (alice, _) = init_vault(&dir);
+    let (bob, bob_pk) = init_vault(TempDir::new().unwrap());
+    murk(&dir, &alice)
+        .args(["add", "A", "--vault", "test.murk"])
+        .write_stdin("v1\n")
+        .assert()
+        .success();
+    murk(&dir, &alice)
+        .args([
+            "circle",
+            "authorize",
+            &bob_pk,
+            "--name",
+            "bob",
+            "--vault",
+            "test.murk",
+        ])
+        .assert()
+        .success();
+    let bot = mint_exec_grant(&dir, &alice, "bot", &["A"]);
+    murk(&dir, &bot)
+        .args(["get", "A", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("v1"));
+
+    // Bob saves: a trusted teammate on alice's machine, but not in bot's anchor.
+    murk(&dir, &bob)
+        .env("MURK_TRUSTED_SIGNERS", alice_entry(&dir, &alice))
+        .args(["add", "B", "--vault", "test.murk"])
+        .write_stdin("b\n")
+        .assert()
+        .success();
+    murk(&dir, &bot)
+        .args(["get", "A", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains(
+            "not a trusted signer in this grant's key file",
+        ));
+
+    // Naming bob in MURK_TRUSTED_SIGNERS adds him to the anchor.
+    let bob_entry = String::from_utf8(
+        murk(&dir, &bob)
+            .args(["trust", "--print-key", "--vault", "test.murk"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let bob_entry = bob_entry.lines().next().unwrap().trim().to_string();
+    murk(&dir, &bot)
+        .env("MURK_TRUSTED_SIGNERS", &bob_entry)
+        .args(["get", "A", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("v1"));
+}
+
+/// Alice's trusted-signer entry, as `murk trust --print-key` prints it.
+fn alice_entry(dir: &TempDir, alice: &str) -> String {
+    let out = murk(dir, alice)
+        .args(["trust", "--print-key", "--vault", "test.murk"])
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .trim()
+        .to_string()
+}
+
+#[test]
+fn a_grant_key_without_trusted_signers_is_told_to_re_mint() {
+    // A key file from before 0.14 (or with its anchor lines stripped) names no
+    // signer, so murk can't check the vault for it: refused, with the fix.
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    murk(&dir, &key)
+        .args(["add", "A", "--vault", "test.murk"])
+        .write_stdin("v1\n")
+        .assert()
+        .success();
+    let bot = mint_exec_grant(&dir, &key, "bot", &["A"]);
+    let bare: String = bot
+        .lines()
+        .filter(|l| l.starts_with("AGE-SECRET-KEY-"))
+        .collect();
+    murk(&dir, &bare)
+        .args(["get", "A", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(
+            predicate::str::contains("names no trusted signers")
+                .and(predicate::str::contains("--renew")),
+        );
+}
+
+#[test]
+fn an_agent_grant_cannot_join_a_group() {
+    // A grant reads exactly its --only keys; group membership would widen it.
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    murk(&dir, &key)
+        .args(["add", "A", "--vault", "test.murk"])
+        .write_stdin("v1\n")
+        .assert()
+        .success();
+    murk(&dir, &key)
+        .args(["group", "create", "prod", "--vault", "test.murk"])
+        .assert()
+        .success();
+    murk(&dir, &key)
+        .args(["add", "PROD_DB", "--group", "prod", "--vault", "test.murk"])
+        .write_stdin("prodvalue\n")
+        .assert()
+        .success();
+    let agent_key = mint_exec_grant(&dir, &key, "bot", &["A"]);
+    let before = fs::read(dir.path().join("test.murk")).unwrap();
+
+    murk(&dir, &key)
+        .args([
+            "group",
+            "add",
+            "prod",
+            "--member",
+            "agent:bot",
+            "--vault",
+            "test.murk",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "agent grant bot can't join a group",
+        ));
+    assert_eq!(fs::read(dir.path().join("test.murk")).unwrap(), before);
+    murk(&dir, &agent_key)
+        .args(["get", "PROD_DB", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("prodvalue").not());
+}
+
+#[test]
 fn agent_grant_fails_closed_after_ttl() {
     let dir = TempDir::new().unwrap();
     let (key, _) = init_vault(&dir);
@@ -5821,11 +6549,13 @@ fn policy_restricts_agent_grant_and_exec_to_allowed_tags() {
             predicate::str::contains("policy forbids").and(predicate::str::contains("PROD_DB")),
         );
 
-    // agent exec of a production key is refused too.
+    // agent exec of a production key is refused too, even with the
+    // operator's key let through on purpose.
     murk(&dir, &key)
         .args([
             "agent",
             "exec",
+            "--allow-operator-key",
             "--only",
             "PROD_DB",
             "--vault",
@@ -5885,6 +6615,7 @@ fn policy_clear_restores_unrestricted_agent_mode() {
         .args([
             "agent",
             "exec",
+            "--allow-operator-key",
             "--only",
             "PROD_DB",
             "--vault",
@@ -5907,6 +6638,7 @@ fn policy_clear_restores_unrestricted_agent_mode() {
         .args([
             "agent",
             "exec",
+            "--allow-operator-key",
             "--only",
             "PROD_DB",
             "--vault",
@@ -5954,7 +6686,8 @@ fn agent_init_grants_scoped_access_and_writes_key_file() {
         .success();
 
     let agent_key = read_agent_key(&agent_key_path);
-    assert!(agent_key.starts_with("AGE-SECRET-KEY-"));
+    assert!(agent_key.lines().any(|l| l.starts_with("AGE-SECRET-KEY-")));
+    assert!(agent_key.starts_with("# murk-trusted-signer: "));
 
     // The grant is recorded.
     murk(&dir, &key)
@@ -6011,7 +6744,10 @@ fn agent_init_sets_policy_and_streams_key_to_stdout() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::starts_with("AGE-SECRET-KEY-"))
+        .stdout(
+            predicate::str::starts_with("# murk-trusted-signer: ")
+                .and(predicate::str::contains("\nAGE-SECRET-KEY-")),
+        )
         .stderr(predicate::str::contains("key streamed to stdout"));
 
     // The allow-list is now set.

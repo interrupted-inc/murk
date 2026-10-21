@@ -144,14 +144,20 @@ pub fn resolve_member(
 
 /// Add a member to a group. The group must exist, the operator must already be
 /// a member (so they can re-encrypt the group's secrets), and the new member
-/// must be an authorized recipient. Returns true if the member was added (false
-/// if already present).
+/// must be an authorized recipient that is not an agent grant: a grant reads
+/// exactly its `--only` keys, and a group would widen that silently. Returns
+/// true if the member was added (false if already present).
 pub fn add_member(
     murk: &mut types::Murk,
     name: &str,
     member_pubkey: &str,
     operator_pubkey: &str,
 ) -> Result<bool, MurkError> {
+    if let Some((grant, _)) = murk.grants.iter().find(|(_, g)| g.pubkey == member_pubkey) {
+        return Err(MurkError::Group(format!(
+            "agent grant {grant} can't join a group — a grant reads only its --only keys; mint a grant with the keys it needs instead"
+        )));
+    }
     let members = murk
         .groups
         .get_mut(name)

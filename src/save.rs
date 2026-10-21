@@ -13,6 +13,11 @@ use std::path::Path;
 
 /// Re-encrypt a key's shared (everyone) ciphertext, reusing the existing one
 /// when the value and recipient set are unchanged (for minimal git diffs).
+///
+/// A shared value the writer couldn't decrypt at load (an agent grant is
+/// excluded from the shared tier) keeps its stored ciphertext unchanged.
+/// [`unreadable_reencrypts`] has already refused the save if that ciphertext
+/// would need new recipients.
 fn rebuild_shared(
     key: &str,
     vault: &types::Vault,
@@ -21,18 +26,74 @@ fn rebuild_shared(
     original: &types::Murk,
     current: &types::Murk,
 ) -> Result<String, MurkError> {
+    let existing = vault.secrets.get(key).map(|e| e.shared.as_str());
     let Some(value) = current.values.get(key) else {
-        // Scoped/group-only key — no shared ciphertext.
-        return Ok(String::new());
+        // The writer read a shared value at load and it's gone now: deleted, or
+        // moved to another tier. Otherwise it's a scoped/group-only key (no
+        // shared ciphertext) or one the writer can't read, so keep what's stored.
+        if original.values.contains_key(key) {
+            return Ok(String::new());
+        }
+        return Ok(existing.unwrap_or_default().to_owned());
     };
     // Reuse the stored ciphertext when the value and recipient set are unchanged.
     if !recipients_changed
         && original.values.get(key) == Some(value)
-        && let Some(existing) = vault.secrets.get(key)
+        && let Some(existing) = existing
     {
-        return Ok(existing.shared.clone());
+        return Ok(existing.to_owned());
     }
     encrypt_value(value.as_bytes(), recipients)
+}
+
+/// Name every stored value the writer couldn't decrypt at load whose tier
+/// gained a recipient since: carrying its old ciphertext over would leave the
+/// new recipient unable to read it, and the writer can't re-encrypt it. Returns
+/// one `KEY (tier)` label per value, empty when the save is safe.
+///
+/// A tier that only lost recipients (a revoke) is not listed: the removed
+/// recipient could already read that exact value, revoke marks it as owed a
+/// rotation, and the next value change goes through a reader who re-encrypts it.
+/// Keys the writer deleted outright are skipped; deletion is deliberate.
+fn unreadable_reencrypts(
+    vault: &types::Vault,
+    original: &types::Murk,
+    current: &types::Murk,
+    keys: &BTreeSet<&String>,
+    shared_gained: bool,
+) -> Vec<String> {
+    let gained_member = |group: &str| {
+        let before = original.groups.get(group);
+        current.groups.get(group).is_some_and(|members| {
+            members
+                .iter()
+                .any(|pk| !before.is_some_and(|m| m.contains(pk)))
+        })
+    };
+    let mut blocked = Vec::new();
+    for key in keys {
+        let Some(entry) = vault.secrets.get(key.as_str()) else {
+            continue;
+        };
+        if shared_gained
+            && !entry.shared.is_empty()
+            && !original.values.contains_key(key.as_str())
+            && !current.values.contains_key(key.as_str())
+        {
+            blocked.push(format!("{key} (shared)"));
+        }
+        let read_at_load = original.grouped.get(key.as_str());
+        let written_now = current.grouped.get(key.as_str());
+        for group in entry.grouped.keys() {
+            if gained_member(group)
+                && !read_at_load.is_some_and(|m| m.contains_key(group))
+                && !written_now.is_some_and(|m| m.contains_key(group))
+            {
+                blocked.push(format!("{key} (group {group})"));
+            }
+        }
+    }
+    blocked
 }
 
 /// Re-encrypt a key's scoped (per-recipient) ciphertexts, keeping unchanged
@@ -194,6 +255,131 @@ fn advance_identity(vault: &mut types::Vault, prior_pin: Option<&crate::pins::Tr
         .saturating_add(1);
 }
 
+/// Drop or narrow grants before a save, so a grant only ever receives values
+/// it is still entitled to. Returns the adjusted state, or `None` when nothing
+/// changed (the common case, so no clone).
+///
+/// - An expired grant (or one with an unreadable or missing expiry) is removed
+///   with its recipient entry and scoped copies, so a rotation after the TTL
+///   never re-encrypts to it. Scope keys whose value this save leaves unchanged
+///   are marked as owed a rotation, like any revoke; a key rotated in this very
+///   save is not, since the agent never gets the new value.
+/// - A scoped key that no longer has a shared value (moved to a group, or
+///   removed) leaves the grant's scope, and the grant's copy of it is deleted:
+///   scope binds to the shared secret it was granted, not to the key name, so
+///   a later key of the same name is not handed to the agent. A grant whose
+///   scope empties is removed.
+fn prune_grants(
+    vault: &mut types::Vault,
+    original: &types::Murk,
+    current: &types::Murk,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Option<types::Murk>, MurkError> {
+    let expired = |name: &str, grant: &types::GrantEntry| {
+        crate::policy::check_grant_expiry(name, grant, now).is_err()
+    };
+    // A key "left the shared tier" only if the writer read it and it's gone.
+    // A shared value the writer never could read (the carry-over case) still
+    // stands, so its grants are left alone.
+    let unreadable_shared: BTreeSet<String> = vault
+        .secrets
+        .iter()
+        .filter(|(k, e)| !e.shared.is_empty() && !original.values.contains_key(k.as_str()))
+        .map(|(k, _)| k.clone())
+        .collect();
+    let still_shared =
+        |key: &String| current.values.contains_key(key) || unreadable_shared.contains(key);
+    if !current
+        .grants
+        .iter()
+        .any(|(name, g)| expired(name, g) || !g.scope.iter().all(still_shared))
+    {
+        return Ok(None);
+    }
+
+    let mut pruned = current.clone();
+    for (name, grant) in &current.grants {
+        let (kept, gone): (Vec<String>, Vec<String>) =
+            grant.scope.iter().cloned().partition(still_shared);
+        if expired(name, grant) || kept.is_empty() {
+            crate::remove_grant(&mut pruned, name)?;
+            if vault.recipients.contains(&grant.pubkey) {
+                crate::revoke_recipient(vault, &mut pruned, &grant.pubkey)?;
+            } else {
+                // A save earlier in this command already revoked it (a caller
+                // that saves twice from one loaded state): clear what's left.
+                pruned.recipients.remove(&grant.pubkey);
+                for members in pruned.groups.values_mut() {
+                    members.retain(|pk| pk != &grant.pubkey);
+                }
+                for entry in vault.secrets.values_mut() {
+                    entry.private.remove(&grant.pubkey);
+                }
+            }
+            if expired(name, grant) {
+                let unchanged: Vec<String> = kept
+                    .into_iter()
+                    .filter(|k| original.values.get(k) == current.values.get(k))
+                    .collect();
+                crate::mark_revoked(vault, &unchanged, now);
+            }
+            continue;
+        }
+        for key in &gone {
+            if let Some(entry) = vault.secrets.get_mut(key) {
+                entry.private.remove(&grant.pubkey);
+            }
+        }
+        if let Some(g) = pruned.grants.get_mut(name) {
+            g.scope = kept;
+        }
+    }
+    Ok(Some(pruned))
+}
+
+/// How the *shared* recipient set (recipients minus agent grants) moved since
+/// load: `(changed, gained)`. Any change forces full re-encryption of shared
+/// values. Adding or removing an agent doesn't change this set, so it doesn't
+/// needlessly churn shared ciphertext (and never pulls an agent into the
+/// shared layer).
+fn shared_recipient_change(
+    vault: &types::Vault,
+    original: &types::Murk,
+    grant_pubkeys: &BTreeSet<&str>,
+) -> (bool, bool) {
+    let orig_grant_pubkeys: BTreeSet<&str> = original
+        .grants
+        .values()
+        .map(|g| g.pubkey.as_str())
+        .collect();
+    let now: BTreeSet<&str> = vault
+        .recipients
+        .iter()
+        .map(String::as_str)
+        .filter(|pk| !grant_pubkeys.contains(pk))
+        .collect();
+    let before: BTreeSet<&str> = original
+        .recipients
+        .keys()
+        .map(String::as_str)
+        .filter(|pk| !orig_grant_pubkeys.contains(pk))
+        .collect();
+    (now != before, !now.is_subset(&before))
+}
+
+/// Who the meta blob is encrypted to: every recipient except agent grants. The
+/// meta holds the MAC key, names, groups and every grant; a grant gets only its
+/// own record, in its `agents` blob (see [`crate::agents`]).
+fn meta_recipients(
+    vault: &types::Vault,
+    current: &types::Murk,
+) -> Result<Vec<crypto::MurkRecipient>, MurkError> {
+    parse_recipients(&crate::agents::meta_recipients(
+        &vault.recipients,
+        &current.grants,
+    ))
+}
+
 /// Save the vault: compare against original state and only re-encrypt changed values.
 /// Unchanged values keep their original ciphertext for minimal git diffs.
 ///
@@ -201,19 +387,24 @@ fn advance_identity(vault: &mut types::Vault, prior_pin: Option<&crate::pins::Tr
 /// `vault.recipients`: writing as a non-recipient would encrypt values to a
 /// recipient set the saver can't read back, and possibly one an attacker chose.
 /// Flows that onboard a key add it to the recipients before saving.
+///
+/// Also refuses, writing nothing, when the state was loaded by an agent grant
+/// ([`crate::ensure_writable`]), or when the change adds recipients to a value
+/// the writer couldn't decrypt.
 pub fn save_vault(
     vault_path: &str,
     vault: &mut types::Vault,
     original: &types::Murk,
     current: &types::Murk,
 ) -> Result<(), MurkError> {
+    crate::ensure_writable(original)?;
     let saver = saving_identity(vault_path, vault)?;
     // This build MACs and signs in the 3.x format, so the header says so.
     types::VAULT_VERSION.clone_into(&mut vault.version);
+    let pruned = prune_grants(vault, original, current, chrono::Utc::now())?;
+    let current = pruned.as_ref().unwrap_or(current);
 
-    // The full recipient set encrypts the meta blob, so every recipient —
-    // including agent grants — can verify integrity and read group/grant state.
-    let recipients = parse_recipients(&vault.recipients)?;
+    let recipients = meta_recipients(vault, current)?;
 
     let prior_pin = crate::pins::read(vault_path).map_err(MurkError::Trust)?;
     advance_identity(vault, prior_pin.as_ref());
@@ -222,8 +413,7 @@ pub fn save_vault(
 
     // Agent grant pubkeys are deliberately excluded from the shared "everyone"
     // layer: a granted agent must read only the scoped values granted to it, not
-    // every shared secret. They remain meta recipients (above) but never receive
-    // the shared ciphertext.
+    // every shared secret. (Nor are they meta recipients; see above.)
     let grant_pubkeys: BTreeSet<&str> =
         current.grants.values().map(|g| g.pubkey.as_str()).collect();
     let shared_recipients: Vec<crypto::MurkRecipient> = vault
@@ -233,32 +423,8 @@ pub fn save_vault(
         .map(|pk| crypto::parse_recipient(pk))
         .collect::<Result<_, _>>()?;
 
-    // Check if the *shared* recipient set (recipients minus agent grants) changed
-    // — that forces full re-encryption of shared values. Adding or removing an
-    // agent doesn't change this set, so it doesn't needlessly churn shared
-    // ciphertext (and never pulls an agent into the shared layer).
-    let shared_recipients_changed = {
-        let orig_grant_pubkeys: BTreeSet<&str> = original
-            .grants
-            .values()
-            .map(|g| g.pubkey.as_str())
-            .collect();
-        let mut current_pks: Vec<&str> = vault
-            .recipients
-            .iter()
-            .map(String::as_str)
-            .filter(|pk| !grant_pubkeys.contains(pk))
-            .collect();
-        let mut original_pks: Vec<&str> = original
-            .recipients
-            .keys()
-            .map(String::as_str)
-            .filter(|pk| !orig_grant_pubkeys.contains(pk))
-            .collect();
-        current_pks.sort_unstable();
-        original_pks.sort_unstable();
-        current_pks != original_pks
-    };
+    let (shared_recipients_changed, shared_recipients_gained) =
+        shared_recipient_change(vault, original, &grant_pubkeys);
 
     // Groups whose membership changed since load — their secrets must be
     // re-encrypted even when the plaintext is unchanged, so a removed member
@@ -279,11 +445,12 @@ pub fn save_vault(
     all_keys.extend(current.private.keys());
     all_keys.extend(current.grouped.keys());
 
-    // Preserve on-disk secrets the operator can't see (other groups' values, or
-    // other recipients' scoped entries). These never enter the decrypted `Murk`,
-    // so without this they'd be silently dropped when a non-member saves. A key
-    // the operator *deleted* was visible at load (in `original`) and is excluded,
-    // so deletions still take effect.
+    // Preserve on-disk secrets the operator can't see (other groups' values,
+    // other recipients' scoped entries, or shared values for an agent grant).
+    // These never enter the decrypted `Murk`, so without this they'd be silently
+    // dropped when a non-member saves; each rebuild_* step carries the stored
+    // ciphertext over. A key the operator *deleted* was visible at load (in
+    // `original`) and is excluded, so deletions still take effect.
     let original_visible: BTreeSet<&String> = original
         .values
         .keys()
@@ -294,6 +461,20 @@ pub fn save_vault(
         if !original_visible.contains(key) {
             all_keys.insert(key);
         }
+    }
+
+    let blocked = unreadable_reencrypts(
+        vault,
+        original,
+        current,
+        &all_keys,
+        shared_recipients_gained,
+    );
+    if !blocked.is_empty() {
+        return Err(MurkError::Secret(format!(
+            "refusing to save: this change adds recipients to values your key can't read, so it can't re-encrypt them: {}\nnothing was written\nrun it with a key that can read them (a member of the group, or a recipient rather than an agent grant)",
+            blocked.join(", ")
+        )));
     }
 
     for key in all_keys {
@@ -319,6 +500,7 @@ pub fn save_vault(
     }
 
     vault.secrets = new_secrets;
+    crate::agents::rebuild(vault, original, current)?;
 
     let meta = build_meta(vault, current, &saver, prior_pin.as_ref());
     crate::validate::meta(&meta)
@@ -1015,5 +1197,271 @@ mod tests {
             "unexpected error: {err}"
         );
         assert!(!path.exists(), "nothing may be written");
+    }
+
+    /// Three recipients; bob writes SHARED (everyone) and PROD (group `ops` =
+    /// bob + carol), so alice can read SHARED but not PROD. Returns the vault
+    /// path and alice's/bob's secret keys. Caller holds `ENV_LOCK`.
+    fn vault_with_foreign_group(name: &str) -> (std::path::PathBuf, String, String, String) {
+        let (alice_sk, alice_pk) = generate_keypair();
+        let (bob_sk, bob_pk) = generate_keypair();
+        let (_, carol_pk) = generate_keypair();
+
+        let dir = std::env::temp_dir().join(name);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.murk");
+
+        let mut vault = empty_vault();
+        vault.recipients = vec![alice_pk.clone(), bob_pk.clone(), carol_pk.clone()];
+        let names = HashMap::from([
+            (alice_pk.clone(), "alice".to_string()),
+            (bob_pk.clone(), "bob".to_string()),
+            (carol_pk.clone(), "carol".to_string()),
+        ]);
+        let original = types::Murk {
+            recipients: names.clone(),
+            ..Default::default()
+        };
+        let current = types::Murk {
+            recipients: names,
+            values: HashMap::from([("SHARED".into(), secret("s"))]),
+            grouped: HashMap::from([("PROD".into(), HashMap::from([("ops".into(), secret("p"))]))]),
+            groups: BTreeMap::from([("ops".into(), vec![bob_pk, carol_pk.clone()])]),
+            ..Default::default()
+        };
+        unsafe { std::env::set_var("MURK_KEY", &bob_sk) };
+        unsafe { std::env::remove_var("MURK_KEY_FILE") };
+        save_vault(path.to_str().unwrap(), &mut vault, &original, &current).unwrap();
+        (path, alice_sk, bob_sk, carol_pk)
+    }
+
+    #[test]
+    fn save_carries_over_values_the_writer_cannot_read() {
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (path, alice_sk, bob_sk, carol_pk) =
+            vault_with_foreign_group("murk_test_carry_over_unreadable");
+        let ps = path.to_str().unwrap();
+
+        unsafe { std::env::set_var("MURK_KEY", &alice_sk) };
+        let (mut vault, mut original, _) = load_vault(ps).unwrap();
+        assert!(!original.grouped.contains_key("PROD"));
+        let shared_before = vault.secrets["SHARED"].shared.clone();
+        let prod_before = vault.secrets["PROD"].grouped["ops"].clone();
+
+        // A writer that couldn't decrypt SHARED (as an agent grant can't) adds
+        // an unrelated key while carol leaves `ops`, a change that only removes
+        // recipients.
+        original.values.remove("SHARED");
+        original.loaded_by = None;
+        let mut current = original.clone();
+        current.values.insert("NEW".into(), secret("n"));
+        current
+            .groups
+            .get_mut("ops")
+            .unwrap()
+            .retain(|pk| pk != &carol_pk);
+        save_vault(ps, &mut vault, &original, &current).unwrap();
+
+        assert_eq!(vault.secrets["SHARED"].shared, shared_before);
+        assert_eq!(vault.secrets["PROD"].grouped["ops"], prod_before);
+        unsafe { std::env::set_var("MURK_KEY", &bob_sk) };
+        let bob = load_vault(ps).unwrap().1;
+        unsafe { std::env::remove_var("MURK_KEY") };
+        assert_eq!(bob.values["SHARED"].as_str(), "s");
+        assert_eq!(bob.grouped["PROD"]["ops"].as_str(), "p");
+
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn save_refuses_to_add_recipients_to_a_value_the_writer_cannot_read() {
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (path, alice_sk, _, _) =
+            vault_with_foreign_group("murk_test_refuse_unreadable_reencrypt");
+        let ps = path.to_str().unwrap();
+
+        unsafe { std::env::set_var("MURK_KEY", &alice_sk) };
+        let (mut vault, original, identity) = load_vault(ps).unwrap();
+        let on_disk = fs::read(&path).unwrap();
+
+        // alice joins `ops` without being able to read PROD: carrying the old
+        // ciphertext over would leave her membership hollow, and she can't
+        // re-encrypt it.
+        let mut current = original.clone();
+        current
+            .groups
+            .get_mut("ops")
+            .unwrap()
+            .push(identity.pubkey_string().unwrap());
+        let err = save_vault(ps, &mut vault, &original, &current).unwrap_err();
+        unsafe { std::env::remove_var("MURK_KEY") };
+
+        assert!(err.to_string().contains("PROD (group ops)"), "{err}");
+        assert_eq!(fs::read(&path).unwrap(), on_disk);
+
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_grant_without_expiry_loads_for_the_operator_but_never_reads() {
+        // A grant minted before TTLs existed has an empty `expires_at`. It must
+        // not make the vault unloadable for everyone (0.13.0 rejected the whole
+        // meta), and it must not read either: no expiry fails closed.
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (sk, pk) = generate_keypair();
+        let (agent_sk, agent_pk) = generate_keypair();
+        let dir = std::env::temp_dir().join("murk_test_legacy_grant_expiry");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.murk");
+        let ps = path.to_str().unwrap();
+
+        let mut vault = signed_test_vault(&pk, &make_recipient(&pk));
+        vault.recipients.push(agent_pk.clone());
+        let state = types::Murk {
+            values: HashMap::from([("API_KEY".into(), secret("REAL"))]),
+            recipients: HashMap::from([
+                (pk.clone(), "alice".to_string()),
+                (agent_pk.clone(), "agent:old".to_string()),
+            ]),
+            ..Default::default()
+        };
+        let home = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", home.path()) };
+        unsafe { std::env::set_var("MURK_KEY", &sk) };
+        unsafe { std::env::remove_var("MURK_KEY_FILE") };
+        unsafe { std::env::remove_var("MURK_NO_SIGNER_PIN") };
+        save_vault(ps, &mut vault, &state, &state).unwrap();
+        // First load pins the operator as this machine's trusted signer.
+        load_vault(ps).unwrap();
+
+        // Add the legacy grant the way an older murk wrote it (no expiry), in
+        // the 3.x layout (meta to the operator only, the grant's own record in
+        // `agents`), then re-MAC and re-sign as the operator so the vault is
+        // otherwise intact.
+        let operator = make_identity(&sk);
+        let mut meta = decrypt_meta(&vault, &operator).unwrap().unwrap();
+        let grant = types::GrantEntry {
+            pubkey: agent_pk.clone(),
+            scope: vec!["API_KEY".into()],
+            issued_at: "2026-01-01T00:00:00Z".into(),
+            expires_at: String::new(),
+            issuer: pk.clone(),
+        };
+        meta.grants.insert("old".into(), grant.clone());
+        vault.agents = crate::agents::blobs_for(&meta.grants, &[]).unwrap();
+        vault.secrets.get_mut("API_KEY").unwrap().private.insert(
+            agent_pk.clone(),
+            encrypt_value(b"REAL", &[make_recipient(&agent_pk)]).unwrap(),
+        );
+        vault.generation += 1;
+        let mac_key = decode_mac_key(meta.mac_key.as_deref().unwrap()).unwrap();
+        meta.mac = compute_mac(&vault, &meta.groups, &meta.grants, Some(&mac_key));
+        vault.meta =
+            encrypt_value(&serde_json::to_vec(&meta).unwrap(), &[make_recipient(&pk)]).unwrap();
+        vault.sig = None;
+        vault.sig = sign_vault(&vault, &operator);
+        vault::write(&path, &vault).unwrap();
+
+        let as_operator = load_vault(ps);
+        // The agent's key file names the operator as its trusted signer.
+        let vk = operator.signing_key().unwrap().verifying_key();
+        let agent_key_file = format!("{} {pk}:{vk}\n{agent_sk}\n", crate::agents::ANCHOR_PREFIX);
+        unsafe { std::env::set_var("MURK_KEY", &agent_key_file) };
+        let as_agent = load_vault(ps);
+        unsafe { std::env::remove_var("MURK_KEY") };
+        match prev_home {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+
+        let (_, murk, _) = as_operator.expect("the operator must still load the vault");
+        assert_eq!(murk.values["API_KEY"].as_str(), "REAL");
+        let Err(err) = as_agent else {
+            panic!("a grant without expiry must not read");
+        };
+        assert!(err.to_string().contains("grant old has no expiry"), "{err}");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_grant_record_bound_to_the_operators_key_does_not_make_them_a_grant() {
+        // A meta writer could bind a grant record to an operator's own key (a
+        // "ghost" grant): that made the operator read-only, or, expired, locked
+        // them out. The key opened the meta, so it is no grant: it reads and
+        // writes as before, and the next save drops the record.
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (sk, pk) = generate_keypair();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.murk");
+        let ps = path.to_str().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", home.path()) };
+        unsafe { std::env::set_var("MURK_KEY", &sk) };
+        unsafe { std::env::remove_var("MURK_KEY_FILE") };
+
+        let mut vault = signed_test_vault(&pk, &make_recipient(&pk));
+        let state = types::Murk {
+            values: HashMap::from([("API_KEY".into(), secret("REAL"))]),
+            recipients: HashMap::from([(pk.clone(), "alice".to_string())]),
+            ..Default::default()
+        };
+        save_vault(ps, &mut vault, &state, &state).unwrap();
+        load_vault(ps).unwrap();
+
+        let operator = make_identity(&sk);
+        let mut meta = decrypt_meta(&vault, &operator).unwrap().unwrap();
+        meta.grants.insert(
+            "ghost".into(),
+            types::GrantEntry {
+                pubkey: pk.clone(),
+                scope: vec!["API_KEY".into()],
+                issued_at: "2026-01-01T00:00:00Z".into(),
+                expires_at: "2026-01-02T00:00:00Z".into(),
+                issuer: pk.clone(),
+            },
+        );
+        vault.generation += 1;
+        let mac_key = decode_mac_key(meta.mac_key.as_deref().unwrap()).unwrap();
+        meta.mac = compute_mac(&vault, &meta.groups, &meta.grants, Some(&mac_key));
+        vault.meta =
+            encrypt_value(&serde_json::to_vec(&meta).unwrap(), &[make_recipient(&pk)]).unwrap();
+        vault.sig = None;
+        vault.sig = sign_vault(&vault, &operator);
+        vault::write(&path, &vault).unwrap();
+
+        let loaded = load_vault(ps);
+        let saved = loaded.as_ref().ok().map(|(v, m, _)| {
+            let mut v = v.clone();
+            let mut current = m.clone();
+            current.values.insert("NEW".into(), secret("n"));
+            save_vault(ps, &mut v, m, &current)
+        });
+        let reloaded = load_vault(ps);
+        unsafe { std::env::remove_var("MURK_KEY") };
+        match prev_home {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+
+        let (_, murk, _) = loaded.expect("the operator still loads");
+        assert!(!murk.loaded_as_grant);
+        assert!(!murk.grants.contains_key("ghost"));
+        saved.unwrap().expect("the operator can still write");
+        let (_, murk, _) = reloaded.unwrap();
+        assert_eq!(murk.values["NEW"].as_str(), "n");
+        assert!(murk.grants.is_empty(), "the save drops the ghost record");
     }
 }

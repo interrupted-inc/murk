@@ -181,8 +181,8 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             break
         }
         'murk;skeleton' {
-            [CompletionResult]::new('-o', '-o', [CompletionResultType]::ParameterName, 'Output file (prints to stdout if omitted)')
-            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output file (prints to stdout if omitted)')
+            [CompletionResult]::new('-o', '-o', [CompletionResultType]::ParameterName, 'New output file; refuses an existing path (prints to stdout if omitted)')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'New output file; refuses an existing path (prints to stdout if omitted)')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
@@ -214,8 +214,8 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
         }
         'murk;agent;plan' {
             [CompletionResult]::new('--tag', '--tag', [CompletionResultType]::ParameterName, 'Filter by tag (repeatable)')
-            [CompletionResult]::new('-o', '-o', [CompletionResultType]::ParameterName, 'Output file (prints to stdout if omitted)')
-            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output file (prints to stdout if omitted)')
+            [CompletionResult]::new('-o', '-o', [CompletionResultType]::ParameterName, 'New output file; refuses an existing path (prints to stdout if omitted)')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'New output file; refuses an existing path (prints to stdout if omitted)')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Output as JSON')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')

@@ -786,6 +786,78 @@ fn keyed_merge_of_concurrent_grant_renewals_leaves_no_ungranted_agent_key() {
 }
 
 #[test]
+fn merge_driver_refuses_a_grant_key_and_leaves_ours_untouched() {
+    // A real `git merge` through the driver, run with an agent grant key. The
+    // merge conflicts (both sides change A) and theirs adds B, so a driver that
+    // writes %A changes the file. Grants are read-only: the driver must refuse
+    // before writing, leaving the working copy byte-identical to ours.
+    let dir = TempDir::new().unwrap();
+    let d = dir.path();
+    git(d, &["init", "-q", "-b", "main"]);
+    let (key, _) = init_vault(d);
+    let murk_exe = env!("CARGO_BIN_EXE_murk");
+    git(
+        d,
+        &[
+            "config",
+            "merge.murk.driver",
+            &format!("'{murk_exe}' merge-driver %O %A %B"),
+        ],
+    );
+    fs::write(d.join(".gitattributes"), "*.murk merge=murk\n").unwrap();
+    add_secret(d, &key, "A", "base");
+    let agent_key_path = d.join("agent.key");
+    murk(d, &key)
+        .args(["agent", "grant", "--name", "bot", "--only", "A", "--out"])
+        .arg(&agent_key_path)
+        .args(["--vault", "test.murk"])
+        .assert()
+        .success();
+    let agent_key = fs::read_to_string(&agent_key_path).unwrap();
+    git(d, &["add", "test.murk", ".gitattributes"]);
+    git(d, &["commit", "-q", "-m", "base"]);
+
+    git(d, &["checkout", "-q", "-b", "theirs"]);
+    add_secret(d, &key, "A", "theirs");
+    add_secret(d, &key, "B", "new");
+    git(d, &["commit", "-q", "-am", "theirs"]);
+    git(d, &["checkout", "-q", "main"]);
+    add_secret(d, &key, "A", "ours");
+    git(d, &["commit", "-q", "-am", "ours"]);
+    let ours = fs::read(d.join("test.murk")).unwrap();
+
+    let mut merge = std::process::Command::new("git");
+    merge
+        .args(["merge", "--no-edit", "theirs"])
+        .current_dir(d)
+        .env("HOME", d)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@test.com")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@test.com");
+    for var in common::MURK_CONTEXT_VARS {
+        merge.env_remove(var);
+    }
+    let out = merge.env("MURK_KEY", agent_key.trim()).output().unwrap();
+
+    assert!(
+        !out.status.success(),
+        "merge with a grant key must not succeed"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        fs::read(d.join("test.murk")).unwrap(),
+        ours,
+        "the driver wrote %A: {stderr}"
+    );
+    assert!(
+        stderr.contains("agent grants are read-only"),
+        "driver must say why: {stderr}"
+    );
+}
+
+#[test]
 fn setup_merge_driver_appends_to_existing_gitattributes() {
     let dir = TempDir::new().unwrap();
     git(dir.path(), &["init", "-q"]);

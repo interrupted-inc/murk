@@ -5,12 +5,13 @@
 //!
 //! A grant mints an ephemeral age identity, hands it to an agent, and gives it
 //! read access to a fixed set of keys — without ever exposing the operator's own
-//! key. The agent's pubkey is a vault recipient (so it can verify integrity and
-//! decrypt the meta blob) but is excluded from the shared "everyone" layer; its
-//! access is exactly the set of scoped ciphertexts encrypted to it. Grant
-//! metadata (scope, TTL, issuer) lives in the encrypted meta (see
-//! [`crate::types::Meta::grants`]) and is covered by the keyed MAC, so it cannot
-//! be tampered with undetected.
+//! key. The agent's pubkey is a vault recipient of exactly two kinds of
+//! ciphertext: the scoped copies of its keys, and its own grant record in the
+//! vault's `agents` map (see [`crate::agents`]). It is excluded from the shared
+//! "everyone" layer and is never a recipient of the meta. Grant metadata
+//! (scope, TTL, issuer) lives in the encrypted meta (see
+//! [`crate::types::Meta::grants`]), covered by the keyed MAC, and, for the
+//! agent's own grant, in its `agents` record, covered by the signature.
 //!
 //! The TTL is enforced at read time by the murk binary: an expired grant fails
 //! closed at every entry point (CLI, MCP, bindings — see

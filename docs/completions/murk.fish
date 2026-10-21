@@ -120,7 +120,7 @@ complete -c murk -n "__fish_murk_using_subcommand info" -l tag -d 'Filter by tag
 complete -c murk -n "__fish_murk_using_subcommand info" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand info" -l json -d 'Output as JSON'
 complete -c murk -n "__fish_murk_using_subcommand info" -s h -l help -d 'Print help'
-complete -c murk -n "__fish_murk_using_subcommand skeleton" -s o -l output -d 'Output file (prints to stdout if omitted)' -r
+complete -c murk -n "__fish_murk_using_subcommand skeleton" -s o -l output -d 'New output file; refuses an existing path (prints to stdout if omitted)' -r
 complete -c murk -n "__fish_murk_using_subcommand skeleton" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand skeleton" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand exec" -l only -d 'Only inject these specific keys (repeatable)' -r
@@ -140,7 +140,7 @@ complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_sub
 complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "disconnect" -d 'Remove murk\'s entry from an AI editor\'s MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys'
 complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from plan" -l tag -d 'Filter by tag (repeatable)' -r
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from plan" -s o -l output -d 'Output file (prints to stdout if omitted)' -r
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from plan" -s o -l output -d 'New output file; refuses an existing path (prints to stdout if omitted)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from plan" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from plan" -l json -d 'Output as JSON'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from plan" -s h -l help -d 'Print help'
