@@ -365,22 +365,23 @@ pub fn revoke_recipient(
     // Drop any agent grant whose ephemeral pubkey was just revoked, so revoking
     // an agent recipient (directly or via `agent revoke`) never leaves an
     // orphaned grant record pointing at a pubkey that is no longer a recipient.
+    let revoking_a_grant_key = vault.agents.keys().any(|pk| revoked(pk))
+        || murk.grants.values().any(|g| revoked(&g.pubkey));
     murk.grants.retain(|_, grant| !revoked(&grant.pubkey));
 
     // A grant's key file trusts the signers in its anchor, and nothing updates
     // a key file, so a revoked signer could still sign a vault that grant
-    // accepts. Revoke every grant whose anchor names a revoked key. A grant
-    // with no recorded anchor (minted before anchors were recorded) is revoked
-    // whenever the revoked key could have been in one: an ssh-ed25519 key, or
-    // an age key with a verifying key in the signer registry.
-    let could_sign = keys.iter().any(|k| k.starts_with("ssh-ed25519 "))
-        || murk.signers.keys().any(|s| revoked(s));
+    // accepts. Revoke every grant whose anchor names a revoked key. An empty
+    // anchor is unknown (minted before anchors were recorded, or emptied by a
+    // meta writer), so such a grant is revoked with any revoked key that is
+    // not itself a grant key (grant keys have a grant record or an `agents`
+    // record and are never anyone's anchor).
     let anchored: Vec<String> = murk
         .grants
         .iter()
         .filter(|(_, g)| {
             if g.anchors.is_empty() {
-                could_sign
+                !revoking_a_grant_key
             } else {
                 g.anchors.iter().any(|a| revoked(a))
             }
@@ -606,6 +607,62 @@ mod tests {
         assert!(!vault.recipients.contains(&pk2));
         assert!(vault.recipients.contains(&pk1));
         assert_eq!(result.exposed_keys, vec!["KEY"]);
+    }
+
+    #[test]
+    fn revoking_a_signer_revokes_grants_by_their_recorded_anchor() {
+        // A grant naming the revoked key goes; one whose anchor excludes it
+        // stays; one with no recorded anchor goes (unknown means revoke). Revoking a
+        // grant key never cascades to other grants.
+        let (_, alice) = generate_keypair();
+        let (_, bob) = generate_keypair();
+        let (_, g_bob) = generate_keypair();
+        let (_, g_alice) = generate_keypair();
+        let (_, g_none) = generate_keypair();
+        let setup = || {
+            let mut vault = empty_vault();
+            vault.recipients = vec![
+                alice.clone(),
+                bob.clone(),
+                g_bob.clone(),
+                g_alice.clone(),
+                g_none.clone(),
+            ];
+            let mut murk = empty_murk();
+            for (name, pk, anchors) in [
+                ("trusts-bob", &g_bob, vec![alice.clone(), bob.clone()]),
+                ("alice-only", &g_alice, vec![alice.clone()]),
+                ("unknown", &g_none, vec![]),
+            ] {
+                murk.grants.insert(
+                    name.into(),
+                    types::GrantEntry {
+                        pubkey: pk.clone(),
+                        anchors,
+                        ..Default::default()
+                    },
+                );
+                vault.agents.insert(pk.clone(), "blob".into());
+            }
+            (vault, murk)
+        };
+
+        let (mut vault, mut murk) = setup();
+        let result = revoke_recipient(&mut vault, &mut murk, &bob).unwrap();
+        let gone: Vec<&str> = result
+            .revoked_grants
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect();
+        assert_eq!(gone, ["trusts-bob", "unknown"]);
+        assert!(murk.grants.contains_key("alice-only"));
+        assert!(!vault.recipients.contains(&g_bob) && !vault.recipients.contains(&g_none));
+        assert!(vault.recipients.contains(&g_alice));
+
+        let (mut vault, mut murk) = setup();
+        let result = revoke_recipient(&mut vault, &mut murk, &g_alice).unwrap();
+        assert_eq!(result.revoked_grants.len(), 0);
+        assert!(murk.grants.contains_key("unknown"));
     }
 
     #[test]

@@ -6545,7 +6545,10 @@ fn revoking_a_signer_revokes_the_grants_that_trust_it() {
         .failure()
         .stdout("");
 
-    // Bob forges from his pre-revoke copy, where bot is still live.
+    // Bob forges from his pre-revoke copy, where bot is still live. The old
+    // grant key would still accept it; what protects the agent is that its
+    // key file (murk's default path) is gone. A copy kept elsewhere is not
+    // covered: murk tells the operator to delete it.
     let post_revoke = fs::read(&vault).unwrap();
     fs::write(&vault, &pre_revoke).unwrap();
     as_bob()
