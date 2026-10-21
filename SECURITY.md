@@ -13,21 +13,22 @@ For a detailed analysis of what murk protects and what it doesn't, see [THREAT_M
 - **Not audited.** murk has not had an independent security audit. It is pre-1.0 software. Use good judgment with production secrets.
 - **Not a secrets server.** murk is a file-based secrets manager for dev teams. It is not designed for regulated environments, dynamic secrets, automatic provider-side rotation or provable access controls. murk can record rotation intervals and expiry dates and report overdue secrets. If you need a secrets server, use one such as HashiCorp Vault.
 - **Revoked recipients can read old git history.** Revoking a recipient re-encrypts the vault going forward, but old `.murk` versions remain in git. The revoked user can still decrypt any version they had access to. Always rotate secrets after revocation.
-- **Plaintext during edit.** `murk edit` writes decrypted values to a temp file for `$EDITOR`. The file is overwritten with zeros and deleted afterward, but the plaintext existed on disk briefly. Core dumps, swap, or filesystem journaling could retain fragments.
+- **Plaintext during edit.** `murk edit` writes decrypted values to a temp file for `$EDITOR`. The file is overwritten with zeros and deleted afterward, but the plaintext is on disk for as long as the editor runs. Core dumps, swap, or filesystem journaling could retain fragments.
 - **Compromised workstation = full access.** If an attacker has access to the machine where your key lives, they can decrypt all shared secrets. murk is not a defense against a compromised machine — it protects secrets at rest in git and in transit.
 - **Key names are public.** The `.murk` header exposes what secrets exist (e.g. `STRIPE_SECRET_KEY`). Only values are encrypted. This is a deliberate trade-off for usability (`murk info` without a key, readable git diffs).
 - **No custom cryptographic primitives.** murk uses age, BLAKE3 and Ed25519. The vault format, its keyed MAC and its signature scheme are murk's own.
 
 ## Known Issues
 
-**SSH-RSA timing sidechannel (RUSTSEC-2023-0071)** — The `rsa` crate used by age's SSH-RSA support is affected by the Marvin Attack, a timing sidechannel. murk rejects `ssh-rsa` recipients by default: `circle authorize`, `ssh:` paths, and `github:username` all refuse to authorize RSA keys unless the caller passes `--allow-ssh-rsa`. The risk is low for a local CLI (the attack requires many decryption queries against a server), but the default-closed posture keeps weak keys out of the recipient list. Prefer ed25519 keys. No upstream fix is available yet.
+**SSH-RSA timing sidechannel (RUSTSEC-2023-0071)** — The `rsa` crate used by age's SSH-RSA support is affected by the Marvin Attack, a timing sidechannel. murk rejects `ssh-rsa` recipients by default: `circle authorize` and `ssh:` paths refuse to authorize RSA keys unless the caller passes `--allow-ssh-rsa`. `github:username` skips RSA keys with a warning, and refuses only when every key it finds is RSA. The risk is low for a local CLI (the attack requires many decryption queries against a server), but the default-closed posture keeps weak keys out of the recipient list. Prefer ed25519 keys. No upstream fix is available yet.
 
 ## Supply Chain
 
 Every release artifact is built and published from GitHub Actions on hosted runners, and most carry signed provenance. Release binaries include [Sigstore artifact attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations). Verify a downloaded binary:
 
 ```bash
-gh attestation verify murk-v*.tar.gz --owner interrupted-sh
+gh attestation verify murk-v*.tar.gz --repo interrupted-sh/murk \
+  --signer-workflow interrupted-sh/murk/.github/workflows/release.yaml
 ```
 
 This covers murk 0.12.0 and later. Releases up to and including 0.11.0 were signed as `interrupted-inc/murk`, before the organization rename; [VERIFYING.md](VERIFYING.md) shows how to verify them.
@@ -75,13 +76,13 @@ Include:
 In scope:
 - Secret values leaking into plaintext (logs, error messages, temp files)
 - Bypassing recipient-based access control
-- Key material exposure beyond the key file and `MURK_KEY`
+- Key material exposure beyond the key file, `MURK_KEY`, or a `.env` that holds an inline `MURK_KEY`
 - Bypassing MAC or signature verification, or signer pinning
 - Flaws in murk's MAC, signature or signing-key construction
 - Bypassing a grant's scope or expiry, or the agent allow-tag policy, inside the murk binary
 
 Out of scope:
 - Vulnerabilities in the age or rage primitives (report upstream)
-- Attacks that need local access to your key file, `MURK_KEY`, or an `.env` that contains `MURK_KEY` (these hold the secret key by definition)
+- Attacks that need local access to your key file, `MURK_KEY`, or an `.env` that contains `MURK_KEY` (these hold the secret key by definition). The default `.env` from `murk init` holds only the key file's path
 - Limits that [THREAT_MODEL.md](THREAT_MODEL.md) lists under "What murk does not protect", for example values that output masking misses, or a policy bypassed by using age directly
 - Denial of service against the CLI

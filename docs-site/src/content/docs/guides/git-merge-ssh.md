@@ -31,7 +31,7 @@ automatically during a merge or rebase that touches `.murk`, instead of
 falling back to a text-based three-way merge on the raw file. `PATH` is the
 vault's path (git's `%P`), so the driver reads the right trust pin. It
 merges non-conflicting secret changes (different keys added or changed on
-each side) automatically.
+each side) automatically, without decrypting any secret value.
 
 Run it with your key available (`MURK_KEY`, `MURK_KEY_FILE`, or the stored
 key for a vault named `.murk`; for a vault with another name, set
@@ -60,16 +60,19 @@ has to do that merge.
 
 Because the result is signed in your name, check what you merged:
 
+<!-- Re-check against the merged 0.14.0 murk diff output. -->
 ```bash
 git diff HEAD@{1} -- .murk   # recipients, schema, policy and ciphertext entries
-murk diff HEAD@{1}           # secret values
+murk diff HEAD@{1}           # structural and secret value changes
 ```
 
 `murk diff [REF]` shows which secrets changed relative to a git ref
 (defaults to `HEAD`) without printing values, unless you pass
-`--show-values`. It also lists recipient additions and removals and signer
-changes, and it runs on a vault this machine doesn't trust yet (with a
-warning), since it's the review step before `murk trust`.
+`--show-values`. It also lists recipient additions and removals, signer and
+signing-key changes, and policy, grant and group-member changes. It runs on a
+vault this machine doesn't trust yet (with a warning), since it's the review
+step before `murk trust`, and it verifies the revision at `REF` before it
+shows anything from it.
 
 ### Upgrading an older driver config
 
