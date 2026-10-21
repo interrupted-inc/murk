@@ -161,12 +161,16 @@ git commit -am "grant ci-deploy" && git push
 ```
 
 `--out -` writes the grant key file to stdout and stores no copy, so it goes
-straight into the Actions secret. The file has `# murk-trusted-signer:` lines
-above the key, and `murk-action` takes only the bare key line, so the `grep`
-keeps just that line. A bare key names no signer, so also give the job
-`MURK_TRUSTED_SIGNERS`, as described above. If you run `murk` yourself, drop the
-`grep` and keep both lines in `MURK_KEY`, and the grant needs no
-`MURK_TRUSTED_SIGNERS`. It's the same mechanism murk uses to scope AI agent
+straight into the Actions secret. Above the key, the file has
+`# murk-trusted-signer:` lines and the grant's `# murk-grant-id:` and
+`# murk-grant-expires:` lines. `murk-action` takes only the bare key line, so
+the `grep` keeps just that line. A bare key names no signer, so also give the
+job `MURK_TRUSTED_SIGNERS`, as described above. It carries no expiry either, so
+only the grant record in the vault bounds it, and murk warns once per run that
+the key file should be re-minted. If you run `murk` yourself, drop the `grep`
+and keep the whole file in `MURK_KEY`. The grant then needs no
+`MURK_TRUSTED_SIGNERS`, and the key stops working at the expiry it was minted
+with, whatever a later vault says. It's the same mechanism murk uses to scope AI agent
 access. See [AI agents & MCP](/guides/ai-agents-mcp/) for the full grant/revoke
 lifecycle and the [CLI reference](/reference/cli/#murk-agent-grant) for the flag
 surface.
