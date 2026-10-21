@@ -35,9 +35,14 @@
 //!    listing it at the generation it was removed at or below, is refused. A
 //!    newer vault from a trusted signer that lists it again, or `murk trust
 //!    --re-add`, brings it back.
+//! 9. The generation may rise at most [`MAX_GENERATION_STEP`] above the mark
+//!    and never past [`MAX_GENERATION`]; a different vault with the counter
+//!    this machine accepted on the branch is a fork.
 //!
-//! An accepted vault replaces the pin's trusted set, grants and groups with its
-//! own, and raises the counter. Its registry entries for trusted
+//! An accepted vault that is the newest this machine has seen, on a checked-
+//! out branch, replaces the pin's trusted set, grants and groups with its
+//! own, and raises the counter; any other accepted load is history and only
+//! narrows the pin (see [`Acceptance`]). Its registry entries for trusted
 //! recipients are pinned where no key was pinned before — believed because the
 //! vault carrying them was signed by an already-trusted signer (or confirmed by
 //! `murk trust`), and only while that signer stays trusted. A pinned key is
@@ -56,6 +61,17 @@ use crate::types;
 /// other machines without a pin). Grant keys listed here still never count.
 /// See [`parse_trusted_signer`] for the entry format.
 pub const TRUSTED_SIGNERS_VAR: &str = "MURK_TRUSTED_SIGNERS";
+
+/// The largest generation accepted: 2^53 − 1, the largest integer every JSON
+/// reader holds exactly. A vault above it is refused as tampering, so no
+/// signer can push the counter to where it stops increasing.
+pub const MAX_GENERATION: u64 = (1 << 53) - 1;
+
+/// How far above this machine's mark a loaded vault's generation may be.
+/// Every save adds one and a merge one past its sides, so a team needs a
+/// million saves between two loads here to reach it; a vault that jumps
+/// further is refused until `murk trust`.
+pub const MAX_GENERATION_STEP: u64 = 1_000_000;
 
 /// Trusted signers supplied from outside the vault and the pin: canonical
 /// recipient → the verifying key its signatures must verify under (`None` for
@@ -129,6 +145,14 @@ pub enum Refusal {
         found: u64,
         signer: bool,
     },
+    /// A different vault with the generation this machine accepted on the
+    /// branch (or outside git): the branch was rewritten, or another save
+    /// with the same counter replaced the accepted one.
+    Forked { generation: u64 },
+    /// The generation is more than [`MAX_GENERATION_STEP`] above the mark.
+    GenerationJump { pinned: u64, found: u64 },
+    /// The generation is above [`MAX_GENERATION`].
+    GenerationOutOfRange { found: u64 },
 }
 
 impl Refusal {
@@ -136,8 +160,9 @@ impl Refusal {
     /// are: an agent grant is read-only by design. Nor is a changed verifying
     /// key: an age key's verifying key is derived from its secret, so a
     /// different one for the same recipient is a forgery. Nor a grant bound
-    /// to an operator key, which is tampering. A removed key is accepted only
-    /// when named (see [`Refusal::RemovedKey`]).
+    /// to an operator key, which is tampering, nor a generation past
+    /// [`MAX_GENERATION`]. A removed key is accepted only when named (see
+    /// [`Refusal::RemovedKey`]).
     pub fn acceptable(&self) -> bool {
         !matches!(
             self,
@@ -145,6 +170,7 @@ impl Refusal {
                 | Refusal::GrantWithoutRecord { .. }
                 | Refusal::SignerKeyChanged { .. }
                 | Refusal::GrantBindsOperator { .. }
+                | Refusal::GenerationOutOfRange { .. }
         )
     }
 }
@@ -298,6 +324,24 @@ pub fn pinned_trusted_signers(vault_path: &str) -> Result<TrustedSigners, String
         .collect())
 }
 
+/// A short fingerprint of a signed vault — the SHA-256 of its signature, as
+/// hex — that tells two vaults with the same generation apart. Empty for an
+/// unsigned vault or one with a murk ≤ 0.13 signature in its meta.
+pub fn vault_fingerprint(vault: &types::Vault) -> String {
+    use sha2::{Digest, Sha256};
+    let Some(sig) = &vault.sig else {
+        return String::new();
+    };
+    Sha256::digest(sig.sig.as_bytes())
+        .iter()
+        .take(16)
+        .fold(String::new(), |mut s, b| {
+            use std::fmt::Write;
+            let _ = write!(s, "{b:02x}");
+            s
+        })
+}
+
 /// The removed keys (canonical, with the generation each was removed at)
 /// that `loaded` is signed by or lists, whatever its generation. `murk
 /// trust` re-trusts a vault carrying any of them only when the user names
@@ -351,10 +395,38 @@ fn removal_refusal(loaded: &Loaded<'_>, pin: Option<&TrustPin>) -> Option<Refusa
     })
 }
 
+/// Rule 9 for a load: a generation more than [`MAX_GENERATION_STEP`] above
+/// the mark, or a different vault with the generation accepted on this
+/// branch (outside git: overall). A detached HEAD has no mark to fork from.
+fn counter_refusal(
+    loaded: &Loaded<'_>,
+    pin: Option<&TrustPin>,
+    head: &HeadState,
+) -> Option<Refusal> {
+    let pin = pin.filter(|p| p.v >= pins::PIN_VERSION)?;
+    let found = loaded.vault.generation;
+    if pin.generation > 0 && found > pin.generation.saturating_add(MAX_GENERATION_STEP) {
+        return Some(Refusal::GenerationJump {
+            pinned: pin.generation,
+            found,
+        });
+    }
+    let fingerprint = vault_fingerprint(loaded.vault);
+    let (mark, seen) = match head {
+        HeadState::Branch(b) => (pin.branches.get(b).copied(), pin.branch_heads.get(b)),
+        HeadState::NotARepo => (Some(pin.generation), Some(&pin.head)),
+        HeadState::Detached => (None, None),
+    };
+    let forked = mark == Some(found)
+        && !fingerprint.is_empty()
+        && seen.is_some_and(|s| !s.is_empty() && *s != fingerprint);
+    forked.then_some(Refusal::Forked { generation: found })
+}
+
 /// The verdict for a load of the working vault: the core rules, then the
-/// removal rule. A refusal `murk trust` can never accept comes first; a
-/// removed key next, so a vault that is also refused for another reason still
-/// needs the key named.
+/// removal and counter rules. A refusal `murk trust` can never accept comes
+/// first; a removed key next, so a vault that is also refused for another
+/// reason still needs the key named.
 fn load_verdict(
     loaded: &Loaded<'_>,
     pin: Option<&TrustPin>,
@@ -370,7 +442,13 @@ fn load_verdict(
     if let Some(refusal) = removal_refusal(loaded, pin) {
         return Verdict::Refused(refusal);
     }
-    core
+    if matches!(core, Verdict::Refused(_)) {
+        return core;
+    }
+    match counter_refusal(loaded, pin, head) {
+        Some(refusal) => Verdict::Refused(refusal),
+        None => core,
+    }
 }
 
 /// Verify `vault`'s signature against `anchor` alone, for a loader that
@@ -611,6 +689,11 @@ fn verdict(
     external_signers: Option<&TrustedSigners>,
     head: &HeadState,
 ) -> Verdict {
+    if loaded.vault.generation > MAX_GENERATION {
+        return Verdict::Refused(Refusal::GenerationOutOfRange {
+            found: loaded.vault.generation,
+        });
+    }
     if let Some(refusal) = grant_binding_refusal(loaded, pin, external_signers) {
         return Verdict::Refused(refusal);
     }
@@ -748,7 +831,7 @@ pub fn check_merge_side(
             crate::validate::show(&side.vault.vault_id)
         ));
     }
-    if let Some(refusal) = merge_side_removal(side, pin.as_ref()) {
+    if let Some(refusal) = merge_side_counter_or_removal(side, base.map(|(b, _)| b), pin.as_ref()) {
         return Err(refusal);
     }
     let env_signers = env_trusted_signers()?;
@@ -792,17 +875,31 @@ pub fn check_merge_side(
     Ok(())
 }
 
-/// Rule 8 for a merge side: a side signed by a removed key is refused.
-fn merge_side_removal(side: &Loaded<'_>, pin: Option<&TrustPin>) -> Option<String> {
+/// Rules 8 and 9 for a merge side. A side signed by a removed key is refused.
+/// The counter may be at most [`MAX_GENERATION_STEP`] above both the mark and
+/// the ancestor; unlike a load it may be below the mark, since a merged branch
+/// is legitimately older.
+fn merge_side_counter_or_removal(
+    side: &Loaded<'_>,
+    base: Option<&types::Vault>,
+    pin: Option<&TrustPin>,
+) -> Option<String> {
     let pin = pin.filter(|p| p.v >= pins::PIN_VERSION)?;
-    let types::SignatureState::Signed { signer, .. } = side.signature else {
-        return None;
-    };
-    let at = pin.removed.get(canonical_recipient(signer).as_ref())?;
-    Some(format!(
-        "rolled back: it is signed by {}, who was removed from this vault at generation {at} on this machine",
-        label(side.names, signer)
-    ))
+    let found = side.vault.generation;
+    if let types::SignatureState::Signed { signer, .. } = side.signature
+        && let Some(at) = pin.removed.get(canonical_recipient(signer).as_ref())
+    {
+        return Some(format!(
+            "rolled back: it is signed by {}, who was removed from this vault at generation {at} on this machine",
+            label(side.names, signer)
+        ));
+    }
+    let mark = pin.generation.max(base.map_or(0, |b| b.generation));
+    (mark > 0 && found > mark.saturating_add(MAX_GENERATION_STEP)).then(|| {
+        format!(
+            "its generation {found} jumps more than {MAX_GENERATION_STEP} past {mark}, the highest this machine accepted or the common ancestor's"
+        )
+    })
 }
 
 /// The first group whose membership changed relative to the pin without the
@@ -972,19 +1069,28 @@ pub fn accepted_pin(
     pin
 }
 
-/// Raise the counters for an accepted `vault`, the overall mark and the
-/// branch's. `reset_counter` lowers them to the vault's.
+/// Raise the counters for an accepted `vault`, the overall mark (and the
+/// fingerprint of the vault at it) and the branch's. `reset_counter` lowers
+/// them to the vault's.
 fn advance_marks(pin: &mut TrustPin, vault: &types::Vault, reset_counter: bool, head: &HeadState) {
     let found = vault.generation;
-    if found > pin.generation || (reset_counter && *head == HeadState::NotARepo) {
+    let fingerprint = vault_fingerprint(vault);
+    if found > pin.generation
+        || (reset_counter && (*head == HeadState::NotARepo || found == pin.generation))
+    {
         pin.generation = found;
+        pin.head.clone_from(&fingerprint);
     }
     if let HeadState::Branch(b) = head {
-        let mark = match pin.branches.get(b) {
-            Some(&m) if !reset_counter => m.max(found),
+        let old = pin.branches.get(b).copied();
+        let mark = match old {
+            Some(m) if !reset_counter => m.max(found),
             _ => found,
         };
         pin.branches.insert(b.clone(), mark);
+        if reset_counter || old.is_none_or(|m| found > m) {
+            pin.branch_heads.insert(b.clone(), fingerprint);
+        }
     }
 }
 
@@ -1253,6 +1359,15 @@ pub fn refusal_message(
             found,
             signer,
         } => removed_key_message(vault_path, loaded, key, *removed_at, *found, *signer),
+        Refusal::Forked { generation } => format!(
+            "vault {vault_path} forked: generation {generation} is not the vault this machine accepted at that generation here — the branch was rewritten, or another save with the same counter replaced it\nmerge the two saves with the murk merge driver, or {review}"
+        ),
+        Refusal::GenerationJump { pinned, found } => format!(
+            "vault {vault_path} jumps from generation {pinned} to {found}, more than {MAX_GENERATION_STEP} saves at once — a signer may be running the counter up\n{review}"
+        ),
+        Refusal::GenerationOutOfRange { found } => format!(
+            "vault {vault_path} has generation {found}, above the largest murk accepts ({MAX_GENERATION}) — it may have been tampered with to exhaust the counter\nrestore {vault_path} from git"
+        ),
     }
 }
 

@@ -21,7 +21,9 @@
 //!   an entry pinned on another signer's word, that signer — the entry stops
 //!   counting once they are removed;
 //! - `removed`: keys removed from the vault, with the generation they were
-//!   removed at, so an older revision cannot bring them back.
+//!   removed at, so an older revision cannot bring them back;
+//! - `head` and `branch_heads`: fingerprints of the vaults accepted at the
+//!   marks, so a different vault with the same counter is seen as a fork.
 //!
 //! The pin is written only by an accepted load, an explicit `murk trust`, or
 //! this machine's own save — never from an unverified vault. See
@@ -84,6 +86,13 @@ pub struct TrustPin {
     /// that lists it again, or `murk trust --re-add`, takes it out.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub removed: BTreeMap<String, u64>,
+    /// Fingerprint ([`crate::trust::vault_fingerprint`]) of the vault accepted
+    /// at `generation`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub head: String,
+    /// Fingerprint of the vault accepted at each branch's mark.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub branch_heads: BTreeMap<String, String>,
     /// Whether a signed version of this vault was ever accepted here.
     #[serde(default)]
     pub was_signed: bool,

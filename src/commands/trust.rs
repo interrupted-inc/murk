@@ -157,7 +157,7 @@ pub(crate) fn cmd_trust(yes: bool, re_add: &[String], vault_path: &str) {
     } else {
         let reset_counter = matches!(
             refusal,
-            Refusal::RolledBack { .. } | Refusal::OtherVault { .. }
+            Refusal::RolledBack { .. } | Refusal::OtherVault { .. } | Refusal::Forked { .. }
         );
         try_or_die(inspected.record_trust(vault_path, reset_counter, &readmit));
     }

@@ -1423,6 +1423,11 @@ fn authorize(alice: &Machine, repo: &Path, who: &Machine, name: &str) {
         .success();
 }
 
+fn generation_of(vault: &[u8]) -> u64 {
+    let json: serde_json::Value = serde_json::from_slice(vault).unwrap();
+    json["generation"].as_u64().unwrap()
+}
+
 /// Change the trust pin `who` keeps for the vault in `repo` (found by its
 /// vault id): their own machine, which they control.
 fn edit_pin(who: &Machine, repo: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
@@ -1708,6 +1713,163 @@ fn a_registry_entry_stops_counting_once_whoever_added_it_is_removed() {
         .failure()
         .stdout("")
         .stderr(predicate::str::contains("has not confirmed yet"));
+}
+
+/// Rule: generations advance in bounded steps. A vault numbered more than
+/// the bound above this machine's mark is refused until `murk trust`
+/// accepts it on review.
+#[test]
+fn a_generation_jump_past_the_bound_waits_for_murk_trust() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo) = alice_repo(base.path());
+    let laptop = Machine::new(base.path(), "alice-laptop");
+    let key = alice.key_file();
+    laptop
+        .with_key(&repo, &key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    let mark = generation_of(&fs::read(repo.join(".murk")).unwrap());
+    set_pin_generation(&laptop, &repo, mark + 1_000_000);
+    laptop
+        .with_key(&repo, &key)
+        .args(["add", "JUMP"])
+        .write_stdin("jump\n")
+        .assert()
+        .success();
+    alice
+        .murk(&repo)
+        .args(["get", "JUMP"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("jumps from generation"));
+    alice
+        .murk(&repo)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    alice
+        .murk(&repo)
+        .args(["get", "JUMP"])
+        .assert()
+        .success()
+        .stdout("jump\n");
+}
+
+/// Rule: no vault near the top of the counter is ever accepted, so the
+/// counter can't be pushed to where it stops increasing — not on a machine
+/// with a mark, not by `murk trust`, not on a fresh machine.
+#[test]
+fn a_generation_near_the_u64_limit_is_refused_outright() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo) = alice_repo(base.path());
+    let laptop = Machine::new(base.path(), "alice-laptop");
+    let key = alice.key_file();
+    laptop
+        .with_key(&repo, &key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    set_pin_generation(&laptop, &repo, u64::MAX - 1);
+    laptop
+        .with_key(&repo, &key)
+        .args(["add", "TOP"])
+        .write_stdin("top\n")
+        .assert()
+        .success();
+    assert_eq!(
+        generation_of(&fs::read(repo.join(".murk")).unwrap()),
+        u64::MAX
+    );
+    alice
+        .murk(&repo)
+        .args(["get", "TOP"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("above the largest murk accepts"));
+    alice
+        .murk(&repo)
+        .args(["trust", "--yes"])
+        .assert()
+        .failure();
+    let fresh = Machine::new(base.path(), "fresh");
+    fresh
+        .with_key(&repo, &key)
+        .args(["trust", "--yes"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("above the largest murk accepts"));
+}
+
+/// Rule: two different vaults with the same generation are a fork. Bob and
+/// Alice both save from the same revision; once Alice's machine accepted her
+/// save on `main`, Bob's save replacing it on `main` is refused. Merged with
+/// the murk driver, the two saves combine normally.
+#[test]
+fn a_different_vault_with_the_accepted_generation_is_a_fork() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo) = alice_repo(base.path());
+    use_merge_driver(&repo);
+    let bob = Machine::new(base.path(), "bob");
+    bob.init(&base.path().join("bob-scratch"), "bob");
+    let bob_key = bob.key_file();
+    authorize(&alice, &repo, &bob, "bob");
+    bob.with_key(&repo, &bob_key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    bob.with_key(&repo, &bob_key)
+        .args(["add", "FIRST"])
+        .write_stdin("first\n")
+        .assert()
+        .success();
+    alice
+        .murk(&repo)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    commit(&repo, "both trusted");
+
+    bob.with_key(&repo, &bob_key)
+        .args(["add", "FROM_BOB"])
+        .write_stdin("bob\n")
+        .assert()
+        .success();
+    let bobs = fs::read(repo.join(".murk")).unwrap();
+    git_ok(&repo, &["checkout", "--", ".murk"]);
+    alice.add(&repo, "FROM_ALICE", "alice");
+    commit(&repo, "alice saves");
+    assert_eq!(
+        generation_of(&bobs),
+        generation_of(&fs::read(repo.join(".murk")).unwrap())
+    );
+
+    fs::write(repo.join(".murk"), &bobs).unwrap();
+    alice
+        .murk(&repo)
+        .args(["get", "FROM_BOB"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("forked"));
+
+    git_ok(&repo, &["checkout", "--", ".murk"]);
+    git_ok(&repo, &["checkout", "-q", "-b", "bob", "HEAD~1"]);
+    fs::write(repo.join(".murk"), &bobs).unwrap();
+    commit(&repo, "bob saves");
+    git_ok(&repo, &["checkout", "-q", "main"]);
+    let (merged, stderr) = git_merge(&alice, &repo, "bob");
+    assert!(merged, "{stderr}");
+    for (k, v) in [("FROM_BOB", "bob\n"), ("FROM_ALICE", "alice\n")] {
+        alice
+            .murk(&repo)
+            .args(["get", k])
+            .assert()
+            .success()
+            .stdout(v);
+    }
 }
 
 /// Rule: a save never writes a removed recipient back. Alice's machine
