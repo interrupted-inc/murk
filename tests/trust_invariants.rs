@@ -23,9 +23,11 @@
 //! - **Revoked signers stay out.** Once an observer (a machine, CI, the agent,
 //!   which follows the machine that minted it) has accepted a vault that
 //!   removes X, it never accepts (by a load, `murk trust`, `murk diff` or the
-//!   merge driver) a vault X produced after that revoke, whichever key signed
-//!   it, nor a vault produced after the revoke that lists X again without a
-//!   `circle authorize` of X since.
+//!   merge driver), at a commit whose history contains that vault, a vault X
+//!   produced after that revoke, whichever key signed it, nor a vault
+//!   produced after the revoke that lists X again without a `circle
+//!   authorize` of X since. Until the removal reaches a branch, X is still a
+//!   member there.
 //! - **No reads after removal.** X never decrypts a value first written in a
 //!   vault that did not list X, unless X was authorized again afterwards.
 //! - The access invariants for the commands a member runs: a refused command
@@ -603,8 +605,9 @@ struct World<'f> {
     /// Accepted `circle revoke` / `authorize` (and vouch) steps, per person.
     revokes: Vec<(usize, usize)>,
     authorizes: Vec<(usize, usize)>,
-    /// Per observer: person → the revoke step whose removal it accepted.
-    removed: BTreeMap<Obs, BTreeMap<usize, usize>>,
+    /// Per observer: person → the revoke step whose removal it accepted, and
+    /// the commit holding the vault it accepted it in.
+    removed: BTreeMap<Obs, BTreeMap<usize, (usize, String)>>,
     /// People whose entries the CI secret lists.
     ci_signers: BTreeSet<usize>,
     agent: Option<Agent>,
@@ -684,7 +687,7 @@ impl<'f> World<'f> {
 
     /// The removals `obs` has accepted (the agent follows the machine that
     /// minted it, and its own loads).
-    fn removals(&self, obs: &Obs) -> BTreeMap<usize, usize> {
+    fn removals(&self, obs: &Obs) -> BTreeMap<usize, (usize, String)> {
         let mut all = self.removed.get(obs).cloned().unwrap_or_default();
         if let (Obs::Agent, Some(agent)) = (obs, &self.agent) {
             for (who, v) in self
@@ -699,8 +702,31 @@ impl<'f> World<'f> {
         all
     }
 
-    /// Whether accepting `bytes` on `obs` breaks the revoked-signer invariant.
-    fn check_accept(&self, obs: &Obs, bytes: &[u8], how: &str) -> Result<(), String> {
+    /// The clone `obs` loads in.
+    fn clone_of(&self, obs: &Obs) -> Machine {
+        match obs {
+            Obs::Machine(i) => self.machine(*i),
+            Obs::Ci => bystander(&self.root, "ci-runner"),
+            Obs::Agent => bystander(&self.root, "agent"),
+        }
+    }
+
+    /// Whether the removal `obs` accepted in commit `removal` has reached
+    /// commit `at`: `at`'s history contains it.
+    fn reaches(&self, obs: &Obs, removal: &str, at: &str) -> bool {
+        self.clone_of(obs)
+            .git(&["merge-base", "--is-ancestor", removal, at])
+            .status
+            .success()
+    }
+
+    /// Whether accepting `bytes`, the vault at commit `at`, on `obs` breaks
+    /// the revoked-signer invariant.
+    ///
+    /// A removal binds a branch once its history contains the commit in which
+    /// `obs` accepted it. Until an offboarding change reaches a branch, the
+    /// person is still a member there, and their vaults on it may load.
+    fn check_accept(&self, obs: &Obs, bytes: &[u8], how: &str, at: &str) -> Result<(), String> {
         let Some(origin) = self.origins.get(&blob_id(bytes)) else {
             return Ok(());
         };
@@ -730,11 +756,16 @@ impl<'f> World<'f> {
                 PEOPLE[p], origin.step
             ));
         }
-        let removals = self.removals(obs);
+        let removals: BTreeMap<usize, usize> = self
+            .removals(obs)
+            .into_iter()
+            .filter(|(_, (_, commit))| self.reaches(obs, commit, at))
+            .map(|(who, (v, _))| (who, v))
+            .collect();
         // A member this observer still trusts may list anyone with their own
         // code: they could have run `circle authorize` instead.
         let insider = origin.custom && origin.producer.is_some_and(|p| !removals.contains_key(&p));
-        for (who, v) in removals.clone() {
+        for (who, v) in removals {
             if origin.step <= v {
                 continue;
             }
@@ -756,9 +787,9 @@ impl<'f> World<'f> {
         Ok(())
     }
 
-    /// Record that `obs` accepted `bytes`: removals it now knows, and
-    /// re-authorizations that undo them.
-    fn note_accept(&mut self, obs: Obs, bytes: &[u8]) {
+    /// Record that `obs` accepted `bytes`, the vault at commit `at`: removals
+    /// it now knows, and re-authorizations that undo them.
+    fn note_accept(&mut self, obs: Obs, bytes: &[u8], at: &str) {
         let Some(origin) = self.origins.get(&blob_id(bytes)).copied() else {
             return;
         };
@@ -766,7 +797,7 @@ impl<'f> World<'f> {
         for who in 0..PEOPLE.len() {
             let removed = self.removed.entry(obs.clone()).or_default();
             if listed.contains(&who) {
-                if let Some(&v) = removed.get(&who)
+                if let Some(&(v, _)) = removed.get(&who)
                     && self.authorized_between(who, v, origin.step)
                 {
                     self.removed.entry(obs.clone()).or_default().remove(&who);
@@ -783,15 +814,17 @@ impl<'f> World<'f> {
                 && !self.authorized_between(who, v, origin.step)
             {
                 let removed = self.removed.entry(obs.clone()).or_default();
-                let at = removed.entry(who).or_insert(v);
-                *at = (*at).max(v);
+                let known = removed.entry(who).or_insert_with(|| (v, at.to_string()));
+                if v > known.0 {
+                    *known = (v, at.to_string());
+                }
             }
         }
     }
 
-    fn accept(&mut self, obs: Obs, bytes: &[u8], how: &str) -> Result<(), String> {
-        self.check_accept(&obs, bytes, how)?;
-        self.note_accept(obs, bytes);
+    fn accept(&mut self, obs: Obs, bytes: &[u8], how: &str, at: &str) -> Result<(), String> {
+        self.check_accept(&obs, bytes, how, at)?;
+        self.note_accept(obs, bytes, at);
         Ok(())
     }
 
@@ -1027,7 +1060,7 @@ impl<'f> World<'f> {
                     self.ci_signers.insert(who.0);
                 }
                 Some(
-                    self.accept(Obs::Machine(m.0), &forged, "wrote")
+                    self.accept(Obs::Machine(m.0), &forged, "wrote", &head(&mach))
                         .map(|()| Ran::Accepted),
                 )
             }
@@ -1042,7 +1075,9 @@ impl<'f> World<'f> {
                 let origin = self.origins.get(&blob_id(&bytes)).copied()?;
                 // A reviewer accepts only what no rule here forbids.
                 if (origin.forged && !forgery)
-                    || self.check_accept(&Obs::Machine(m.0), &bytes, "").is_err()
+                    || self
+                        .check_accept(&Obs::Machine(m.0), &bytes, "", &head(&mach))
+                        .is_err()
                 {
                     return None;
                 }
@@ -1102,7 +1137,7 @@ impl<'f> World<'f> {
                 }
                 // diff never extends the pin: check, but note nothing.
                 Some(
-                    self.check_accept(&Obs::Machine(m.0), &at_rev, "showed (murk diff)")
+                    self.check_accept(&Obs::Machine(m.0), &at_rev, "showed (murk diff)", &rev)
                         .map(|()| Ran::Accepted),
                 )
             }
@@ -1360,9 +1395,11 @@ impl<'f> World<'f> {
         murk_cli::decrypt_meta(&vault, &identity).ok()?
     }
 
-    /// Accept `bytes` on `obs` as a step's outcome.
+    /// Accept `bytes`, the vault checked out in `obs`'s clone, as a step's
+    /// outcome.
     fn accepted(&mut self, obs: Obs, bytes: &[u8], how: &str) -> Result<Ran, String> {
-        self.accept(obs, bytes, how).map(|()| Ran::Accepted)
+        let at = head(&self.clone_of(&obs));
+        self.accept(obs, bytes, how, &at).map(|()| Ran::Accepted)
     }
 
     /// After a member's write: a refusal changed nothing; an accepted write
@@ -1384,7 +1421,7 @@ impl<'f> World<'f> {
         mach.commit(&format!("s{step} p{}", MACHINES[m].1));
         self.record(&now, Some(MACHINES[m].1), step, false);
         extra(self, &now)?;
-        self.accept(Obs::Machine(m), &now, "wrote")?;
+        self.accept(Obs::Machine(m), &now, "wrote", &head(&mach))?;
         let reload = mach.murk().args(["export", "--json"]).output().unwrap();
         if !reload.status.success() {
             return Err(format!(
@@ -1414,6 +1451,7 @@ impl<'f> World<'f> {
         let mach = self.machine(m);
         mach.git_ok(&["fetch", "-q", "origin"]);
         let ours = mach.vault();
+        let ours_head = head(&mach);
         let theirs = mach.vault_at(theirs_ref);
         let base_rev = mach.git(&["merge-base", "HEAD", theirs_ref]);
         let base = String::from_utf8_lossy(&base_rev.stdout).trim().to_string();
@@ -1426,10 +1464,16 @@ impl<'f> World<'f> {
         }
         let driver_ran = ours != ancestor && theirs != ancestor && ours != theirs;
         if driver_ran {
-            self.check_accept(&Obs::Machine(m), &theirs, "merged (driver)")?;
+            // The driver judges theirs on this branch, as it was.
+            self.check_accept(&Obs::Machine(m), &theirs, "merged (driver)", &ours_head)?;
             let result = mach.vault();
             self.record(&result, Some(MACHINES[m].1), step, false);
-            self.accept(Obs::Machine(m), &result, "wrote (merge result)")?;
+            self.accept(
+                Obs::Machine(m),
+                &result,
+                "wrote (merge result)",
+                &head(&mach),
+            )?;
         }
         if push {
             let _ = mach.git(&["push", "-q", "origin", "main"]);
@@ -1444,6 +1488,11 @@ impl<'f> World<'f> {
         }
         self.check_reads("origin/main", &self.origin_tip("main"))
     }
+}
+
+/// The commit checked out in `clone`.
+fn head(clone: &Machine) -> String {
+    clone.git_ok(&["rev-parse", "HEAD"]).trim().to_string()
 }
 
 fn unchanged(before: &[u8], after: &[u8], what: &str) -> Result<(), String> {
@@ -1604,7 +1653,7 @@ fn run_scripted(script: &[Scripted]) -> Result<(), TestCaseError> {
 /// again. Each is scripted: every step must run, and the decisive one must
 /// end as expected.
 fn known_sequences() -> Vec<(&'static str, Vec<Scripted>)> {
-    let (alice, bob_m) = (M(0), M(2));
+    let (alice, bob_m, carol_m) = (M(0), M(2), M(3));
     let (bob, dave) = (P(1), P(3));
     let forge = |sign| Op::Forge {
         by: Attacker::Revoked,
@@ -1821,6 +1870,11 @@ fn known_sequences() -> Vec<(&'static str, Vec<Scripted>)> {
             ],
         ),
         (
+            // Until the removal merges, bob is still a member of main: alice
+            // can read it. Once it merges, every machine that accepted the
+            // merged main refuses a vault bob signs there, and a save on main
+            // cannot keep him. Bob's forgery claims a generation newer than
+            // the removal, so only the removal refuses it.
             "a removal saved on a feature branch locks this machine out of main",
             vec![
                 accepts(Op::Load {
@@ -1828,27 +1882,38 @@ fn known_sequences() -> Vec<(&'static str, Vec<Scripted>)> {
                     at: At::NewBranch(0),
                 }),
                 accepts(revoke_bob.clone()),
-                // main lists bob until the feature branch merges.
+                accepts(Op::Push { m: alice }),
                 accepts(load_main.clone()).decisive(),
-                // A vault bob signs is refused on every branch.
-                runs(forge(Sign::Own)),
+                // The removal merges into main.
+                accepts(Op::MergeBranch {
+                    m: alice,
+                    branch: 0,
+                }),
                 accepts(Op::Sync { m: alice }),
-                refuses(load_main.clone()).decisive(),
+                accepts(load_main.clone()),
+                accepts(Op::Sync { m: carol_m }),
+                accepts(Op::Load {
+                    m: carol_m,
+                    at: At::Main,
+                }),
                 runs(Op::Forge {
                     by: Attacker::Revoked,
                     base: Base::NewestOpenable,
-                    generation: Gen::Next,
+                    generation: Gen::Jump,
                     sign: Sign::Own,
-                    to: Dest::Branch,
+                    to: Dest::Main,
                 }),
-                refuses(Op::Load {
+                accepts(Op::Sync { m: alice }),
+                refuses(load_main.clone()).decisive(),
+                refuses(Op::Save {
                     m: alice,
-                    at: At::PushedBranch(0),
+                    key: K(1),
                 })
                 .decisive(),
+                accepts(Op::Sync { m: carol_m }),
                 refuses(Op::Load {
-                    m: alice,
-                    at: At::Pushed(0),
+                    m: carol_m,
+                    at: At::Main,
                 })
                 .decisive(),
             ],
