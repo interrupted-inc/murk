@@ -20,33 +20,31 @@ pub(crate) fn cmd_merge_driver(base_path: &str, ours_path: &str, theirs_path: &s
     let output = murk_cli::run_merge_driver(&base_contents, &ours_contents, &theirs_contents)
         .unwrap_or_else(|e| die(&e, 1));
 
-    if !output.meta_regenerated && output.result.conflicts.is_empty() {
-        // Check if the merge actually changed secrets or recipients vs ours.
-        // If so, the MAC in ours.meta is stale and the vault would fail integrity checks.
-        // Skip this check when there are conflicts — the user must resolve and re-merge anyway.
-        let ours_vault = vault::parse(
-            &fs::read_to_string(ours_path)
-                .unwrap_or_else(|e| die(&format_args!("re-reading ours: {e}"), 1)),
-        )
-        .unwrap_or_else(|e| die(&e, 1));
-
-        let content_changed = output.result.vault.secrets != ours_vault.secrets
-            || output.result.vault.recipients != ours_vault.recipients;
-
-        if content_changed {
-            eprintln!(
-                "{} MURK_KEY not available and merge changed secrets/recipients",
-                "error".red().bold()
-            );
-            eprintln!(
-                "  {}",
-                "set MURK_KEY and retry the merge to regenerate integrity metadata".dimmed()
-            );
-            process::exit(1);
-        }
-
+    if let Some(reason) = output.needs_key
+        && output.result.conflicts.is_empty()
+    {
+        // Without a key the merged vault keeps ours' meta, MAC and signature.
+        // That is only sound when the merge changed nothing they cover and
+        // theirs changed no encrypted meta (which would otherwise be dropped).
+        // Write nothing and exit non-zero, so git records a conflict instead of
+        // committing a vault that may fail verification or lose theirs' meta.
+        // With conflicts the user must resolve and re-merge anyway, so that
+        // path stays below.
         eprintln!(
-            "{} MURK_KEY not available — meta not regenerated (content unchanged, safe to proceed)",
+            "{} MURK_KEY not available and {reason}",
+            "error".red().bold()
+        );
+        eprintln!(
+            "  {}",
+            "set MURK_KEY or MURK_KEY_FILE, then abort and redo the merge to regenerate integrity metadata"
+                .dimmed()
+        );
+        process::exit(1);
+    }
+
+    if !output.meta_regenerated && output.result.conflicts.is_empty() {
+        eprintln!(
+            "{} MURK_KEY not available — meta not regenerated (secrets, recipients, schema, policy and theirs' meta unchanged, safe to proceed)",
             "warn".yellow().bold()
         );
     }
@@ -72,6 +70,13 @@ pub(crate) fn cmd_merge_driver(base_path: &str, ours_path: &str, theirs_path: &s
         for c in &output.result.conflicts {
             eprintln!("  {} {} — {}", "✕".red(), c.field.bold(), c.reason);
         }
+        // A conflicted merge never gets new integrity metadata: the written file
+        // keeps ours' meta, so it verifies only where it still equals ours.
+        eprintln!(
+            "  {}",
+            "resolve by taking one side (git checkout --ours or --theirs) and redoing the other side's changes with murk"
+                .dimmed()
+        );
         process::exit(1);
     }
 }
