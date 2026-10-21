@@ -130,14 +130,16 @@ fn mcp_refuses_to_start_with_an_expired_grant() {
     let grant = dir.path().join("grant.key");
     murk(&dir, &key)
         .args([
-            "agent", "grant", "--name", "mcp", "--only", "API_KEY", "--ttl", "1s",
+            "agent", "grant", "--name", "mcp", "--only", "API_KEY", "--ttl", "3s",
         ])
         .arg("--out")
         .arg(&grant)
         .args(["--vault", "test.murk"])
         .assert()
         .success();
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    // A 1s TTL could lapse before a slow (loaded, debug) mint saves, and the
+    // save would then prune the grant: the read would fail for the wrong reason.
+    std::thread::sleep(std::time::Duration::from_millis(3100));
 
     common::murk_bin(dir.path())
         .current_dir(dir.path())

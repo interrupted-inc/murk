@@ -468,6 +468,30 @@ pub fn show(s: &str) -> String {
     out
 }
 
+/// [`show`] for a key the user typed. A private key is never echoed: pasted
+/// where a public key belongs, it would otherwise land in scrollback or a CI
+/// log a second time.
+pub(crate) fn show_key(s: &str) -> String {
+    if looks_like_private_key(s) {
+        "(a private key, not shown)".into()
+    } else {
+        show(s)
+    }
+}
+
+/// Whether `s` contains private key material: an age secret key, an age plugin
+/// identity, or a PEM/OpenSSH private key block. Compared in place, so no
+/// uppercased copy of the key is made.
+pub(crate) fn looks_like_private_key(s: &str) -> bool {
+    ["AGE-SECRET-KEY-", "AGE-PLUGIN-", "PRIVATE KEY"]
+        .iter()
+        .any(|marker| {
+            s.as_bytes()
+                .windows(marker.len())
+                .any(|w| w.eq_ignore_ascii_case(marker.as_bytes()))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{new_text, terminal_text};

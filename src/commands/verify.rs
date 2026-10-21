@@ -100,6 +100,15 @@ pub(crate) fn cmd_verify(vault_path: &str) {
                 ),
             });
         }
+        Some(murk_cli::CommitSignature::RepoConfigured) => {
+            findings.push(Finding {
+                category: "commit",
+                message: "last .murk commit signature not checked: the repository's own git config sets gpg.* (it could run a program or vouch for its own signer)".into(),
+                fix: Some(
+                    "move signature-verification settings to your global git config (`git config --global`) and remove them from .git/config".into(),
+                ),
+            });
+        }
         None => {}
     }
 

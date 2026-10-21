@@ -11,7 +11,7 @@ A grant gives an agent or tool read access to a fixed set of secrets, for a limi
 
 `murk agent grant --name NAME --only KEY [--ttl DUR]` mints a fresh, ephemeral age identity: never your `MURK_KEY`. The grant becomes a recipient of the encrypted `meta` blob, so it can verify vault integrity and read group/grant state, but it's excluded from the `everyone` layer entirely. Its actual access is the set of `--only` keys, each re-encrypted as a private ciphertext addressed to the grant's own pubkey. Nothing else in the vault decrypts for it, shared or otherwise.
 
-The key is written to `~/.config/murk/agent-keys/<vault-hash>-NAME` (or `--out PATH`, or `--out -` to stream it instead of writing a file). It's a bearer credential: whoever holds it has the access it grants, so treat the file like the secrets it unlocks.
+The key is written to `~/.config/murk/agent-keys/<vault-hash>-NAME` (or `--out PATH`, which refuses an existing file unless you pass `--force`, or `--out -` to stream it instead of writing a file). It's a bearer credential: whoever holds it has the access it grants, so treat the file like the secrets it unlocks.
 
 ## Running with a grant
 

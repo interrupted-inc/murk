@@ -481,6 +481,7 @@ Mint a scoped ephemeral key that can read only the named secrets
   Default value: `2h`
 * `--renew` — Replace a live grant with this name: revoke its key, mint a fresh one
 * `--out <OUT>` — Where to write the agent key: a path, or `-` for stdout
+* `--force` — Replace a file already at --out (refused by default)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`
@@ -502,6 +503,7 @@ One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, a
 
   Default value: `2h`
 * `--out <OUT>` — Where to write the agent key: a path, or `-` for stdout
+* `--force` — Replace a file already at --out (refused by default)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`

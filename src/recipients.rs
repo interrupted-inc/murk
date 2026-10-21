@@ -167,9 +167,13 @@ pub fn authorize_recipient(
     };
     let parsed = crypto::parse_recipient(as_given).and(crypto::parse_recipient(&canonical));
     let Ok(parsed) = parsed else {
-        return Err(MurkError::Recipient(format!(
-            "invalid public key: {pubkey}"
-        )));
+        return Err(MurkError::Recipient(
+            if crate::validate::looks_like_private_key(pubkey) {
+                "that is a private key, not a public key — authorize its public key (age1… or ssh-ed25519 …) and keep the private key out of command lines".into()
+            } else {
+                format!("invalid public key: {}", crate::validate::show(pubkey))
+            },
+        ));
     };
     if let Some(why) = parsed.weakness() {
         return Err(MurkError::Recipient(format!(
@@ -246,7 +250,8 @@ pub fn revoke_targets(
     };
     if keys.is_empty() {
         return Err(MurkError::Recipient(format!(
-            "recipient not found: {recipient}"
+            "recipient not found: {}",
+            crate::validate::show_key(recipient)
         )));
     }
     if keys.len() > 1 && !name.ends_with("@github") {

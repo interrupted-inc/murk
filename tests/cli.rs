@@ -2805,6 +2805,76 @@ fn worktree_key_discovery_still_fails_closed_for_agents() {
     }
 }
 
+/// A restricting flag murk does not recognise turns the restriction on: a typo
+/// or an `on` must not leave strict mode silently off.
+#[test]
+fn unrecognised_strict_values_fail_closed() {
+    let dir = TempDir::new().unwrap();
+    init_vault(&dir);
+    let get = || {
+        let mut cmd = murk_bin(dir.path());
+        cmd.current_dir(dir.path())
+            .args(["get", "NOPE", "--vault", "test.murk"]);
+        cmd
+    };
+    // Auto-discovery finds the stored key; `NOPE` is simply absent.
+    get()
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("key not found"));
+    for (var, value) in [
+        ("MURK_STRICT", "on"),
+        ("MURK_STRICT", "enabled"),
+        ("MURK_STRICT", "ture"),
+        ("MURK_AGENT", "y"),
+    ] {
+        get()
+            .env(var, value)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("MURK_KEY not set"));
+    }
+    get()
+        .env("MURK_STRICT", "off")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("key not found"));
+}
+
+/// A same-user process cannot read a running murk's environment (where
+/// `MURK_KEY` lives) or memory through `/proc`, while murk's own children,
+/// reset by `execve`, are unaffected. `agent exec` stays the child's parent
+/// (it supervises rather than `exec`s), so the child can try.
+#[cfg(target_os = "linux")]
+#[test]
+fn murk_process_is_not_readable_through_proc() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    murk(&dir, &key)
+        .args(["add", "TOKEN", "--vault", "test.murk"])
+        .write_stdin("sekret\n")
+        .assert()
+        .success();
+    murk(&dir, &key)
+        .args([
+            "agent",
+            "exec",
+            "--only",
+            "TOKEN",
+            "--vault",
+            "test.murk",
+            "--",
+            "sh",
+            "-c",
+            "grep -q murk /proc/$PPID/cmdline && echo PARENT-IS-MURK; cat /proc/$PPID/environ >/dev/null 2>&1 && echo PARENT-READABLE; cat /proc/self/environ >/dev/null && echo SELF-OK",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PARENT-IS-MURK"))
+        .stdout(predicate::str::contains("SELF-OK"))
+        .stdout(predicate::str::contains("PARENT-READABLE").not());
+}
+
 #[test]
 fn unrelated_repo_does_not_borrow_a_vaults_key() {
     // Discovery widens to sibling worktrees of the *same* repository. A second
@@ -6568,6 +6638,187 @@ fn agent_grant_renew_replaces_grant_in_one_command() {
         .args(["--vault", "test.murk"])
         .assert()
         .success();
+}
+
+/// An explicit `--out` never replaces an existing file (it may be the
+/// operator's own key) unless `--force` is passed, and every key file murk
+/// writes is owner-only, even where a looser file stood before.
+#[cfg(unix)]
+#[test]
+fn agent_grant_key_files_are_never_clobbered_and_always_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |p: &std::path::Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    murk(&dir, &key)
+        .args(["add", "STRIPE_KEY", "--vault", "test.murk"])
+        .write_stdin("sk_live_secret\n")
+        .assert()
+        .success();
+
+    let out = dir.path().join("operator.key");
+    fs::write(&out, "AGE-SECRET-KEY-1OPERATOR\n").unwrap();
+    fs::set_permissions(&out, fs::Permissions::from_mode(0o644)).unwrap();
+    murk(&dir, &key)
+        .args(["agent", "grant", "--name", "codex", "--only", "STRIPE_KEY"])
+        .arg("--out")
+        .arg(&out)
+        .args(["--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("already exists").and(predicate::str::contains("--force")),
+        );
+    assert_eq!(
+        fs::read_to_string(&out).unwrap(),
+        "AGE-SECRET-KEY-1OPERATOR\n"
+    );
+    // Refused before the vault changed: no grant whose key was never handed off.
+    murk(&dir, &key)
+        .args(["agent", "ls", "--json", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("codex").not());
+
+    murk(&dir, &key)
+        .args(["agent", "grant", "--name", "codex", "--only", "STRIPE_KEY"])
+        .arg("--out")
+        .arg(&out)
+        .args(["--force", "--vault", "test.murk"])
+        .assert()
+        .success();
+    assert_eq!(mode(&out), 0o600);
+    let agent_key = read_agent_key(&out);
+    murk(&dir, &agent_key)
+        .args(["get", "STRIPE_KEY", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("sk_live_secret"));
+
+    // murk's own per-grant slot: renewal replaces a loosened file owner-only.
+    murk(&dir, &key)
+        .args(["agent", "grant", "--name", "bot", "--only", "STRIPE_KEY"])
+        .args(["--vault", "test.murk"])
+        .assert()
+        .success();
+    let slot = fs::read_dir(dir.path().join(".config/murk/agent-keys"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.to_string_lossy().ends_with("-bot"))
+        .expect("default grant key file");
+    fs::set_permissions(&slot, fs::Permissions::from_mode(0o644)).unwrap();
+    murk(&dir, &key)
+        .args(["agent", "grant", "--name", "bot", "--only", "STRIPE_KEY"])
+        .args(["--renew", "--vault", "test.murk"])
+        .assert()
+        .success();
+    assert_eq!(mode(&slot), 0o600);
+}
+
+/// A key file that cannot be written leaves the vault as it was: no new grant
+/// whose key nobody holds, and a `--renew` does not revoke the working key.
+#[test]
+fn agent_grant_with_unwritable_out_changes_nothing() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    murk(&dir, &key)
+        .args(["add", "STRIPE_KEY", "--vault", "test.murk"])
+        .write_stdin("sk_live_secret\n")
+        .assert()
+        .success();
+    let missing = dir.path().join("no-such-dir").join("agent.key");
+
+    murk(&dir, &key)
+        .args(["agent", "grant", "--name", "codex", "--only", "STRIPE_KEY"])
+        .arg("--out")
+        .arg(&missing)
+        .args(["--vault", "test.murk"])
+        .assert()
+        .failure();
+    murk(&dir, &key)
+        .args(["agent", "ls", "--json", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("codex").not());
+
+    let live = dir.path().join("live.key");
+    murk(&dir, &key)
+        .args(["agent", "grant", "--name", "codex", "--only", "STRIPE_KEY"])
+        .arg("--out")
+        .arg(&live)
+        .args(["--vault", "test.murk"])
+        .assert()
+        .success();
+    murk(&dir, &key)
+        .args(["agent", "grant", "--name", "codex", "--only", "STRIPE_KEY"])
+        .arg("--out")
+        .arg(&missing)
+        .args(["--renew", "--vault", "test.murk"])
+        .assert()
+        .failure();
+    murk(&dir, &read_agent_key(&live))
+        .args(["get", "STRIPE_KEY", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("sk_live_secret"));
+}
+
+/// A `--renew` whose vault save fails leaves the old grant's key file
+/// byte-for-byte as it was, and still able to read its scope: the new key is
+/// only renamed into place once the vault records it.
+#[cfg(unix)]
+#[test]
+fn agent_grant_renew_with_failed_save_keeps_the_old_key() {
+    use std::os::unix::fs::PermissionsExt;
+    // Root ignores the read-only directory that makes the save fail.
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("skipped: running as root");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    murk(&dir, &key)
+        .args(["add", "STRIPE_KEY", "--vault", "test.murk"])
+        .write_stdin("sk_live_secret\n")
+        .assert()
+        .success();
+    murk(&dir, &key)
+        .args(["agent", "grant", "--name", "bot", "--only", "STRIPE_KEY"])
+        .args(["--vault", "test.murk"])
+        .assert()
+        .success();
+    let slots = dir.path().join(".config/murk/agent-keys");
+    let slot = fs::read_dir(&slots)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.to_string_lossy().ends_with("-bot"))
+        .expect("default grant key file");
+    let before = fs::read(&slot).unwrap();
+
+    // The vault's directory refuses the save's temporary file; the key slot
+    // (its own directory) stays writable, so the key is staged first.
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o555)).unwrap();
+    let renew = murk(&dir, &key)
+        .args(["agent", "grant", "--name", "bot", "--only", "STRIPE_KEY"])
+        .args(["--renew", "--vault", "test.murk"])
+        .output()
+        .unwrap();
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!renew.status.success(), "the save was expected to fail");
+
+    assert_eq!(fs::read(&slot).unwrap(), before);
+    assert_eq!(
+        fs::read_dir(&slots).unwrap().count(),
+        1,
+        "no staged key left behind"
+    );
+    let old_key = String::from_utf8(before).unwrap();
+    murk(&dir, old_key.trim())
+        .args(["get", "STRIPE_KEY", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("sk_live_secret"));
 }
 
 #[test]

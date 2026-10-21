@@ -196,6 +196,29 @@ pub(crate) struct Minted {
     pub(crate) pubkey: String,
 }
 
+/// Where [`mint_grant`] hands off the agent key.
+#[derive(Clone, Copy)]
+pub(crate) enum KeyOut<'a> {
+    /// murk's own per-grant key file (`agent_key_file_path`).
+    Default,
+    /// Printed to stdout (`--out -`); never stored.
+    Stdout,
+    /// An explicit `--out` path. An existing file there is replaced only with
+    /// `force`: it may be anyone's file, the operator's own key included.
+    Path { path: &'a str, force: bool },
+}
+
+impl<'a> KeyOut<'a> {
+    /// From the `--out` and `--force` flags.
+    pub(crate) fn from_flags(out: Option<&'a str>, force: bool) -> Self {
+        match out {
+            None => Self::Default,
+            Some("-") => Self::Stdout,
+            Some(path) => Self::Path { path, force },
+        }
+    }
+}
+
 /// Mint a scoped agent grant in one locked transaction and hand off the
 /// ephemeral key. When `allow_tags` is `Some`, the vault's agent allow-list is
 /// set first (so scope validation reflects it) — used by `agent init`; `None`
@@ -206,7 +229,7 @@ pub(crate) fn mint_grant(
     only: &[String],
     ttl: &str,
     renew: bool,
-    out: Option<&str>,
+    out: KeyOut<'_>,
     allow_tags: Option<&[String]>,
     vault_path: &str,
 ) -> Minted {
@@ -214,6 +237,20 @@ pub(crate) fn mint_grant(
 
     try_or_die(murk_cli::validate_grant_name(name));
     let ttl_dur = try_or_die(murk_cli::parse_ttl(ttl));
+
+    // Refuse an occupied --out before the vault changes: failing at the key
+    // write would leave a live grant whose key was never handed off. The write
+    // itself is exclusive too, so a file that appears in between is not replaced.
+    if let KeyOut::Path { path, force: false } = out
+        && std::fs::symlink_metadata(path).is_ok()
+    {
+        die(
+            &format_args!(
+                "{path} already exists — refusing to overwrite it (it may be a key); pass --force to replace it"
+            ),
+            1,
+        );
+    }
 
     let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
     let issuer = identity.pubkey_string().unwrap_or_else(|e| die(&e, 1));
@@ -290,7 +327,37 @@ pub(crate) fn mint_grant(
         ttl_dur,
     ));
 
-    save_vault(vault_path, &mut vault, &original, &current);
+    // The key file is headed by the signers the grant may trust: a grant
+    // can't read the meta, so this anchor is how it tells a genuine vault from
+    // a forged one.
+    let anchor = try_or_die(murk_cli::agents::anchor_lines(vault_path, &identity));
+    let key_text = zeroize::Zeroizing::new(format!("{anchor}{}\n", agent_secret.expose_secret()));
+
+    // Stage the key file before the vault records the grant, and rename it
+    // into place only once the save succeeded. An unwritable destination fails
+    // here, leaving no live grant whose key nobody holds; a failed save drops
+    // the staged file, leaving any existing key (the one `--renew` would
+    // replace) byte-for-byte as it was.
+    let staged = match out {
+        KeyOut::Stdout => None,
+        KeyOut::Path { path, force } => Some(try_or_die(murk_cli::stage_key_file(
+            Path::new(path),
+            &key_text,
+            force,
+        ))),
+        // murk's own slot for this grant: whatever is there is the key of a
+        // renewed or revoked grant of the same name and vault.
+        KeyOut::Default => {
+            let path = try_or_die(murk_cli::agent_key_file_path(vault_path, name));
+            Some(try_or_die(murk_cli::stage_key_file(&path, &key_text, true)))
+        }
+    };
+
+    // `die` exits without running destructors, so drop the staged key first.
+    if let Err(e) = murk_cli::save_vault(vault_path, &mut vault, &original, &current) {
+        drop(staged);
+        die(&e, 1);
+    }
 
     eprintln!(
         "{} granted {} read access to {} key{} until {}",
@@ -303,20 +370,16 @@ pub(crate) fn mint_grant(
     for key in &entry.scope {
         eprintln!("  {} {}", "▸".dimmed(), key.bold());
     }
-
-    // Hand off the ephemeral key, headed by the signers it may trust: a grant
-    // can't read the meta, so this anchor is how it tells a genuine vault from
-    // a forged one.
-    let anchor = try_or_die(murk_cli::agents::anchor_lines(vault_path, &identity));
     if anchor.is_empty() {
         eprintln!(
             "{} your key can't sign, so the grant names no trusted signer: it reads only with MURK_TRUSTED_SIGNERS set",
             "⚠".yellow()
         );
     }
-    let key_text = zeroize::Zeroizing::new(format!("{anchor}{}\n", agent_secret.expose_secret()));
-    let path = match out {
-        Some("-") => {
+
+    let path = match staged {
+        None => {
+            // stdout cannot be taken back, so the key is only streamed once saved.
             print!("{}", key_text.as_str());
             eprintln!(
                 "{} key streamed to stdout — capture it now; it is not stored",
@@ -324,14 +387,30 @@ pub(crate) fn mint_grant(
             );
             None
         }
-        Some(path) => {
-            try_or_die(murk_cli::write_key_to_file(Path::new(path), &key_text));
-            Some(path.to_string())
-        }
-        None => {
-            let path = try_or_die(murk_cli::agent_key_file_path(vault_path, name));
-            try_or_die(murk_cli::write_key_to_file(&path, &key_text));
-            Some(path.display().to_string())
+        Some(staged) => {
+            let target = staged.target().display().to_string();
+            match staged.commit() {
+                Ok(()) => Some(target),
+                // The grant is saved, so its key must not be lost: keep the
+                // staged file and hand that over instead of the destination.
+                Err(uncommitted) => {
+                    let reason = uncommitted.reason.clone();
+                    let kept = uncommitted.keep().unwrap_or_else(|e| {
+                        die(
+                            &format_args!(
+                                "{reason}\n{e}\nthe grant is saved but its key was not written — run `murk agent revoke {name}`"
+                            ),
+                            1,
+                        )
+                    });
+                    eprintln!(
+                        "{} {reason}; the new key is at {} instead",
+                        "⚠".yellow(),
+                        kept.display()
+                    );
+                    Some(kept.display().to_string())
+                }
+            }
         }
     };
     Minted {
@@ -356,8 +435,10 @@ pub(crate) fn cmd_agent_grant(
     ttl: &str,
     renew: bool,
     out: Option<&str>,
+    force: bool,
     vault_path: &str,
 ) {
+    let out = KeyOut::from_flags(out, force);
     if let Some(path) = mint_grant(name, only, ttl, renew, out, None, vault_path).path {
         print_grant_handoff(only, &path);
     }
@@ -571,7 +652,7 @@ pub(crate) fn cmd_agent_connect(
     } else {
         // `out = None` lands the key at `agent_key_file_path` — the path the
         // rendered configs already carry — and always returns it.
-        let minted = mint_grant(name, only, ttl, false, None, allow, vault_path);
+        let minted = mint_grant(name, only, ttl, false, KeyOut::Default, allow, vault_path);
         debug_assert_eq!(minted.path.as_deref(), Some(key_path.as_str()));
         // Remembered so a rollback only ever undoes *this* grant. It comes
         // from the mint itself, taken under the vault lock; rereading the key
@@ -754,6 +835,7 @@ pub(crate) fn cmd_agent_init(
     allow_tags: &[String],
     ttl: &str,
     out: Option<&str>,
+    force: bool,
     vault_path: &str,
 ) {
     let allow = if allow_tags.is_empty() {
@@ -761,6 +843,7 @@ pub(crate) fn cmd_agent_init(
     } else {
         Some(allow_tags)
     };
+    let out = KeyOut::from_flags(out, force);
     if let Some(path) = mint_grant(name, only, ttl, false, out, allow, vault_path).path {
         print_grant_handoff(only, &path);
         print_isolation_snippet();
@@ -1112,9 +1195,9 @@ mod tests {
         let key_file = murk_cli::agent_key_file_path(&vault_path, "g").unwrap();
         let only = ["A".to_string()];
 
-        let a = mint_grant("g", &only, "2h", false, None, None, &vault_path);
+        let a = mint_grant("g", &only, "2h", false, KeyOut::Default, None, &vault_path);
         // Another command renews `g` before this run's rollback.
-        mint_grant("g", &only, "2h", true, None, None, &vault_path);
+        mint_grant("g", &only, "2h", true, KeyOut::Default, None, &vault_path);
         let key_b = fs::read_to_string(&key_file).unwrap();
         assert_ne!(a.pubkey, grant_pubkey(&key_b));
 
@@ -1143,7 +1226,7 @@ mod tests {
             &["A".to_string()],
             "2h",
             false,
-            None,
+            KeyOut::Default,
             None,
             &vault_path,
         );

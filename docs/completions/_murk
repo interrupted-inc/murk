@@ -238,6 +238,7 @@ _arguments "${_arguments_options[@]}" : \
 '--out=[Where to write the agent key\: a path, or \`-\` for stdout]:OUT:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '--renew[Replace a live grant with this name\: revoke its key, mint a fresh one]' \
+'--force[Replace a file already at --out (refused by default)]' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0
@@ -250,6 +251,7 @@ _arguments "${_arguments_options[@]}" : \
 '--ttl=[Time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)]:TTL:_default' \
 '--out=[Where to write the agent key\: a path, or \`-\` for stdout]:OUT:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
+'--force[Replace a file already at --out (refused by default)]' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0

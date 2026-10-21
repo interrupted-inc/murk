@@ -35,7 +35,23 @@ pub(crate) fn generate_and_write_key(vault_name: &str) -> (zeroize::Zeroizing<St
     // exclusively: if another init stored one since the discovery check, this
     // fails and leaves that key untouched.
     let key_path = try_or_die(murk_cli::key_file_path(vault_name));
-    try_or_die(murk_cli::create_key_file(&key_path, &secret_key));
+    let staged = try_or_die(murk_cli::stage_key_file(&key_path, &secret_key, false));
+    if let Err(e) = staged.commit() {
+        // `die` exits without running destructors: drop the staged key first.
+        let (already_exists, reason) = (e.already_exists, e.reason.clone());
+        drop(e);
+        let msg = if already_exists {
+            [
+                format!("a key is already stored at {}", key_path.display()),
+                "murk init never replaces a stored key".into(),
+                "run murk init again to use it".into(),
+            ]
+            .join("\n")
+        } else {
+            reason
+        };
+        die(&msg, 1);
+    }
     eprintln!(
         "{} key saved to {}",
         "◆".magenta(),

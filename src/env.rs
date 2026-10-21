@@ -53,8 +53,11 @@ pub fn secret_file_loose_mode(path: &Path) -> Option<u32> {
 }
 
 /// Read a file, rejecting symlinks and (on Unix) group/world-readable permissions.
-/// Returns the file contents as a string.
-fn read_secret_file(path: &Path, label: &str) -> Result<String, String> {
+/// The contents are a key, so they come back in a [`Zeroizing`] buffer; callers
+/// build their `SecretString` with `SecretString::from(&str)`, an exact-size
+/// copy, because `From<String>` shrinks the buffer and frees the original
+/// un-wiped.
+fn read_secret_file(path: &Path, label: &str) -> Result<Zeroizing<String>, String> {
     reject_symlink(path, label)?;
 
     if let Some(mode) = secret_file_loose_mode(path) {
@@ -64,7 +67,9 @@ fn read_secret_file(path: &Path, label: &str) -> Result<String, String> {
         ));
     }
 
-    fs::read_to_string(path).map_err(|e| format!("cannot read {label}: {e}"))
+    fs::read_to_string(path)
+        .map(Zeroizing::new)
+        .map_err(|e| format!("cannot read {label}: {e}"))
 }
 
 /// Environment variable for the secret key.
@@ -174,13 +179,16 @@ pub fn resolve_key_with_source(vault_path: &str) -> Result<(SecretString, KeySou
         // `AGE-PLUGIN-...-1...` pointer — round-trip intact through parse_identity.
         Some(EnvKey::File(path)) => {
             let contents = read_secret_file(&path, "MURK_KEY_FILE")?;
-            return Ok((SecretString::from(contents), KeySource::EnvFile(path)));
+            return Ok((
+                SecretString::from(contents.as_str()),
+                KeySource::EnvFile(path),
+            ));
         }
         None => {}
     }
     if let Some(path) = auto_key_file(vault_path) {
         let contents = read_secret_file(&path, "key file")?;
-        return Ok((SecretString::from(contents), KeySource::Auto(path)));
+        return Ok((SecretString::from(contents.as_str()), KeySource::Auto(path)));
     }
     // One short summary line, then one action per line. The CLI renders each
     // trailing line as an indented `hint` (see `main::die`), so this must stay
@@ -250,8 +258,11 @@ pub fn key_from_env_only() -> Result<Option<(SecretString, KeySource)>, String> 
     match env_key()? {
         Some(EnvKey::Inline(k)) => Ok(Some((SecretString::from(k), KeySource::EnvVar))),
         Some(EnvKey::File(path)) => {
-            let key = read_secret_file(&path, "MURK_KEY_FILE")?.trim().to_string();
-            Ok(Some((SecretString::from(key), KeySource::EnvFile(path))))
+            let contents = read_secret_file(&path, "MURK_KEY_FILE")?;
+            Ok(Some((
+                SecretString::from(contents.trim()),
+                KeySource::EnvFile(path),
+            )))
         }
         None => Ok(None),
     }
@@ -339,42 +350,40 @@ pub fn write_key_to_dotenv(secret_key: &str) -> Result<(), String> {
     )
 }
 
-/// Open `path` for writing a secret. On Unix the file is created `0600`
-/// atomically (no window where it is world-readable) and opened with
-/// `O_NOFOLLOW`, so a symlink planted after the caller's check is refused. With
-/// `create_new`, an existing file is an `AlreadyExists` error and is left
-/// untouched; otherwise it is truncated. On non-Unix platforms permissions are
-/// not hardened.
-fn open_secret_file(path: &Path, create_new: bool) -> std::io::Result<fs::File> {
-    let mut options = fs::OpenOptions::new();
-    options.write(true);
-    if create_new {
-        options.create_new(true);
-    } else {
-        options.create(true).truncate(true);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options
-            .mode(SECRET_FILE_MODE)
-            .custom_flags(libc::O_NOFOLLOW);
-    }
-    options.open(path)
-}
-
-/// Create or truncate `path` and write `contents` (see [`open_secret_file`]).
-/// Errors are prefixed with `open_context` or `write_context` depending on
-/// which step failed.
+/// Create or truncate `path` and write `contents`. On Unix the file is created
+/// `0600` atomically (no window where it is world-readable) and opened with
+/// `O_NOFOLLOW`, so a symlink planted after the caller's check is refused. An
+/// existing file is set to `0600` before anything is written to it: `mode()`
+/// only applies at creation, and the file is about to hold a secret. On
+/// non-Unix platforms permissions are not hardened. Errors are prefixed with
+/// `open_context` or `write_context` depending on which step failed.
 fn write_secret_file(
     path: &Path,
     contents: &[u8],
     open_context: &str,
     write_context: &str,
 ) -> Result<(), String> {
-    let mut file = open_secret_file(path, false).map_err(|e| format!("{open_context}: {e}"))?;
-    file.write_all(contents)
-        .map_err(|e| format!("{write_context}: {e}"))
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(SECRET_FILE_MODE)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+            .map_err(|e| format!("{open_context}: {e}"))?;
+        file.set_permissions(fs::Permissions::from_mode(SECRET_FILE_MODE))
+            .map_err(|e| format!("{open_context}: {e}"))?;
+        file.write_all(contents)
+            .map_err(|e| format!("{write_context}: {e}"))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = open_context;
+        fs::write(path, contents).map_err(|e| format!("{write_context}: {e}"))
+    }
 }
 
 /// The absolute — but *lexical* — path of `vault_path`: cwd-joined when
@@ -521,39 +530,180 @@ fn config_subdir(name: &str, what: &str) -> Result<std::path::PathBuf, String> {
     Ok(dir)
 }
 
-/// Write a secret key to a file with restricted permissions.
-pub fn write_key_to_file(path: &std::path::Path, secret_key: &str) -> Result<(), String> {
-    reject_symlink(path, &path.display().to_string())?;
-    write_secret_file(
-        path,
-        secret_key.as_bytes(),
-        "writing key file",
-        "writing key file",
-    )
+/// Store a secret key at `path`, replacing any file already there.
+///
+/// [`stage_key_file`] then [`StagedKeyFile::commit`]: the key goes to a `0600`
+/// temporary file in the same directory, which is renamed over `path`. An
+/// existing file is never truncated and rewritten in place, so it cannot hand
+/// its own mode (or its other hard links) to the key. A symlink at `path` is
+/// refused; the rename replaces the directory entry and never follows one.
+pub fn write_key_to_file(path: &Path, secret_key: &str) -> Result<(), String> {
+    stage_key_file(path, secret_key, true)?
+        .commit()
+        .map_err(|e| e.reason)
 }
 
-/// Store a newly generated key at `path`, refusing if the file already exists.
+/// A secret key written to a `0600` temporary file beside its destination and
+/// not yet renamed into place. Dropping it deletes the temporary file, so a
+/// caller that fails between staging and [`commit`](Self::commit) leaves the
+/// destination exactly as it was.
+pub struct StagedKeyFile {
+    tmp: tempfile::NamedTempFile,
+    target: std::path::PathBuf,
+    existing: Existing,
+}
+
+/// What [`StagedKeyFile::commit`] may do to a file already at the destination.
+enum Existing {
+    /// Leave it: the rename is exclusive.
+    Refuse,
+    /// Replace the file that was there at staging (`None`: there was none),
+    /// and nothing else.
+    Replace(Option<FileStamp>),
+}
+
+/// Enough of a file's metadata to tell whether it was replaced or rewritten.
+#[derive(PartialEq, Eq)]
+struct FileStamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    inode: (u64, u64),
+}
+
+fn file_stamp(path: &Path) -> Option<FileStamp> {
+    let meta = fs::symlink_metadata(path).ok()?;
+    Some(FileStamp {
+        len: meta.len(),
+        modified: meta.modified().ok(),
+        #[cfg(unix)]
+        inode: {
+            use std::os::unix::fs::MetadataExt;
+            (meta.dev(), meta.ino())
+        },
+    })
+}
+
+/// Write `secret_key` to a `0600` temporary file in `path`'s directory, ready
+/// to be renamed over `path` by [`StagedKeyFile::commit`]. Staging is where an
+/// unwritable directory fails, before the caller commits to anything else.
 ///
-/// `murk init` looks for a stored key before generating one, but another
-/// `murk init` can store one between that check and this write. Creating the
-/// file exclusively (`O_EXCL`) instead of truncating it means a stored key is
-/// never overwritten: the existing file is left byte-for-byte unchanged.
-pub fn create_key_file(path: &Path, secret_key: &str) -> Result<(), String> {
+/// With `replace`, the commit replaces the file that is at `path` now, and
+/// only that file: if it changes in between, the commit refuses. Without it,
+/// the commit refuses any file at `path`.
+pub fn stage_key_file(
+    path: &Path,
+    secret_key: &str,
+    replace: bool,
+) -> Result<StagedKeyFile, String> {
     reject_symlink(path, &path.display().to_string())?;
-    let mut file = match open_secret_file(path, true) {
-        Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            return Err([
-                format!("a key is already stored at {}", path.display()),
-                "murk init never replaces a stored key".into(),
-                "run murk init again to use it".into(),
-            ]
-            .join("\n"));
-        }
-        Err(e) => return Err(format!("creating key file: {e}")),
+    let dir = match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
     };
-    file.write_all(secret_key.as_bytes())
-        .map_err(|e| format!("writing key file: {e}"))
+    let mut tmp =
+        tempfile::NamedTempFile::new_in(dir).map_err(|e| format!("writing key file: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tmp.as_file()
+            .set_permissions(fs::Permissions::from_mode(SECRET_FILE_MODE))
+            .map_err(|e| format!("writing key file: {e}"))?;
+    }
+    tmp.write_all(secret_key.as_bytes())
+        .and_then(|()| tmp.as_file().sync_all())
+        .map_err(|e| format!("writing key file: {e}"))?;
+    Ok(StagedKeyFile {
+        tmp,
+        target: path.to_path_buf(),
+        existing: if replace {
+            Existing::Replace(file_stamp(path))
+        } else {
+            Existing::Refuse
+        },
+    })
+}
+
+/// A [`StagedKeyFile`] that could not be renamed into place. The destination
+/// is untouched. Dropping this deletes the staged key; [`keep`](Self::keep)
+/// leaves it on disk instead, for a key that must not be lost.
+pub struct UncommittedKeyFile {
+    pub reason: String,
+    /// A file was at the destination and replacing it was not allowed (see
+    /// [`stage_key_file`]'s `replace`).
+    pub already_exists: bool,
+    staged: Box<StagedKeyFile>,
+}
+
+impl UncommittedKeyFile {
+    /// Keep the staged key file (`0600`, beside the destination) and return
+    /// its path.
+    pub fn keep(self) -> Result<std::path::PathBuf, String> {
+        self.staged
+            .tmp
+            .keep()
+            .map(|(_, path)| path)
+            .map_err(|e| format!("keeping the staged key file: {}", e.error))
+    }
+}
+
+impl StagedKeyFile {
+    /// Where [`commit`](Self::commit) puts the key.
+    pub fn target(&self) -> &Path {
+        &self.target
+    }
+
+    /// Rename the staged key over its destination. Refused, with the
+    /// destination left alone, when it is a symlink, when a file appeared there
+    /// and replacing was not allowed, or when the file to be replaced changed
+    /// since staging.
+    pub fn commit(self) -> Result<(), UncommittedKeyFile> {
+        let shown = self.target.display().to_string();
+        let refuse = |staged, reason: String| {
+            Err(UncommittedKeyFile {
+                reason,
+                already_exists: false,
+                staged: Box::new(staged),
+            })
+        };
+        if let Err(reason) = reject_symlink(&self.target, &shown) {
+            return refuse(self, reason);
+        }
+        if let Existing::Replace(stamp) = &self.existing
+            && *stamp != file_stamp(&self.target)
+        {
+            return refuse(
+                self,
+                format!("{shown} changed while the key was being written — left it untouched"),
+            );
+        }
+        let Self {
+            tmp,
+            target,
+            existing,
+        } = self;
+        let persisted = match &existing {
+            Existing::Replace(_) => tmp.persist(&target),
+            Existing::Refuse => tmp.persist_noclobber(&target),
+        };
+        persisted.map(drop).map_err(|e| {
+            let already_exists = e.error.kind() == std::io::ErrorKind::AlreadyExists;
+            let reason = if already_exists {
+                format!("{shown} already exists — refusing to overwrite it")
+            } else {
+                format!("writing key file {shown}: {}", e.error)
+            };
+            UncommittedKeyFile {
+                reason,
+                already_exists,
+                staged: Box::new(StagedKeyFile {
+                    tmp: e.file,
+                    target,
+                    existing,
+                }),
+            }
+        })
+    }
 }
 
 /// Write a MURK_KEY_FILE reference to `.env`, removing any existing MURK_KEY/MURK_KEY_FILE lines.
@@ -1270,15 +1420,20 @@ mod tests {
     }
 
     #[test]
-    fn create_key_file_never_replaces_an_existing_key_file() {
+    fn staging_without_replace_never_replaces_an_existing_key_file() {
         // Another `murk init` stored a key after this one's discovery check.
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("key");
         std::fs::write(&path, "AGE-SECRET-KEY-1FIRST\n").unwrap();
 
-        let err = create_key_file(&path, "AGE-SECRET-KEY-1SECOND").unwrap_err();
+        let Err(err) = stage_key_file(&path, "AGE-SECRET-KEY-1SECOND", false)
+            .unwrap()
+            .commit()
+        else {
+            panic!("an existing key file must not be replaced");
+        };
 
-        assert!(err.contains("already stored"), "{err}");
+        assert!(err.already_exists, "{}", err.reason);
         assert_eq!(
             std::fs::read(&path).unwrap(),
             b"AGE-SECRET-KEY-1FIRST\n",
@@ -1288,12 +1443,15 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn create_key_file_creates_a_0600_file() {
+    fn staging_creates_a_0600_key_file() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("key");
 
-        create_key_file(&path, "AGE-SECRET-KEY-1NEW").unwrap();
+        stage_key_file(&path, "AGE-SECRET-KEY-1NEW", false)
+            .unwrap()
+            .commit()
+            .unwrap_or_else(|e| panic!("{}", e.reason));
 
         assert_eq!(std::fs::read(&path).unwrap(), b"AGE-SECRET-KEY-1NEW");
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
@@ -1329,7 +1487,47 @@ mod tests {
         std::io::Write::write_all(&mut f, b"secret").unwrap();
         let result = read_secret_file(&path, "test");
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "secret");
+        assert_eq!(result.unwrap().as_str(), "secret");
+    }
+
+    /// A staged key replaces only the file it was staged against: one that
+    /// was rewritten, or that appeared, in the meantime is left untouched, and
+    /// the staged key can still be kept rather than lost.
+    #[test]
+    fn staged_key_never_replaces_a_file_that_changed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let rewritten = dir.path().join("rewritten");
+        std::fs::write(&rewritten, "AGE-SECRET-KEY-1OLD\n").unwrap();
+        let staged = stage_key_file(&rewritten, "AGE-SECRET-KEY-1NEW", true).unwrap();
+        std::fs::write(&rewritten, "AGE-SECRET-KEY-1SOMEONE-ELSE\n").unwrap();
+        let refused = staged.commit().expect_err("a changed file is not replaced");
+        assert!(refused.reason.contains("changed"), "{}", refused.reason);
+        assert_eq!(
+            std::fs::read_to_string(&rewritten).unwrap(),
+            "AGE-SECRET-KEY-1SOMEONE-ELSE\n"
+        );
+        let kept = refused.keep().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(kept).unwrap(),
+            "AGE-SECRET-KEY-1NEW"
+        );
+
+        let appeared = dir.path().join("appeared");
+        let staged = stage_key_file(&appeared, "AGE-SECRET-KEY-1NEW", true).unwrap();
+        std::fs::write(&appeared, "AGE-SECRET-KEY-1SOMEONE-ELSE\n").unwrap();
+        assert!(staged.commit().is_err());
+        assert_eq!(
+            std::fs::read_to_string(&appeared).unwrap(),
+            "AGE-SECRET-KEY-1SOMEONE-ELSE\n"
+        );
+
+        // Unchanged, the same staging replaces it.
+        let staged = stage_key_file(&appeared, "AGE-SECRET-KEY-1NEW", true).unwrap();
+        assert!(staged.commit().is_ok(), "an unchanged file is replaced");
+        assert_eq!(
+            std::fs::read_to_string(&appeared).unwrap(),
+            "AGE-SECRET-KEY-1NEW"
+        );
     }
 
     #[test]

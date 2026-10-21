@@ -133,7 +133,8 @@ pub fn resolve_member(
         .collect();
     match matched.as_slice() {
         [] => Err(MurkError::Group(format!(
-            "no recipient matches \"{spec}\" — authorize them first with `murk circle authorize`"
+            "no recipient matches \"{}\" — authorize them first with `murk circle authorize`",
+            crate::validate::show_key(spec)
         ))),
         [pk] => Ok((*pk).clone()),
         _ => Err(MurkError::Group(format!(

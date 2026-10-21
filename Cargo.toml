@@ -83,7 +83,7 @@ clap_mangen = { version = "0.3.0", optional = true }
 fs2 = "0.4.3"
 pyo3 = { version = "0.30", features = ["extension-module", "abi3-py39"], optional = true }
 walkdir = "2.5.0"
-zeroize = "1"
+zeroize = { version = "1", features = ["serde"] }
 # `murk mcp` — an in-process MCP (Model Context Protocol) stdio server for AI
 # agents. rmcp is the official Rust MCP SDK; tokio + tracing are
 # scoped to that subcommand only (the rest of murk stays sync). Default features

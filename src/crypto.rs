@@ -289,7 +289,8 @@ pub fn parse_recipient(pubkey: &str) -> Result<MurkRecipient, CryptoError> {
         return Ok(MurkRecipient::Plugin(r));
     }
     Err(CryptoError::InvalidKey(format!(
-        "not a valid age, SSH, or plugin public key: {pubkey}"
+        "not a valid age, SSH, or plugin public key: {}",
+        crate::validate::show_key(pubkey)
     )))
 }
 
@@ -499,7 +500,10 @@ pub fn decrypt(
     let decryptor = age::Decryptor::new_buffered(ciphertext)
         .map_err(|e| CryptoError::Decrypt(e.to_string()))?;
 
-    let mut plaintext = Zeroizing::new(vec![]);
+    // Sized once, up front: the plaintext is always shorter than its
+    // ciphertext, so `read_to_end` never reallocates and leaves no un-wiped
+    // partial copy behind on the heap.
+    let mut plaintext = Zeroizing::new(Vec::with_capacity(ciphertext.len()));
 
     // Hold the plugin object outside the match so the &dyn borrow stays valid.
     let plugin_holder: Option<IdentityPluginV1<UiCallbacks>> = match identity {

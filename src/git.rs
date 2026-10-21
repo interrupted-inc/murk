@@ -15,14 +15,32 @@ const GITATTRIBUTES_LINE: &str = "*.murk merge=murk";
 const GIT_CONFIG_MERGE_NAME: &str = "merge.murk.name";
 const GIT_CONFIG_MERGE_DRIVER: &str = "merge.murk.driver";
 
-/// A `git` command with murk's key variables removed from its environment.
+/// A `git` command that runs no code from the repository it is pointed at, with
+/// murk's key variables removed from its environment.
 ///
-/// The only way murk spawns git. git runs hooks, filters, credential helpers,
-/// and pagers that inherit its environment, and none of them needs the key.
-/// The merge driver is unaffected: git invokes `murk merge-driver` with the
-/// user's environment, not with the one murk hands git here.
+/// The only way murk spawns git. A repository's own `.git/config` is not
+/// trusted: a working tree unpacked from an archive, a shared volume, or a CI
+/// cache carries whatever config its author wrote, and several keys name a
+/// program git runs. `core.fsmonitor` runs on any index refresh (`check-ignore`
+/// does one), hooks run on writes, and a pager runs on terminal output, so all
+/// three are switched off here. The signature programs (`gpg.*`) are refused per
+/// call in [`last_commit_signature`], since overriding them would also override
+/// the user's own choice. Repository-format settings are still read; git needs
+/// them to open the repository at all.
+///
+/// None of the spawned git commands needs the key either. The merge driver is
+/// unaffected: git invokes `murk merge-driver` with the user's environment, not
+/// with the one murk hands git here.
 pub fn git_command() -> Command {
     let mut cmd = Command::new("git");
+    cmd.args([
+        "--no-pager",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+    ]);
+    cmd.env("GIT_OPTIONAL_LOCKS", "0");
     crate::env::strip_key_env(&mut cmd);
     cmd
 }
@@ -109,27 +127,73 @@ pub enum CommitSignature {
     Bad,
     /// The commit carries no signature.
     Unsigned,
+    /// Not checked: the repository's own config sets `gpg.*`. Verifying would
+    /// run the program that config names, and an allowed-signers file it names
+    /// would let the repository vouch for its own signer.
+    RepoConfigured,
 }
 
 /// Return the signature status of the last commit touching `path`, or `None`
 /// when git is unavailable, the repo has no such commit, or the path is
 /// untracked — i.e. there is no git anchor to check.
+///
+/// Signature verification is governed entirely by `gpg.*` config, so only the
+/// user's global and system config may set it; see
+/// [`CommitSignature::RepoConfigured`].
 pub fn last_commit_signature(path: &str) -> Option<CommitSignature> {
-    let output = git_command()
-        .args(["log", "-1", "--format=%G?", "--", path])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+    // No commit for this path (untracked / no history): no anchor to check.
+    last_commit_field(path, "%H")?;
+    if repo_sets_gpg_config()? {
+        return Some(CommitSignature::RepoConfigured);
     }
-    match String::from_utf8(output.stdout).ok()?.trim() {
+    match last_commit_field(path, "%G?")?.as_str() {
         "G" => Some(CommitSignature::Good),
         // U (good, unknown validity), X (expired), Y (expired key), E (cannot
         // check) all mean "a signature exists but we can't fully vouch for it".
         "U" | "X" | "Y" | "E" => Some(CommitSignature::Unverified),
         "B" | "R" => Some(CommitSignature::Bad),
         "N" => Some(CommitSignature::Unsigned),
-        // Empty: no commit for this path (untracked / no history) — no anchor.
+        _ => None,
+    }
+}
+
+/// `git log -1 --format=<format> -- <path>`, trimmed; `None` when git fails or
+/// no commit touches `path`. `--no-show-signature` keeps a repository's
+/// `log.showSignature` from verifying signatures where the format does not ask.
+fn last_commit_field(path: &str, format: &str) -> Option<String> {
+    let output = git_command()
+        .args([
+            "log",
+            "-1",
+            "--no-show-signature",
+            &format!("--format={format}"),
+            "--",
+            path,
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let field = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+    (!field.is_empty()).then_some(field)
+}
+
+/// Whether the repository's own config (local or per-worktree scope, including
+/// files it includes) sets any `gpg.*` key. `None` when git cannot answer.
+fn repo_sets_gpg_config() -> Option<bool> {
+    let output = git_command()
+        .args(["config", "--show-scope", "--get-regexp", r"^gpg\."])
+        .output()
+        .ok()?;
+    match output.status.code() {
+        // `--get-regexp` exits 1 when nothing matches.
+        Some(1) => Some(false),
+        Some(0) => Some(
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .any(|line| line.starts_with("local\t") || line.starts_with("worktree\t")),
+        ),
         _ => None,
     }
 }

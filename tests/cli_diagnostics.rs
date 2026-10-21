@@ -163,7 +163,9 @@ fn verify_checks_last_vault_commit_signature() {
         .code(1)
         .stderr(predicate::str::contains("last .murk commit is unsigned"));
 
-    // Sign the next vault commit with a throwaway ssh key git trusts.
+    // Sign the next vault commit with a throwaway ssh key git trusts. The
+    // verification settings go in the user's global config (HOME is `dir`):
+    // murk ignores signature checks the repository configures for itself.
     let keys = TempDir::new().unwrap();
     let signing_key = keys.path().join("id");
     let status = std::process::Command::new("ssh-keygen")
@@ -177,11 +179,11 @@ fn verify_checks_last_vault_commit_signature() {
     fs::write(&allowed, format!("test@test.com {pubkey}")).unwrap();
     let signing_key = signing_key.to_str().unwrap();
     let allowed = allowed.to_str().unwrap();
-    git(dir.path(), &["config", "gpg.format", "ssh"]);
+    git(dir.path(), &["config", "--global", "gpg.format", "ssh"]);
     git(dir.path(), &["config", "user.signingkey", signing_key]);
     git(
         dir.path(),
-        &["config", "gpg.ssh.allowedSignersFile", allowed],
+        &["config", "--global", "gpg.ssh.allowedSignersFile", allowed],
     );
     add_secret(dir.path(), &key, "B", "two");
     git(dir.path(), &["add", "test.murk"]);
@@ -200,6 +202,7 @@ fn verify_checks_last_vault_commit_signature() {
         dir.path(),
         &[
             "config",
+            "--global",
             "gpg.ssh.revocationFile",
             revoked.to_str().unwrap(),
         ],
@@ -211,6 +214,90 @@ fn verify_checks_last_vault_commit_signature() {
         .stderr(predicate::str::contains(
             "last .murk commit has a bad signature",
         ));
+}
+
+/// A planted `.git/config` must not run code through murk. `doctor` and
+/// `verify` are documented as safe to auto-approve, and both spawn git in a
+/// working tree whose config may come from an archive or a shared volume.
+#[cfg(unix)]
+#[test]
+fn repo_git_config_runs_no_program() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    add_secret(dir.path(), &key, "A", "one");
+    git(dir.path(), &["init", "-q"]);
+
+    // A commit carrying a signature, so `%G?` has something to verify.
+    git(dir.path(), &["add", "test.murk"]);
+    let tree = std::process::Command::new("git")
+        .args(["write-tree"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let tree = String::from_utf8(tree.stdout).unwrap();
+    let commit = format!(
+        "tree {}\nauthor t <t@t> 1 +0000\ncommitter t <t@t> 1 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n AAAA\n -----END PGP SIGNATURE-----\n\nvault\n",
+        tree.trim()
+    );
+    fs::write(dir.path().join("commit.txt"), commit).unwrap();
+    let id = std::process::Command::new("git")
+        .args(["hash-object", "-t", "commit", "-w", "commit.txt"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let id = String::from_utf8(id.stdout).unwrap();
+    git(dir.path(), &["update-ref", "HEAD", id.trim()]);
+
+    let marker = dir.path().join("pwned");
+    let script = dir.path().join("evil.sh");
+    fs::write(
+        &script,
+        format!("#!/bin/sh\necho \"$0\" >> '{}'\nexit 1\n", marker.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    let script = script.to_str().unwrap();
+    // fsmonitor runs on any index refresh; the gpg programs run to verify the
+    // signature, and `log.showSignature` would verify it on every `git log`.
+    for (name, value) in [
+        ("core.fsmonitor", script),
+        ("gpg.program", script),
+        ("gpg.ssh.program", script),
+        ("log.showSignature", "true"),
+    ] {
+        git(dir.path(), &["config", name, value]);
+    }
+
+    let ran_nothing = |after: &str| {
+        assert!(
+            !marker.exists(),
+            "repo config ran a program during {after}: {}",
+            fs::read_to_string(&marker).unwrap()
+        );
+    };
+
+    // doctor's check-ignore still answers: the finding is git's, not a guess.
+    murk(&dir, &key)
+        .args(["doctor", "--vault", "test.murk"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(".env is not excluded from git"));
+    ran_nothing("doctor");
+    murk(&dir, &key)
+        .args(["diff", "HEAD", "--vault", "test.murk"])
+        .assert()
+        .success();
+    ran_nothing("diff");
+    let verify = murk(&dir, &key)
+        .args(["verify", "--vault", "test.murk"])
+        .assert()
+        .code(1);
+    ran_nothing("verify");
+    verify.stderr(predicate::str::contains(
+        "last .murk commit signature not checked",
+    ));
 }
 
 #[cfg(unix)]

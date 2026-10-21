@@ -3,6 +3,7 @@
 
 //! GitHub SSH key fetching for `murk authorize github:username`.
 
+use std::collections::HashMap;
 use std::fmt::Write;
 use std::time::Duration;
 
@@ -143,20 +144,66 @@ pub fn parse_github_keys(
     Ok(keys)
 }
 
-/// Compute a SHA-256 fingerprint of an SSH public key string.
+/// The SHA-256 fingerprint of an SSH public key, as `ssh-keygen -l` and
+/// GitHub's key settings show it: `SHA256:` and the unpadded base64 of the
+/// hash of the decoded key blob, so a human can compare it with either.
 ///
-/// Returns a string like `SHA256:abc123...` (base64, no padding).
+/// `key_string` is `<type> <base64 blob>` as [`parse_github_keys`] returns it.
+/// A blob that does not decode falls back to [`legacy_fingerprint`]; parsed
+/// keys always decode.
 pub fn fingerprint(key_string: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let blob = key_string
+        .split_whitespace()
+        .nth(1)
+        .and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok());
+    let Some(blob) = blob else {
+        return legacy_fingerprint(key_string);
+    };
+    let encoded = base64::engine::general_purpose::STANDARD_NO_PAD.encode(Sha256::digest(blob));
+    format!("SHA256:{encoded}")
+}
+
+/// The fingerprint murk pinned before 0.14: the hash of the key *text*. It
+/// looks like an SSH fingerprint but matches nothing a human can check, so it
+/// is only ever compared against, never shown for a fetched key or written.
+fn legacy_fingerprint(key_string: &str) -> String {
     use sha2::{Digest, Sha256};
     let hash = Sha256::digest(key_string.as_bytes());
     let encoded = base64::engine::general_purpose::STANDARD_NO_PAD.encode(hash);
     format!("SHA256:{encoded}")
 }
 
+/// The pins stored for `username`. GitHub usernames are case-insensitive, so
+/// `github:Alice` must meet the pins `github:alice` recorded; pins stored under
+/// several spellings (vaults written before the name was normalised) are all
+/// returned, in a stable order.
+pub fn pins_for(pins: &HashMap<String, Vec<String>>, username: &str) -> Vec<String> {
+    let mut users: Vec<&String> = pins
+        .keys()
+        .filter(|user| user.eq_ignore_ascii_case(username))
+        .collect();
+    users.sort();
+    users
+        .into_iter()
+        .flat_map(|user| pins[user].clone())
+        .collect()
+}
+
+/// Record `fps` as the pins for `username`, replacing those stored under any
+/// spelling of the name. The key is the lowercase name.
+pub fn set_pins(pins: &mut HashMap<String, Vec<String>>, username: &str, fps: Vec<String>) {
+    pins.retain(|user, _| !user.eq_ignore_ascii_case(username));
+    pins.insert(username.to_ascii_lowercase(), fps);
+}
+
 /// Check fetched keys against pinned fingerprints.
 ///
 /// Returns Ok(()) if pins match or no pins exist (TOFU).
 /// Returns Err with a description of what changed if pins don't match.
+///
+/// A pin matches a key by its fingerprint or by its [`legacy_fingerprint`], so
+/// pins written before 0.14 keep working; the next authorization rewrites them.
 pub fn check_pins(
     username: &str,
     fetched_keys: &[(MurkRecipient, String)],
@@ -166,23 +213,26 @@ pub fn check_pins(
         return Ok(()); // First use — trust on first use.
     }
 
-    let fetched_fps: Vec<String> = fetched_keys.iter().map(|(_, k)| fingerprint(k)).collect();
+    let fetched_fps: Vec<[String; 2]> = fetched_keys
+        .iter()
+        .map(|(_, k)| [fingerprint(k), legacy_fingerprint(k)])
+        .collect();
 
     // Added keys are present in the fetch but not pinned. We still hold the full
     // key string, so label each with its SSH type — that lets a user tell a
     // routine rotation (ed25519 added) from a suspicious downgrade (ssh-rsa
     // added) at a glance.
     let mut added: Vec<String> = Vec::new();
-    for ((_, key), fp) in fetched_keys.iter().zip(&fetched_fps) {
-        if !pinned.contains(fp) {
-            added.push(format!("{} {fp}", key_type_label(key)));
+    for ((_, key), fps) in fetched_keys.iter().zip(&fetched_fps) {
+        if !fps.iter().any(|fp| pinned.contains(fp)) {
+            added.push(format!("{} {}", key_type_label(key), fps[0]));
         }
     }
     // Removed keys were pinned but are no longer fetched. We only stored the
     // fingerprint, not the original key string, so these stay unlabeled.
     let mut removed: Vec<&str> = Vec::new();
     for fp in pinned {
-        if !fetched_fps.contains(fp) {
+        if !fetched_fps.iter().flatten().any(|f| f == fp) {
             removed.push(fp);
         }
     }
@@ -345,11 +395,45 @@ mod tests {
         assert!(result.unwrap_err().contains("- SHA256:oldkey"));
     }
 
+    /// The pin is the fingerprint `ssh-keygen -l` prints for the same key, so a
+    /// user can check it against GitHub or a teammate.
     #[test]
-    fn fingerprint_is_deterministic() {
-        let fp1 = fingerprint(TEST_ED25519_KEY);
-        let fp2 = fingerprint(TEST_ED25519_KEY);
-        assert_eq!(fp1, fp2);
-        assert!(fp1.starts_with("SHA256:"));
+    fn fingerprint_matches_ssh_keygen() {
+        assert_eq!(
+            fingerprint(TEST_ED25519_KEY),
+            "SHA256:sSNI0SY9Hy+Pffm51bl4/XaBf6hOox29ud4697QWvdE"
+        );
+    }
+
+    /// Pins recorded before the fingerprint changed still match their key, and
+    /// still catch a key they do not cover.
+    #[test]
+    fn check_pins_accepts_legacy_text_hash_pins() {
+        let legacy = "SHA256:meIWGWGKh6hqFxUtBMsWaMorqBA9vshzSEWIZyUio58".to_string();
+        let keys = parse_github_keys(&format!("{TEST_ED25519_KEY}\n"), "alice").unwrap();
+        assert!(check_pins("alice", &keys, std::slice::from_ref(&legacy)).is_ok());
+
+        let other =
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHsKLqeplhpW+uObz5dvMgjz1OxfM/XXUB+VHtZ6isGN";
+        let keys = parse_github_keys(&format!("{TEST_ED25519_KEY}\n{other}\n"), "alice").unwrap();
+        let msg = check_pins("alice", &keys, &[legacy]).unwrap_err();
+        assert!(
+            msg.contains(&format!("+ ssh-ed25519 {}", fingerprint(other))),
+            "msg: {msg}"
+        );
+        assert!(!msg.contains("  - "), "msg: {msg}");
+    }
+
+    /// `github:Alice` meets the pins `github:alice` recorded, and re-pinning
+    /// under another spelling replaces them rather than adding a second entry.
+    #[test]
+    fn pins_are_keyed_case_insensitively() {
+        let mut pins = HashMap::new();
+        pins.insert("alice".to_string(), vec!["SHA256:a".to_string()]);
+        assert_eq!(pins_for(&pins, "Alice"), ["SHA256:a".to_string()]);
+
+        set_pins(&mut pins, "ALICE", vec!["SHA256:b".to_string()]);
+        assert_eq!(pins.len(), 1);
+        assert_eq!(pins_for(&pins, "alice"), ["SHA256:b".to_string()]);
     }
 }

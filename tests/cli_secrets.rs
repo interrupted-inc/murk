@@ -1170,8 +1170,9 @@ fn agent_revoke_and_renew_mark_the_scope_owed() {
         .success();
     assert!(!rotation_owed(&dir, &key));
 
-    grant(&[]);
-    grant(&["--renew"]);
+    // agent.key holds the revoked grant's key now: replacing it takes --force.
+    grant(&["--force"]);
+    grant(&["--renew", "--force"]);
     assert!(rotation_owed(&dir, &key));
 }
 

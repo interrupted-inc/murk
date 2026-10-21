@@ -29,6 +29,27 @@ pub fn disable_core_dumps() {
     }
 }
 
+/// Make this process non-dumpable, so another process running as the same
+/// user cannot attach a debugger to it or read its memory or environment
+/// through `/proc/<pid>/` while it holds a key or decrypted secrets.
+///
+/// Linux only: `prctl(PR_SET_DUMPABLE, 0)`. The flag is reset on `execve`, so
+/// children murk runs (`murk exec`, the editor) are unaffected. It also stops
+/// core dumps, overlapping [`disable_core_dumps`]. Elsewhere this is a no-op:
+/// macOS's `PT_DENY_ATTACH` is deliberately not used (it only blocks a
+/// cooperating debugger and is a well-known anti-debugging trick, not a
+/// boundary); see `THREAT_MODEL.md`. Best-effort like the rest of this module.
+pub fn deny_same_user_inspection() {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        // SAFETY: PR_SET_DUMPABLE takes plain integer arguments and touches no
+        // memory of ours. The return code is intentionally ignored.
+        unsafe {
+            libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+        }
+    }
+}
+
 /// The effective strict setting: strict is ON when either the operator set a
 /// truthy `MURK_STRICT` or this is an [`agent_context`] (`MURK_AGENT`). There is
 /// deliberately no way to turn strict OFF from inside an agent context — an
@@ -59,7 +80,7 @@ pub fn agent_context() -> bool {
 /// path but — unlike [`agent_context`] — does not by itself flip strict mode, so
 /// existing pipelines are never silently changed.
 pub fn ci_context() -> bool {
-    strict_from(&std::env::var("CI").unwrap_or_default())
+    truthy(&std::env::var("CI").unwrap_or_default())
 }
 
 /// Whether the operator opted into self-scoping: honoring the vault's agent
@@ -71,9 +92,22 @@ pub fn self_scope() -> bool {
     strict_from(&std::env::var("MURK_SELF_SCOPE").unwrap_or_default()) || agent_context()
 }
 
-/// Truthy values: `1`, `true`, `yes` (case-insensitive, trimmed). Split out so
-/// the rules are testable without mutating process-global env state.
+/// Whether a restricting flag (`MURK_STRICT`, `MURK_AGENT`, `MURK_SELF_SCOPE`)
+/// is on. It fails closed: only unset, empty, `0`, `false`, `no` and `off`
+/// (case-insensitive, trimmed) are off, so `on`, `enabled`, `2` or a typo turn
+/// the restriction on rather than silently leaving it off. Split out so the
+/// rules are testable without mutating process-global env state.
 fn strict_from(val: &str) -> bool {
+    !matches!(
+        val.trim().to_ascii_lowercase().as_str(),
+        "" | "0" | "false" | "no" | "off"
+    )
+}
+
+/// Conventional truthiness (`1`, `true`, `yes`; case-insensitive, trimmed) for
+/// `CI`, which murk only reads to decide whether to print an advisory and which
+/// CI systems set to values of their own.
+fn truthy(val: &str) -> bool {
     matches!(
         val.trim().to_ascii_lowercase().as_str(),
         "1" | "true" | "yes"
@@ -189,10 +223,12 @@ mod tests {
 
     #[test]
     fn strict_truthiness() {
-        for on in ["1", "true", "yes", "YES", " True ", "Yes"] {
+        for on in [
+            "1", "true", "yes", "YES", " True ", "Yes", "on", "enabled", "2", "ture",
+        ] {
             assert!(strict_from(on), "{on:?} should enable strict mode");
         }
-        for off in ["", "0", "false", "no", "off", "enabled", "2"] {
+        for off in ["", " ", "0", "false", "no", "off", "OFF", " False "] {
             assert!(!strict_from(off), "{off:?} should not enable strict mode");
         }
     }
@@ -214,8 +250,10 @@ mod tests {
             ("", "", false),
             ("0", "", false),
             ("", "0", false),
-            ("bogus", "", false),
-            ("2", "enabled", false),
+            // A value murk does not recognise fails closed.
+            ("bogus", "", true),
+            ("off", "enabled", true),
+            ("off", "no", false),
         ];
         for (strict, agent, expected) in cases {
             assert_eq!(
