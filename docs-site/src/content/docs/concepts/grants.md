@@ -42,6 +42,8 @@ To renew a grant past (or nearing) its TTL, pass `--renew` to `murk agent grant`
 
 `murk agent revoke NAME [--rotate]` removes the grant and its ephemeral recipient, clearing its private ciphertexts so it can no longer read current values. Because the key could still decrypt old `.murk` versions from git history, **revocation doesn't erase git history**: `--rotate` re-prompts for new values across the grant's scope, which is the step that actually closes the exposure.
 
+A grant's key file trusts the signers recorded in the grant when it was minted, and nothing updates the key file afterwards. So `murk circle revoke` also revokes every grant that trusts the revoked key, and every grant with no recorded signers (an unknown anchor is treated as trusting every signer). It marks those grants' keys as owing rotation, deletes their key files in murk's own slot, and tells you to delete other copies and re-mint the grants with `murk agent grant --renew`.
+
 Revocation and policy changes apply when a process loads the vault. A running `murk mcp` server and a loaded binding object keep the vault state from their last load, so they still serve a revoked grant. Restart the server and reload the binding object after you change access. Grant expiry is checked again on every value read.
 
 ## Grants never sign or trust
