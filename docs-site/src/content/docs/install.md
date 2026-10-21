@@ -44,6 +44,12 @@ Downloads a pre-built binary for your platform:
 curl -fsSL https://raw.githubusercontent.com/interrupted-sh/murk/main/install.sh | sh
 ```
 
+The script checks the release's build provenance with the
+[GitHub CLI](https://cli.github.com) (`gh`, logged in with `gh auth login`).
+If the check fails, it stops. If `gh` is missing or not logged in, it asks
+whether to install anyway (default no). Without a terminal, as in CI or a
+docker build, it stops unless `MURK_SKIP_ATTESTATION=1` is set for `sh`.
+
 It installs to `/usr/local/bin/murk` by default, using `sudo` only when that
 directory is not writable. The location follows the standard conventions:
 
