@@ -135,18 +135,24 @@ pbpaste | murk add DATABASE_URL
 murk init
 murk add DATABASE_URL
 
-# Bob generates his own key
+# Bob clones the repo and runs init in it. It prints his public key and signing-key fingerprint
 murk init
 
-# Alice adds Bob as a recipient
+# Bob can print his signer entry and fingerprint again, to read out to Alice
+murk trust --print-key
+
+# Alice adds Bob as a recipient, then commits and pushes .murk
 murk circle authorize age1bob... --name bob@example.com
 
-# Bob can now decrypt
+# Bob pulls, trusts the vault once on this machine, and can decrypt
+murk trust
 murk export
 
 # Bob overrides a value for local dev
 murk add DATABASE_URL --group me
 ```
+
+Bob's first write is refused once on each teammate's machine, until they run `murk trust` and confirm the signing-key fingerprint Bob gave them, over something other than the repo. Teammates added by `github:` or `ssh:` skip that step: an `ssh-ed25519` key is its own verifying key. `murk trust` is also needed once per machine after a fresh clone. A CI runner has no trust pin, so give it `MURK_TRUSTED_SIGNERS`, the value `murk trust --print-key` prints (see [CI/CD](#cicd)).
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/interrupted-sh/murk/demo/team.gif" alt="murk team demo" width="900">

@@ -45,6 +45,8 @@ murk circle authorize age1… --name you@example.com
 
 Then they commit and push `.murk`.
 
+**Confirm your signing-key fingerprint (age keys only).** Your first write after you are authorized is refused once on each teammate's machine until they confirm the key you sign with. `murk init` printed its fingerprint (`signing key SHA256:…`). To see it again, run `murk trust --print-key`. It prints your signer entry on stdout and the fingerprint on stderr. Read the fingerprint to a teammate over something other than the repo. They compare it with the one `murk trust` shows, then accept. This is a one-time step per teammate. An `ssh-ed25519` key, including one added with `github:`, is its own verifying key and skips it.
+
 **Using a GitHub SSH key instead.** If you have an ed25519 SSH key on GitHub, the recipient can add it without exchanging keys. They run `murk circle authorize github:YOUR_USERNAME`, then commit and push `.murk`. murk adds your GitHub SSH public keys as recipients (RSA keys are skipped). On this path your SSH key is your murk identity, so you do not need the key from step 2. murk does not look in `~/.ssh` on its own. After you `git pull`, unset `MURK_KEY` and point murk at your SSH private key: `export MURK_KEY_FILE=~/.ssh/id_ed25519`. The key must be unencrypted (no passphrase) and readable only by you. Without this, `murk get`, `murk export` and `murk exec` fail with "you are not a recipient".
 
 If your GitHub keys change later, the next `authorize github:YOUR_USERNAME` refuses and lists the added and removed keys. The recipient must review them and pass `--force`.
@@ -59,6 +61,8 @@ murk trust                  # once per machine: review the signer, then accept
 ```
 
 `murk trust` prints who signed the vault (their full key and its signing-key fingerprint) and every recipient, then asks before it records anything. Check the signer's fingerprint with the person who invited you, over something other than the repo. Run `murk diff` and `git log -p -- .murk` first if you want to see what changed. Skip this step and the first load on a machine is refused with "not trusted on this machine yet". murk remembers your answer on this machine, not in the repo, and asks again only if a later vault looks wrong: unsigned, signed by an unfamiliar key, or older than one you've already accepted.
+
+Do this once on every machine, after every fresh clone (the trust pin lives outside the repo). A CI runner has no pin and nobody to run `murk trust`: set `MURK_TRUSTED_SIGNERS` instead, with the entry each signer's `murk trust --print-key` prints (comma or newline separated), next to the key.
 
 ## 5. Use secrets
 

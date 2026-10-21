@@ -71,6 +71,16 @@ set up. Starting a project of your own? See
 
    Then they commit and push `.murk`.
 
+   **Confirm your signing-key fingerprint (age keys only).** Your first write
+   after you are authorized is refused once on each teammate's machine until
+   they confirm the key you sign with. `murk init` printed its fingerprint
+   (`signing key SHA256:…`). To see it again, run `murk trust --print-key`. It
+   prints your signer entry on stdout and the fingerprint on stderr. Read the
+   fingerprint to a teammate over something other than the repo. They compare
+   it with the one `murk trust` shows, then accept. This is a one-time step per
+   teammate. An `ssh-ed25519` key, including one added with `github:`, is its
+   own verifying key and skips it.
+
    **Using a GitHub SSH key instead.** If you have an ed25519 SSH key on
    GitHub, the recipient can add it without exchanging keys. They run
    `murk circle authorize github:YOUR_USERNAME`, then commit and push
@@ -109,6 +119,12 @@ set up. Starting a project of your own? See
    already accepted. See [Recipients &
    signatures](/concepts/recipients-signatures/#trusting-a-signer) for the
    rules.
+
+   Do this once on every machine, after every fresh clone (the trust pin
+   lives outside the repo). A CI runner has no pin and nobody to run
+   `murk trust`: set `MURK_TRUSTED_SIGNERS` instead, with the entry each
+   signer's `murk trust --print-key` prints (comma or newline separated),
+   next to the key. See [CI/CD](/guides/cicd/).
 
 5. ## Use secrets
 
