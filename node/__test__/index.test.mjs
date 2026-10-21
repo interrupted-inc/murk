@@ -20,11 +20,16 @@ const PATH_WITH_TARGET = `${join(process.cwd(), '..', 'target', 'release')}:${pr
 const testHome = mkdtempSync(join(tmpdir(), 'murk-node-home-'))
 process.env.HOME = testHome
 
+// `extraEnv` values of `null` remove that variable from the child's environment.
 function runMurk(dir, args, input = '', extraEnv = {}) {
+  const env = { ...process.env, PATH: PATH_WITH_TARGET, ...extraEnv }
+  for (const [name, value] of Object.entries(env)) {
+    if (value === null) delete env[name]
+  }
   return execFileSync(murkBin, args, {
     cwd: dir,
     input,
-    env: { ...process.env, PATH: PATH_WITH_TARGET, ...extraEnv },
+    env,
     stdio: ['pipe', 'pipe', 'pipe'],
   })
 }
@@ -53,7 +58,7 @@ function readKeyFromDotenv(dir) {
 function setupVault() {
   const dir = mkdtempSync(join(tmpdir(), 'murk-node-test-'))
 
-  runMurk(dir, ['init', '--vault', '.murk'], 'testuser\n')
+  runMurk(dir, ['init', '--vault', '.murk'], 'testuser\n', { MURK_KEY: null })
   const murkKey = readKeyFromDotenv(dir)
 
   const keyEnv = { MURK_KEY: murkKey }
@@ -72,7 +77,7 @@ function setupVault() {
 function setupAgentVault() {
   const dir = mkdtempSync(join(tmpdir(), 'murk-node-agent-'))
 
-  runMurk(dir, ['init', '--vault', '.murk'], 'agentowner\n')
+  runMurk(dir, ['init', '--vault', '.murk'], 'agentowner\n', { MURK_KEY: null })
   const opKey = readKeyFromDotenv(dir)
 
   const opEnv = { MURK_KEY: opKey }
@@ -118,17 +123,24 @@ function setupAgentVault() {
 // outside the group.
 function setupGroupVault() {
   const dir = mkdtempSync(join(tmpdir(), 'murk-node-group-'))
-  runMurk(dir, ['init', '--vault', '.murk'], 'groupowner\n')
+  // The suite has set MURK_KEY by now; `murk init` would reuse it.
+  const fresh = { MURK_KEY: null }
+  runMurk(dir, ['init', '--vault', '.murk'], 'groupowner\n', fresh)
   const opKey = readKeyFromDotenv(dir)
   const opEnv = { MURK_KEY: opKey }
 
   const outsiderDir = mkdtempSync(join(tmpdir(), 'murk-node-outsider-'))
-  runMurk(outsiderDir, ['init', '--vault', '.murk'], 'outsider\n')
+  runMurk(outsiderDir, ['init', '--vault', '.murk'], 'outsider\n', fresh)
   const outsiderKey = readKeyFromDotenv(outsiderDir)
   const outsiderPk = JSON.parse(readFileSync(join(outsiderDir, '.murk'), 'utf8')).recipients[0]
   rmSync(outsiderDir, { recursive: true, force: true })
 
-  runMurk(dir, ['circle', 'authorize', outsiderPk, '--name', 'outsider', '--vault', '.murk'], '', opEnv)
+  runMurk(
+    dir,
+    ['circle', 'authorize', outsiderPk, '--name', 'outsider', '--vault', '.murk'],
+    '',
+    opEnv,
+  )
   runMurk(dir, ['group', 'create', 'backend', '--vault', '.murk'], '', opEnv)
   runMurk(dir, ['add', 'GROUP_DB', '--group', 'backend', '--vault', '.murk'], 'old-db\n', opEnv)
 
@@ -351,9 +363,18 @@ process.env.MURK_KEY = testKey
 
 test('add and describe refuse text that could forge or reorder output', () => {
   const vault = load()
-  assert.throws(() => vault.add('SPOOF', 'x', { desc: 'ok\rforged' }), /schema\.SPOOF\.description: contains control/)
-  assert.throws(() => vault.add('SPOOF', 'x', { tags: ['a\u202eb'] }), /schema\.SPOOF\.tags\[0\]: contains invisible/)
-  assert.throws(() => vault.describe('SPOOF', 'a\u200bb'), /schema\.SPOOF\.description: contains invisible/)
+  assert.throws(
+    () => vault.add('SPOOF', 'x', { desc: 'ok\rforged' }),
+    /schema\.SPOOF\.description: contains control/,
+  )
+  assert.throws(
+    () => vault.add('SPOOF', 'x', { tags: ['a\u202eb'] }),
+    /schema\.SPOOF\.tags\[0\]: contains invisible/,
+  )
+  assert.throws(
+    () => vault.describe('SPOOF', 'a\u200bb'),
+    /schema\.SPOOF\.description: contains invisible/,
+  )
   assert.strictEqual(load().has('SPOOF'), false)
   // Newlines are fine in a description.
   vault.describe('MULTILINE', 'first line\nsecond line')
