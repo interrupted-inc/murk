@@ -476,7 +476,7 @@ pub fn save_vault(
     let recipients = meta_recipients(vault, current)?;
     refuse_unsafe_recipients(vault)?;
 
-    let prior_pin = crate::pins::read(vault_path).map_err(MurkError::Trust)?;
+    let prior_pin = refuse_carried_removed_keys(vault_path, vault, on_disk.as_ref(), current)?;
     advance_identity(vault, prior_pin.as_ref());
 
     announce_new_group_members(original, current);
@@ -586,8 +586,41 @@ pub fn save_vault(
     vault.sig = sign_vault(vault, &saver);
 
     vault::write(Path::new(vault_path), vault)?;
-    record_own_save(vault_path, vault, current, &meta.signers);
+    record_own_save(vault_path, vault, current, &meta.signers, on_disk.as_ref());
     Ok(())
+}
+
+/// Read the trust pin for a save, refusing one that would write back a key
+/// this machine recorded as removed only because the file it replaces — an
+/// older revision, numbered at or below the removal — still lists it: the
+/// save is numbered past the removal and signed by a trusted key, so every
+/// machine would take it as the key re-added. A save that adds the key itself
+/// (`circle authorize`) re-adds it on purpose and is allowed.
+fn refuse_carried_removed_keys(
+    vault_path: &str,
+    vault: &types::Vault,
+    on_disk: Option<&types::Vault>,
+    current: &types::Murk,
+) -> Result<Option<crate::pins::TrustPin>, MurkError> {
+    let prior_pin = crate::pins::read(vault_path).map_err(MurkError::Trust)?;
+    let (Some(pin), Some(on_disk)) = (prior_pin.as_ref(), on_disk) else {
+        return Ok(prior_pin);
+    };
+    let canonical = |r: &String| crate::recipients::canonical_recipient(r).into_owned();
+    let before: BTreeSet<String> = on_disk.recipients.iter().map(canonical).collect();
+    let carried = vault.recipients.iter().find_map(|r| {
+        let key = canonical(r);
+        let at = *pin.removed.get(&key)?;
+        (before.contains(&key) && on_disk.generation <= at).then_some((r, at))
+    });
+    match carried {
+        Some((key, at)) => Err(MurkError::Secret(format!(
+            "refusing to save: this vault still lists {}, who was removed from it at generation {at} on this machine, and it is an older revision (generation {}) — saving would add them back\nnothing was written\nupdate to the vault that removed them (pull, or merge the removal into this branch), then make the change again; to re-add them on purpose, run `murk circle authorize` for them",
+            crate::trust::label(&current.recipients, key),
+            on_disk.generation
+        ))),
+        None => Ok(prior_pin),
+    }
 }
 
 /// A fresh random vault identity: 16 bytes as 32 lowercase hex characters.
@@ -637,20 +670,29 @@ fn announce_new_group_members(original: &types::Murk, current: &types::Murk) {
 }
 
 /// Record this machine's own write in the trust pin: a signed save is accepted
-/// like a trusted load (its non-grant recipients become the trusted signers).
-/// An unsigned save — the key cannot sign — clears `was_signed`, since the
-/// next load here would otherwise refuse the operator's own write. The pin is
-/// re-read under its lock. Best-effort: the vault is already written, so a
-/// pin failure only warns.
+/// as this machine's decision, changing the trusted set by what the save
+/// added and removed relative to `before`, the recipients of the file it
+/// replaced (see [`crate::trust::Acceptance::OwnSave`]). An unsigned save —
+/// the key cannot sign — clears `was_signed`, since the next load here would
+/// otherwise refuse the operator's own write. The pin is re-read under its
+/// lock. Best-effort: the vault is already written, so a pin failure only
+/// warns.
 fn record_own_save(
     vault_path: &str,
     vault: &types::Vault,
     current: &types::Murk,
     registry: &BTreeMap<String, String>,
+    replaced: Option<&types::Vault>,
 ) {
     if !crate::pins::signer_pin_available() {
         return;
     }
+    let before: Option<BTreeSet<String>> = replaced.map(|v| {
+        v.recipients
+            .iter()
+            .map(|r| crate::recipients::canonical_recipient(r).into_owned())
+            .collect()
+    });
     let result = crate::pins::update(vault_path, |prior| {
         let pin = if let Some(sig) = &vault.sig {
             let signature = types::SignatureState::Signed {
@@ -669,7 +711,14 @@ fn record_own_save(
                 loader_can_sign: true,
                 operator_key: None,
             };
-            crate::trust::accepted_pin(&loaded, prior, false, &crate::trust::head_of(vault_path))
+            crate::trust::accepted_pin(
+                &loaded,
+                prior,
+                crate::trust::Acceptance::OwnSave {
+                    before: before.as_ref(),
+                },
+                &crate::trust::head_of(vault_path),
+            )
         } else {
             let Some(prior) = prior else { return Ok(None) };
             if prior.was_signed {

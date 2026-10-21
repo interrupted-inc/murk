@@ -4,7 +4,7 @@
 .SH NAME
 trust \- Review who signed the vault and what changed, then trust it on this machine
 .SH SYNOPSIS
-\fBmurk trust\fR [\fB\-\-yes\fR] [\fB\-\-print\-key\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBmurk trust\fR [\fB\-\-yes\fR] [\fB\-\-print\-key\fR] [\fB\-\-re\-add\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 Review who signed the vault and what changed, then trust it on this machine
 .PP
@@ -16,6 +16,9 @@ Accept without asking (for scripts; review first)
 .TP
 \fB\-\-print\-key\fR
 Print your own trusted\-signer entry (for MURK_TRUSTED_SIGNERS) and signing\-key fingerprint (for teammates to confirm), then exit
+.TP
+\fB\-\-re\-add\fR \fI<KEY>\fR
+Trust a key this machine recorded as removed from the vault again (its public key, or its name in the vault). Repeat for each key; a vault signed by or listing a removed key is never trusted without it
 .TP
 \fB\-\-vault\fR \fI<VAULT>\fR [default: .murk]
 Vault filename
