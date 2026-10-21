@@ -106,19 +106,26 @@ pub enum Refusal {
     /// An age signature whose verifying key differs from the one pinned (or
     /// given in `MURK_TRUSTED_SIGNERS`) for its signer.
     SignerKeyChanged { signer: String },
+    /// An agent grant record names a key that is an operator: a signer this
+    /// machine trusts (or trusted), or a key with a signing-key registry
+    /// entry. Grants get freshly minted keys, so this is tampering — and
+    /// recording it would mark the operator as a grant here.
+    GrantBindsOperator { grant: String, key: String },
 }
 
 impl Refusal {
     /// Whether `murk trust` may accept this refusal. Grant-signed vaults never
     /// are: an agent grant is read-only by design. Nor is a changed verifying
     /// key: an age key's verifying key is derived from its secret, so a
-    /// different one for the same recipient is a forgery.
+    /// different one for the same recipient is a forgery. Nor a grant bound
+    /// to an operator key, which is tampering.
     pub fn acceptable(&self) -> bool {
         !matches!(
             self,
             Refusal::GrantSigner { .. }
                 | Refusal::GrantWithoutRecord { .. }
                 | Refusal::SignerKeyChanged { .. }
+                | Refusal::GrantBindsOperator { .. }
         )
     }
 }
@@ -373,12 +380,74 @@ fn signer_key_refusal(
     }
 }
 
+/// Whether a grant record in `loaded` names an operator key: a signer this
+/// machine trusts or ever trusted (on an operator's own machine, that includes
+/// their own key), or a key with a signing-key registry entry (grants never
+/// sign). The first such grant is tampering.
+fn grant_binding_refusal(loaded: &Loaded<'_>, pin: Option<&TrustPin>) -> Option<Refusal> {
+    let registry: BTreeSet<String> = loaded
+        .registry
+        .keys()
+        .map(|k| canonical_recipient(k))
+        .collect();
+    loaded.grants.iter().find_map(|(name, grant)| {
+        let key = canonical_recipient(&grant.pubkey);
+        let operator = registry.contains(&key)
+            || pin.is_some_and(|p| {
+                !p.grants.contains(&key)
+                    && (p.trusted.contains(&key) || p.ever_trusted.contains(&key))
+            });
+        operator.then(|| Refusal::GrantBindsOperator {
+            grant: name.clone(),
+            key,
+        })
+    })
+}
+
+/// Rule 5 for a signed vault: the signer is not a grant here or in the pin,
+/// and no key the pin knows as a grant is back as a plain recipient. A pinned
+/// grant entry never overrides signer trust this machine recorded.
+fn grant_signer_refusal(
+    loaded: &Loaded<'_>,
+    pin: Option<&TrustPin>,
+    signer: &str,
+) -> Option<Refusal> {
+    let signer_c = canonical_recipient(signer);
+    let current_grants = grant_keys(loaded.grants);
+    let pinned_grants: BTreeSet<&String> = pin
+        .map(|p| {
+            p.grants
+                .iter()
+                .filter(|k| !p.trusted.contains(*k))
+                .collect()
+        })
+        .unwrap_or_default();
+    if current_grants.contains(&signer_c) || pinned_grants.contains(&signer_c) {
+        return Some(Refusal::GrantSigner {
+            signer: signer.to_string(),
+        });
+    }
+    let recipients: BTreeSet<String> = loaded
+        .vault
+        .recipients
+        .iter()
+        .map(|r| canonical_recipient(r))
+        .collect();
+    pinned_grants
+        .into_iter()
+        .find(|k| recipients.contains(*k) && !current_grants.contains(*k))
+        .map(|key| Refusal::GrantWithoutRecord { key: key.clone() })
+}
+
 fn verdict(
     loaded: &Loaded<'_>,
     pin: Option<&TrustPin>,
     external_signers: Option<&TrustedSigners>,
     head: &HeadState,
 ) -> Verdict {
+    if let Some(refusal) = grant_binding_refusal(loaded, pin) {
+        return Verdict::Refused(refusal);
+    }
     let types::SignatureState::Signed { signer, v } = loaded.signature else {
         if pin.is_some_and(|p| p.was_signed) {
             return Verdict::Refused(Refusal::Downgraded);
@@ -393,26 +462,8 @@ fn verdict(
     let signer_c = canonical_recipient(signer);
     let refuse = Verdict::Refused;
 
-    let current_grants = grant_keys(loaded.grants);
-    let pinned_grants = pin.map(|p| &p.grants);
-    if current_grants.contains(&signer_c) || pinned_grants.is_some_and(|g| g.contains(&signer_c)) {
-        return refuse(Refusal::GrantSigner {
-            signer: signer.clone(),
-        });
-    }
-    if let Some(pinned) = pinned_grants {
-        let recipients: BTreeSet<String> = loaded
-            .vault
-            .recipients
-            .iter()
-            .map(|r| canonical_recipient(r))
-            .collect();
-        if let Some(key) = pinned
-            .iter()
-            .find(|k| recipients.contains(*k) && !current_grants.contains(*k))
-        {
-            return refuse(Refusal::GrantWithoutRecord { key: key.clone() });
-        }
+    if let Some(refusal) = grant_signer_refusal(loaded, pin, signer) {
+        return refuse(refusal);
     }
 
     let trusted_pin = pin.filter(|p| p.has_trust());
@@ -594,7 +645,11 @@ pub fn accepted_pin(
 ) -> TrustPin {
     let prior_v2 = prior.filter(|p| p.v >= pins::PIN_VERSION);
     let mut grants: BTreeSet<String> = prior_v2.map(|p| p.grants.clone()).unwrap_or_default();
-    grants.extend(grant_keys(loaded.grants));
+    // A key this machine trusts (or trusted) as a signer is never recorded as
+    // a grant: that would lock its owner out here for good.
+    grants.extend(grant_keys(loaded.grants).into_iter().filter(|k| {
+        !prior_v2.is_some_and(|p| p.trusted.contains(k) || p.ever_trusted.contains(k))
+    }));
     let found = loaded.vault.generation;
     let prior_high = prior_v2.map_or(0, |p| p.generation);
     let generation = if reset_counter && *head == HeadState::NotARepo {
@@ -809,6 +864,11 @@ pub fn refusal_message(
             "vault {vault_path} is signed by {} with a signing key that is not theirs — an age key's signing key cannot change, so this is a forgery\nrestore {vault_path} from git",
             label(loaded.names, signer)
         ),
+        Refusal::GrantBindsOperator { grant, key } => format!(
+            "vault {vault_path} binds agent grant {} to {}, which signs this vault as a teammate — agent grants get freshly minted keys, so it has been tampered with\nnothing from it was recorded; restore {vault_path} from git",
+            crate::validate::show(grant),
+            label(loaded.names, key)
+        ),
     }
 }
 
@@ -1022,6 +1082,42 @@ mod tests {
         assert_eq!(
             verdict(&hw, Some(&pin), None),
             Verdict::Refused(Refusal::Downgraded)
+        );
+    }
+
+    #[test]
+    fn a_grant_bound_to_a_trusted_signer_is_tampering_and_never_pinned() {
+        let pin = pin_for(&Case::new(&[A, B], 1, A));
+        let mut ghost = Case::new(&[A, B], 2, B);
+        ghost.grants.insert(
+            "ghost".into(),
+            types::GrantEntry {
+                pubkey: A.into(),
+                ..Default::default()
+            },
+        );
+        let v = verdict(&ghost.loaded(), Some(&pin), None);
+        assert_eq!(
+            v,
+            Verdict::Refused(Refusal::GrantBindsOperator {
+                grant: "ghost".into(),
+                key: A.into()
+            })
+        );
+        let Verdict::Refused(r) = v else {
+            unreachable!()
+        };
+        assert!(!r.acceptable());
+        // Even if such a vault were recorded (an own save, a re-sign), the
+        // pin keeps A a signer and never a grant.
+        let recorded = accepted_pin(&ghost.loaded(), Some(&pin), false);
+        assert!(!recorded.grants.contains(A));
+        // A pinned grant entry for a trusted signer does not override trust.
+        let mut stale = pin.clone();
+        stale.grants.insert(A.into());
+        assert_eq!(
+            verdict(&Case::new(&[A, B], 2, A).loaded(), Some(&stale), None),
+            Verdict::Trusted
         );
     }
 
