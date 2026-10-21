@@ -17,7 +17,7 @@ Existing secrets tools are either too complex (SOPS, Vault), tied to a runtime (
 ## Design Philosophy
 
 - **Header is public, values are private.** Anyone with repo access can see what keys exist and what they're for. Only authorized recipients can see values.
-- **age does the crypto.** murk handles UX and data structure. No custom crypto.
+- **Standard primitives, murk's own format.** murk uses age for encryption and decryption, BLAKE3 for keyed integrity and signing-key derivation, and Ed25519 for signatures. It implements no custom cryptographic primitives. The vault format and the way it combines these primitives are murk-specific.
 - **One binary, no runtime dependency.** Wrappable from any language via subprocess.
 - **Git is the audit trail.** murk doesn't try to replicate what git already does.
 - **Explicit over magic.** murk never silently overwrites or destroys data.
@@ -26,9 +26,9 @@ Existing secrets tools are either too complex (SOPS, Vault), tied to a runtime (
 
 ## Terminology
 
-- **murk** — the shared layer. Secrets encrypted to all recipients (the implicit `everyone` group).
+- **murk** — the shared layer. Secrets encrypted to every recipient except agent grants (the implicit `everyone` group).
 - **mote** — a private secret. Encrypted to a single recipient's key. Overrides the shared value during export. On the CLI this is the `me` tier (`--group me`).
-- **group** — a named subset of recipients. A secret assigned to a group is encrypted only to that group's members, so a leaked member key can't read secrets outside that member's groups. `everyone` (all recipients) and `me` (just you) are the two reserved, implicit groups; named groups (e.g. `prod`) sit between them.
+- **group** — a named subset of recipients. A secret assigned to a group is encrypted only to that group's members, so a leaked member key can't read secrets outside that member's groups. `everyone` (every recipient except agent grants) and `me` (just you) are the two reserved, implicit groups; named groups (e.g. `prod`) sit between them.
 
 ---
 
@@ -36,14 +36,14 @@ Existing secrets tools are either too complex (SOPS, Vault), tied to a runtime (
 
 | Variable       | Required | Description                                             |
 | -------------- | -------- | ------------------------------------------------------- |
-| `MURK_KEY`     | No       | Raw age private key (`AGE-SECRET-KEY-1...`). Dev-mode convenience — the key is plaintext on disk. |
-| `MURK_KEY_FILE`| Yes      | Path to a private key file. Set by `murk init`. May be a raw age key, an SSH PEM key, or an age plugin identity file with a `# Recipient: age1...` (or `# public key: age1...`) header. |
+| `MURK_KEY`     | No       | Raw age private key (`AGE-SECRET-KEY-1...`). Convenient for development and CI. The key sits in plaintext wherever you set the variable. |
+| `MURK_KEY_FILE`| No       | Path to a private key file. `murk init` writes this reference to `.env`. The file may hold a raw age key, an unencrypted OpenSSH private key, or an age plugin identity file with a `# Recipient: age1...` (or `# public key: age1...`) header. murk refuses a file that is a symlink or readable by group or others. |
 | `MURK_VAULT`   | No       | Vault filename. Defaults to `.murk`.                    |
-| `MURK_STRICT`  | No       | When set to anything but `0`/`false`/`no`/`off` (or empty), fail closed rather than let a secret touch disk: requires `murk edit`'s scratch file to live on a RAM-backed filesystem, and refuses `export`/`get`/`diff --show-values` when stdout is a regular file (plaintext to disk). An unrecognised value turns it on. |
+| `MURK_STRICT`  | No       | When set to anything but `0`/`false`/`no`/`off` (or empty), fail closed rather than let a secret touch disk: turns off stored-key discovery, requires `murk edit`'s scratch file to live on a RAM-backed filesystem, refuses `export`/`get`/`diff --show-values` when stdout is a regular file (plaintext to disk), and refuses a result no key checked (`rotate --list` without a key, a revision shown with an integrity warning). An unrecognised value turns it on. It is not a general guarantee that no plaintext reaches disk. |
 | `MURK_TRUSTED_SIGNERS` | No | Signers trusted to sign the vault, separated by commas or newlines, replacing the local trust pin's set: `age1…:<verifying key>` for an age signer, the public key line for an ssh-ed25519 signer (`murk trust --print-key` prints the entry). For CI runners and other machines without a pin. See Trust. |
 | `MURK_NO_SIGNER_PIN` | No | When present, murk neither reads nor writes the local trust pin; trust then comes only from `MURK_TRUSTED_SIGNERS`. |
 
-Your identity is your key. murk derives your public key from `MURK_KEY` or `MURK_KEY_FILE` to determine which private secrets are yours and to identify you in the recipient list. Set one, not both: when both are non-empty murk refuses to resolve a key instead of picking one, and an empty value counts as unset.
+Your identity is your key. murk derives your public key from `MURK_KEY` or `MURK_KEY_FILE` to determine which private secrets are yours and to identify you in the recipient list. Set one, not both: when both are non-empty murk refuses to resolve a key instead of picking one, and an empty value counts as unset. A decrypting command needs an identity. Set either key variable, or rely on stored-key discovery (see Discovery below), which is off in strict and agent mode.
 
 ### Hardware-backed identities
 
@@ -54,22 +54,23 @@ When `MURK_KEY_FILE` points at an age plugin identity file, murk uses the hardwa
 AGE-PLUGIN-YUBIKEY-1Q9WFTQQVZN3FASCJ3N9WEHUMFCYMCQSA2F8YVRMMGY6N76C6DMC6A8FTMP
 ```
 
-A recipient header is required — murk reads it to determine the recipient without spawning the plugin. murk accepts either `# Recipient:` (what `age-plugin-yubikey` writes) or `# public key:` (what age x25519/SSH identity files use), case-insensitively. The `AGE-PLUGIN-<NAME>-1...` line is the opaque pointer the plugin binary understands. On decrypt, murk invokes `age-plugin-<name>` (which must be on `$PATH`) and the plugin may prompt the user for physical consent (touch, PIN). Plugin identities have no BIP39 recovery phrase; `murk recover` errors on them. Back up a second hardware device as a vault recipient instead.
+A recipient header is required — murk reads it to determine the recipient without spawning the plugin. murk accepts `# Recipient:` (written by `age-plugin-yubikey`) or `# public key:` (written by `age-keygen`), in any letter case. The `AGE-PLUGIN-<NAME>-1...` line is the opaque pointer the plugin binary understands. On decrypt, murk invokes `age-plugin-<name>` (which must be on `$PATH`) and the plugin may prompt the user for physical consent (touch, PIN). Plugin identities have no BIP39 recovery phrase; `murk recover` errors on them. Back up a second hardware device as a vault recipient instead.
 
 Setting `MURK_KEY` (the inline env var) to an `AGE-PLUGIN-...` string is rejected — bare plugin identities don't carry the recipient pubkey, so murk can't resolve private secrets without spawning the plugin. Use a file path via `MURK_KEY_FILE`.
 
 ### Key storage
 
-`murk init` writes the secret key to `~/.config/murk/keys/<vault-hash>` (chmod 600) and writes a `MURK_KEY_FILE` reference to `.env`:
+`murk init` writes a new secret key to `~/.config/murk/keys/<vault-hash>` (chmod 600), or reuses the key already stored there, and writes a `MURK_KEY_FILE` reference to `.env` (created with mode 0600):
 
 ```
-export MURK_KEY_FILE=/home/alice/.config/murk/keys/a1b2c3d4e5f6a7b8
-MURK_VAULT=prod.murk  # optional
+export MURK_KEY_FILE='/home/alice/.config/murk/keys/a1b2c3d4e5f6a7b8'
 ```
+
+To use a non-default vault name, add `export MURK_VAULT=prod.murk` to `.env` or your shell yourself. `murk init` does not write it.
 
 The key never appears in the project directory. `.murk` should always be committed.
 
-**Discovery.** With neither `MURK_KEY` nor `MURK_KEY_FILE` set, murk looks up `keys/<vault-hash>` itself, where the hash covers the vault's absolute path. A git worktree puts the same committed vault at a different absolute path, so murk also accepts the key stored for that vault in a sibling worktree of the same repository — the main checkout first, then linked worktrees in a stable order. A fresh worktree therefore needs no key provisioning. Membership is read straight out of git's own worktree metadata (never a `git` subprocess) and verified in both directions: the current directory must be a checkout the repository records, and each sibling must resolve back to the same common directory. A `.git` entry is a file anyone can write, so an unverified claim of kinship — like a copied vault under a planted `.git` pointer — resolves to no key at all. Discovery of any kind is off under `MURK_STRICT` and in agent context.
+**Discovery.** With neither `MURK_KEY` nor `MURK_KEY_FILE` set, murk looks up `keys/<vault-hash>` itself, where the hash covers the vault's absolute path. A git worktree puts the same committed vault at a different absolute path, so murk also accepts the key stored for that vault in a sibling worktree of the same repository — the main checkout first, then linked worktrees in a stable order. A fresh worktree therefore needs no key provisioning. Membership is read straight out of git's own worktree metadata (never a `git` subprocess) and verified in both directions: the vault's checkout must be one the repository records, and each sibling must resolve back to the same common directory. A `.git` entry is a file anyone can write, so an unverified claim of kinship — like a copied vault under a planted `.git` pointer — resolves to no key at all. Discovery of any kind is off under `MURK_STRICT` and in agent context.
 
 ---
 
@@ -87,7 +88,8 @@ A `.murk` file is a single JSON document. All fields except encrypted values and
   "generation": 12,
   "recipients": [
     "age1abc...",
-    "age1xyz..."
+    "age1xyz...",
+    "age1agent..."
   ],
   "schema": {
     "DATABASE_URL": {
@@ -119,7 +121,10 @@ A `.murk` file is a single JSON document. All fields except encrypted values and
       }
     },
     "OPENAI_KEY": {
-      "shared": "<base64 age ciphertext>"
+      "shared": "<base64 age ciphertext>",
+      "scoped": {
+        "age1agent...": "<base64 age ciphertext>"
+      }
     }
   },
   "meta": "<base64 age ciphertext>",
@@ -143,18 +148,18 @@ The `version` field is `MAJOR.MINOR` or `MAJOR.MINOR.PATCH` (decimal, no leading
 
 ### Load-time validation
 
-A `.murk` file arrives through git and is untrusted. Every reader (the working vault, git revisions read by `diff`, and all three merge-driver inputs) checks each field against an allowlist and refuses the whole vault on the first failure, naming the field. `murk` applies the same checks before it writes, so it never commits a vault it cannot load.
+A `.murk` file arrives through git and is untrusted. Every reader (the working vault, git revisions read by `diff`, and all three merge-driver inputs) checks each field against an allowlist and refuses the whole vault on the first failure, naming the field. `murk` runs the same checks before it writes a vault, so it never writes one it cannot load.
 
 - File size: at most 64 MiB, checked before parsing.
 - `version`: as above.
-- `created` and the schema `created`/`updated`/`expires_at`/`revoked_at`: RFC 3339 timestamps.
+- `created`, the schema `created`/`updated`/`expires_at`/`revoked_at`, and the meta grant `issued_at`/`expires_at`: RFC 3339 timestamps.
 - Key names in `schema`, `secrets`, and grant scopes: `[A-Za-z_][A-Za-z0-9_]*`.
 - `recipients`, `scoped` keys, `agents` keys, the `sig` signer, and every pubkey in the meta: a public key that murk can encrypt to (age X25519, `ssh-ed25519`/`ssh-rsa`, or an age plugin recipient).
 - `recipients`: each key once, compared by canonical spelling (lowercase for age, `type blob` for SSH). murk ≤ 0.13 compared exact strings and could list one key twice (an SSH key with and without its comment), so a 2.x header may repeat a key: it loads, `murk verify` reports it, `murk circle revoke` by either spelling removes every copy, and every save writes each recipient once in its canonical spelling. In a 3.x header a repeated key fails the load.
 - `grouped` keys and meta group names: 1–64 characters of `[A-Za-z0-9_-]`, and not a reserved tier alias (`everyone`, `all`, `shared`, `me`, `self`, `mine`). Meta grant names: the same character rule.
 - `rotation_interval_days`: at least 1.
-- Ciphertexts (`shared`, `scoped`/`grouped` values, `agents` values, `meta`, signer keys, signature): standard base64 with padding. `shared` and `meta` may be empty.
-- Free text (`vault_name`, `repo`, descriptions, examples, tags, `agent_allow_tags`, display names): no control characters other than tab, CR, and LF.
+- Ciphertexts (`shared`, `scoped`/`grouped` values, `agents` values, `meta`, signer keys, signature): standard base64 with padding. `shared` and `meta` may be empty: murk writes an empty `shared` for a secret with no shared value (a group-only or private-only secret) and an empty `meta` in a skeleton. The check is syntax only; passing it says nothing about whether a ciphertext decrypts.
+- Free text (`vault_name`, `repo`, descriptions, examples, tags, `agent_allow_tags`, display names): no control characters other than tab, CR, and LF. A write is stricter. Text that is new or changed must hold no control character other than tab (a line feed is allowed in descriptions only), no bidi control (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069), no zero-width space (U+200B, U+2060 to U+2064) and no byte-order mark (U+FEFF). The error names the field and never echoes the text. Text the vault already held in the same place is exempt, so a vault that carries such text still loads and stays writable while nothing new of the kind gets in. `murk verify` reports each such field as a finding, and `info`, `circle`, `circle revoke`, `init`, `trust` and `diff` escape these characters (as `\u{202e}`) when they print header text.
 - Meta `mac_key`: 64 hex characters. `github_pins`: GitHub usernames (1–39 of `[A-Za-z0-9-]`, written lowercase and matched case-insensitively) mapped to `SHA256:` fingerprints — the SHA-256 of the decoded key blob, as `ssh-keygen -l` prints it. Pins written before 0.14 hash the key text instead; they are still matched and are rewritten on the next `authorize`.
 
 The MAC value is not interpreted here, and signature bytes are only checked as base64. The integrity checks below verify both, and a failed check stops the load.
@@ -190,9 +195,9 @@ The policy is covered by the integrity MAC (see Integrity), so a keyed load catc
 
 ### Secrets
 
-Each secret has a `shared` field containing age ciphertext encrypted to all recipients (the `everyone` group), an optional `scoped` map of recipient pubkey to age ciphertext encrypted to only that recipient (the **private** / `me` tier — the on-disk field is named `scoped` for compatibility with vaults written before the tier was renamed), and an optional `grouped` map of group name to age ciphertext encrypted to that group's current members.
+Each secret has a `shared` field containing age ciphertext encrypted to every recipient except agent grants (the `everyone` group), an optional `scoped` map of recipient pubkey to age ciphertext encrypted to only that recipient (the **private** / `me` tier — the on-disk field is named `scoped` for compatibility with vaults written before the tier was renamed), and an optional `grouped` map of group name to age ciphertext encrypted to that group's current members.
 
-A secret's base tier is exactly one of: shared (`everyone`), or a single named group (in which case `shared` is empty and `grouped` holds one entry). The `me` tier is a per-identity override layered on top. Group *names* are plaintext, like key names; group *membership* lives in the encrypted meta. age determines readability — a non-member simply can't decrypt a `grouped` ciphertext.
+A secret has at most one base tier: shared (`everyone`), or a single named group (in which case `shared` is empty and `grouped` holds one entry). It can instead have only private (`me`) values, with an empty `shared` and no `grouped` entry. The `me` tier is a per-identity override layered on top of any base value. Group *names* are plaintext, like key names; group *membership* lives in the encrypted meta. age determines readability — a non-member simply can't decrypt a `grouped` ciphertext.
 
 During `murk export` / `get`, resolution is: a personal private (`me`) override first, then a named-group value the current identity can read, then the shared value.
 
@@ -206,10 +211,11 @@ The `meta` field is a single age blob encrypted to every recipient except agent 
 {
   "recipients": {
     "age1abc...": "mickey@example.com",
-    "age1xyz...": "alice@example.com"
+    "age1xyz...": "alice@example.com",
+    "age1agent...": "agent:codex"
   },
   "mac": "blake3v8:abc123...",
-  "hmac_key": "0a1b2c3d...",
+  "mac_key": "0a1b2c3d...",
   "signers": {
     "age1abc...": "base64-ed25519-verifying-key"
   },
@@ -219,11 +225,14 @@ The `meta` field is a single age blob encrypted to every recipient except agent 
   "grants": {
     "codex": {
       "pubkey": "age1agent...",
-      "scope": ["STRIPE_KEY"],
+      "scope": ["OPENAI_KEY"],
       "issued_at": "2026-06-16T00:00:00Z",
       "expires_at": "2026-06-16T02:00:00Z",
       "issuer": "age1abc..."
     }
+  },
+  "github_pins": {
+    "octocat": ["SHA256:abc..."]
   }
 }
 ```
@@ -232,13 +241,15 @@ The `meta` field is a single age blob encrypted to every recipient except agent 
 
 `mac` is a keyed integrity hash over the vault's encrypted content (see Integrity below).
 
-`hmac_key` is a hex-encoded 32-byte random key used for BLAKE3 keyed hashing. Generated fresh on each save.
+`mac_key` is a hex-encoded 32-byte random key used for BLAKE3 keyed hashing. murk generates a fresh one on every save. Vaults written by early versions call it `hmac_key`; murk still reads that name.
 
-`signers` is the signer registry: it maps a recipient pubkey to the base64 Ed25519 verifying key that recipient's age key signs with, recorded when that recipient signs (ssh-ed25519 keys are never listed: the recipient string is the verifying key). The vault's author writes it, so loaders believe an entry only as described in Trust below. It is omitted when no age key has signed. Vaults written before 3.0 also carry `sig` here: a signed-view-1 signature with `signer`, `v` (`1`), and `sig` (base64). murk now writes the signature to the top-level `sig` field instead and never writes one into the meta. See Signatures below.
+`signers` is the signer registry: it maps a recipient pubkey to the base64 Ed25519 verifying key that recipient's age key signs with, recorded when that recipient signs (ssh-ed25519 keys are never listed: the recipient string is the verifying key). Each save writes the entries this machine has pinned (or, with no pin, the loaded vault's) for current recipients, plus the writer's own, so the registry stays across writes by a key that cannot sign. The vault's author writes it, so loaders believe an entry only as described in Trust below. It is omitted when empty. Vaults written before 3.0 also carry `sig` here: a signed-view-1 signature with `signer`, `v` (`1`), and `sig` (base64). murk now writes the signature to the top-level `sig` field instead and never writes one into the meta. See Signatures below.
 
 `groups` maps a group name to its member pubkeys (a subset of `recipients`). Stored here, not in the plaintext header, so org structure — who is in which group — does not leak. Members are covered by the MAC. The field is omitted entirely when the vault has no named groups, keeping group-free vaults byte-identical to pre-groups murk.
 
-`grants` maps an agent grant name to its metadata: the agent's ephemeral `pubkey` (also a `recipients` entry), the `scope` of keys it may read, `issued_at`/`expires_at` timestamps, and the `issuer` pubkey. The agent is excluded from the `everyone` layer and from the meta — its access is the set of `scoped` ciphertexts encrypted to its pubkey, one per scope key, plus its own record in `agents`. Stored here (not in the header) so an agent's existence and scope don't leak. Covered by the MAC so TTL/scope/issuer can't be altered undetected. The field is omitted entirely when the vault has no grants. The `expires_at` TTL is enforced by the murk binary at read time — an expired grant, or one with no or an unreadable `expires_at`, fails closed — though not cryptographically (see THREAT_MODEL.md). The next save removes an expired grant (record, recipient and scoped copies) and marks its keys as owed a rotation.
+`grants` maps an agent grant name to its metadata: the agent's ephemeral `pubkey` (also a `recipients` entry), the `scope` of keys it may read, `issued_at`/`expires_at` timestamps, and the `issuer` pubkey. The agent is excluded from the `everyone` layer and from the meta — its access is the set of `scoped` ciphertexts encrypted to its pubkey, one per scope key, plus its own record in `agents`. Stored here (not in the header), so the grant's name, timestamps, issuer and recorded scope list stay out of the plaintext. Covered by the MAC so TTL/scope/issuer can't be altered undetected. The agent's pubkey is still a plaintext `recipients` entry, and its `scoped` ciphertexts show which secrets it can read. The field is omitted entirely when the vault has no grants. The `expires_at` TTL is enforced by the murk binary at read time — an expired grant, or one with no or an unreadable `expires_at`, fails closed — though not cryptographically (see THREAT_MODEL.md). The next save removes an expired grant (record, recipient and scoped copies) and marks its keys as owed a rotation.
+
+`github_pins` maps a GitHub username to the SHA-256 fingerprints of the keys that `circle authorize github:USER` fetched. On the next authorize for that user, murk compares them and stops if the set changed (unless you pass `--force`). The signature covers `github_pins`; the MAC does not. The field is omitted when empty.
 
 A grant record whose `pubkey` is the key that opened the meta was written by a meta writer: grants never open the meta. When that key is an operator key the trust rules know (rule 5 under Trust), the vault is refused as tampering. Otherwise the record is ignored on load and dropped by the next save, and it never makes that key a grant.
 
@@ -252,7 +263,7 @@ The MAC is a BLAKE3 keyed hash covering, in order:
    - For each scoped entry (sorted by pubkey): the pubkey followed by `\x01`, the scoped ciphertext followed by `\x00`
    - (v6 and later) For each grouped entry (sorted by group name): `\x03`, the group name followed by `\x00`, the grouped ciphertext followed by `\x00`
 3. **Recipient pubkeys** — sorted, each followed by `\x00`
-4. **Schema** — for each key (sorted): `\x02`, then the key name, description, and example (empty if unset) each followed by `\x00`, then each tag followed by `\x00`, then the lifecycle fields `created`, `updated`, `rotation_interval_days` (decimal text), and `expires_at` — each emitted as its bytes (empty if unset) followed by `\x00`
+4. **Schema** — for each key (sorted): `\x02`, then the key name, description, and example (empty if unset) each followed by `\x00`, then each tag, in the order stored in the vault, followed by `\x00`, then the lifecycle fields `created`, `updated`, `rotation_interval_days` (decimal text), and `expires_at` — each emitted as its bytes (empty if unset) followed by `\x00`
 5. **Group definitions** (v6 and later) — for each group (sorted by name): `\x04`, the group name followed by `\x00`, then each member pubkey (sorted) prefixed by `\x05`
 6. **Grant definitions** (v7 and later) — for each grant (sorted by name): `\x06`, then the grant name, agent pubkey, `issued_at`, `expires_at`, and issuer each followed by `\x00`, then each scope key (sorted) prefixed by `\x07`
 7. **Policy** (v8 and later, only when a policy is set) — `\x08` opens the policy block, then each agent allow-tag (sorted) is length-prefixed (8-byte big-endian length + bytes) so tag contents can't forge a boundary
@@ -260,11 +271,11 @@ The MAC is a BLAKE3 keyed hash covering, in order:
 9. **Header identity** (v10 only) — `\x0A`, then `vault_name`, `repo`, `created`, and `vault_id` (empty if unset), each as an 8-byte big-endian length followed by its bytes, then `generation` as an 8-byte big-endian integer (`0` if unset)
 10. **Agent blobs** (v10 only) — for each `agents` entry (sorted by pubkey): `\x0B`, then the pubkey and the ciphertext, each as an 8-byte big-endian length followed by its bytes
 
-murk writes v10, prefixed `blake3v8:`, on every keyed save, so every vault upgrades on its next write. The digest is stored as the `mac` field in meta, and the 32-byte BLAKE3 key as `hmac_key` in the same encrypted meta blob.
+murk writes v10, prefixed `blake3v8:`, on every keyed save, so every vault upgrades on its next write. The digest is stored as the `mac` field in meta, and the 32-byte BLAKE3 key as `mac_key` in the same encrypted meta blob.
 
 On load, murk verifies the MAC. Older prefixes are accepted for vaults written before 3.0: `sha256:` (v1, no scoped coverage), `sha256v2:` (v2, unkeyed), `blake3:` (v3, no schema coverage), `blake3v2:` (v4, no lifecycle-metadata coverage), `blake3v3:` (v5, no group coverage), `blake3v4:` (v6, no grant coverage), `blake3v5:` (v7, no policy coverage), `blake3v6:` (v8, no revoked-at coverage), and `blake3v7:` (v9, no header-identity or agent-blob coverage). Each was written only when the vault needed it, so older murk saves of simpler vaults used older prefixes. A vault is rejected under an older prefix that doesn't cover what it carries, so an attacker can't strip coverage (for example, clear a pending-rotation flag) by downgrading the MAC: groups need v6 or later, grants v7, a policy v8, a revoked-at marker v9, and a 3.x `version`, a `vault_id`, a non-zero `generation`, or an `agents` entry v10. A `blake3vN:` prefix newer than `blake3v8:` fails the load with "written by a newer murk" rather than as tampering.
 
-Because both the MAC and its key live inside the encrypted meta blob, only authorized recipients can compute or verify the hash. This makes the MAC a keyed integrity check for recipients and a tamper/corruption detector — but it is **not** a defense against a deliberate attacker with write access to the repo. age encryption needs only the recipients' *public* keys (which are in the plaintext header), so a repo-writer can mint a fresh `hmac_key`, recompute a valid MAC over tampered content, and re-encrypt the meta blob. Authorship integrity is provided by the signature below, not the MAC.
+Because both the MAC and its key live inside the encrypted meta blob, only authorized recipients can compute or verify the hash. This makes the MAC a keyed integrity check for recipients and a tamper/corruption detector — but it is **not** a defense against a deliberate attacker with write access to the repo. age encryption needs only the recipients' *public* keys (which are in the plaintext header), so a repo-writer can mint a fresh `mac_key`, recompute a valid MAC over tampered content, and re-encrypt the meta blob. Authorship integrity is provided by the signature below, not the MAC.
 
 ### Signatures
 
@@ -278,7 +289,7 @@ murk signs the vault with an Ed25519 key so that a change by someone without a r
 
 **Signed message (view 2).** murk writes view 2: the domain tag `murk.vault.sig.v2\n` followed by the JSON serialization of the vault file with the top-level `sig` field omitted, fields in file order. That covers every header field (`version`, `created`, `vault_name`, `repo`, `vault_id`, `generation`, `recipients` in stored order, `schema`, `policy`), the `agents` and `secrets` ciphertexts, and the `meta` ciphertext. Because the meta ciphertext is covered, the decrypted meta (MAC, names, `signers`, groups, grants, pins) is authentic too, and the message is rebuilt from the file alone. The signature is computed after the meta is encrypted and stored in the top-level `sig` (`signer`, `v` = `2`, base64 `sig`).
 
-**Signed message (view 1).** Vaults written before 3.0 carry a view-1 signature inside the meta: a domain-tagged (`murk.vault.sig.v1\n`) canonical JSON serialization of a signed view covering `version`, sorted `recipients`, `schema`, `secrets` (all tiers), `policy`, `groups`, `grants`, `github_pins`, and the `signers` registry. It does not cover `vault_name`, `repo`, `created`, `vault_id` or `generation`. It excludes `sig` and the MAC/`hmac_key`. murk still verifies view 1, only on a 2.x vault without a `vault_id` or `generation`, and replaces it with view 2 on the next save.
+**Signed message (view 1).** Vaults written before 3.0 carry a view-1 signature inside the meta: a domain-tagged (`murk.vault.sig.v1\n`) canonical JSON serialization of a signed view covering `version`, sorted `recipients`, `schema`, `secrets` (all tiers), `policy`, `groups`, `grants`, `github_pins`, and the `signers` registry. It does not cover `vault_name`, `repo`, `created`, `vault_id` or `generation`. It excludes `sig` and the MAC/`mac_key`. murk still verifies view 1, only on a 2.x vault without a `vault_id` or `generation`, and replaces it with view 2 on the next save.
 
 `serde_json` is not a formal canonical encoding, but it does not need to be here: the same serializer both signs and verifies, the signed view holds only strings, integers, sorted maps, and lists (no floats or other ordering ambiguity), and no second implementation has to reproduce these bytes. Its deterministic output is therefore sufficient — a formal canonical form (CBOR/DER) would add nothing.
 
@@ -354,11 +365,12 @@ A grant load reads and writes no trust pin, so it has no rollback check. Every w
 
 Interactive setup. Prompts for a display name. Then:
 
-1. Generates an age keypair via BIP39 (24-word mnemonic encodes the key directly)
-2. Writes the secret key to `~/.config/murk/keys/<vault-hash>` with mode 0600
-3. Writes `export MURK_KEY_FILE=<path>` to `.env` (creates if missing, warns if key already present)
-4. Creates the `.murk` vault with user's pubkey as first recipient, a fresh `vault_id` and `generation` 1, signed by the new key, and records it in the local trust pin with the creator as its trusted signer
-5. Prints BIP39 24-word recovery phrase to stderr
+1. Finds your key: `MURK_KEY` or `MURK_KEY_FILE` from the environment, then the key stored at `~/.config/murk/keys/<vault-hash>` for this checkout or for the same vault in a sibling worktree (the lookup under Discovery). Only when neither exists does it generate an age keypair via BIP39 (24-word mnemonic encodes the key directly) and write the secret key there with mode 0600. The key file is created exclusively, so init never overwrites one
+2. For a newly generated key, prints the BIP39 24-word recovery phrase to stderr. A reused key prints none (use `murk recover`)
+3. Writes `export MURK_KEY_FILE='<path>'` to `.env` (creates it if missing). It never writes an inline `MURK_KEY`, and in strict or agent mode it never writes a `MURK_KEY_FILE` path from the environment. If `.env` already has a `MURK_KEY` or `MURK_KEY_FILE` line, a reused key leaves that line as it is. If init must generate a new key, it asks before replacing that line and aborts unless you answer yes
+4. Creates the `.murk` vault with your pubkey as the first recipient, a fresh `vault_id` and `generation` 1, signed by your key when that key can sign, and records it in the local trust pin with the creator as its trusted signer
+
+If the vault already exists, init does not change it. It uses the same key lookup and writes `.env` by the same rules. Then it reports whether the key is a recipient: a recipient is told to run `murk trust` once per machine if this machine has no trust pin for the vault yet, and a key that is not a recipient prints its public key and, for an age or ssh-ed25519 key, its signing-key fingerprint, to send to someone who can authorize it. init never replaces a stored key file. To get a new identity, move the key file away first. In strict or agent mode, init neither uses nor replaces a stored key: with no key in the environment and a stored key present (here or in a sibling worktree), it refuses. Set `MURK_KEY_FILE` to that path to use it.
 
 ---
 
@@ -406,7 +418,7 @@ Removes a key from the vault (shared value, schema entry, and all private entrie
 
 ### `murk get KEY [--vault NAME]`
 
-Prints a single decrypted value to stdout. Scoped values take priority over shared values. Exits with code 1 if key not found.
+Prints a single decrypted value to stdout. Scoped values take priority over shared values. Exits with code 1 if key not found. On a terminal, control and invisible characters in the value are escaped, except tabs and newlines. Piped output keeps the exact bytes.
 
 ---
 
@@ -428,9 +440,11 @@ Sets metadata for a key in the plaintext schema. Does not touch encrypted values
 
 Opens secrets in `$EDITOR`. With KEY, edits a single value; without, edits all secrets as `KEY=VALUE` lines. With `--scoped`, edits private overrides (motes) instead of shared values; with `--group NAME`, edits the values for that named group (you must be a member). An edited value stays in the tier you edited it in. If a group you are not a member of also holds the key, murk refuses to change its shared or group value, as `murk add` does. A new line for a key that is in a different tier is written as `murk add` writes it: without a tier flag, the key keeps its tier; with a tier flag, the key moves to that tier.
 
-The plaintext buffer is written to a mode-0600 temp file (preferring `XDG_RUNTIME_DIR`), then overwritten with zeros and deleted after the editor exits. An empty value or non-zero editor exit aborts without saving.
+murk writes the plaintext buffer to a temp file (mode 0600 on Unix). It uses `XDG_RUNTIME_DIR` when that is a directory, then `/dev/shm` when it is RAM-backed, then the system temp directory. If that directory is not RAM-backed, murk warns that the wipe is best effort. It runs the editor (`EDITOR`, then `VISUAL`, then `vi`). The editor does not receive `MURK_KEY` or `MURK_KEY_FILE`. On Unix, murk runs it through `sh`, as git does, so the value can carry arguments such as `code --wait`, and the editor runs in its own process group. On Unix, after the editor exits, murk stops any process left in that group (SIGTERM, then SIGKILL after two seconds). Then murk overwrites the file with zeros and deletes it. The wipe also runs when murk returns an error or unwinds a panic, including editor failure and signals murk catches. SIGKILL, an abort or a power loss skip it. For a single key, an empty value or a non-zero editor exit aborts without saving. In bulk mode a non-zero exit aborts.
 
-The overwrite-and-delete is best-effort — it can't undo a write to a journaled or copy-on-write disk, and editors leave their own swap files behind. When `MURK_STRICT` is set, `edit` requires the temp file to live on a RAM-backed filesystem (tmpfs/ramfs) and aborts before launching the editor otherwise, so the secret never reaches persistent storage. Default systems without a RAM-backed temp dir (e.g. macOS) keep the best-effort behavior; use `add`/`rotate`/`import` from stdin to avoid the editor entirely.
+The buffer uses `.env` quoting. The bulk buffer has one `KEY=VALUE` line per secret. murk writes a value bare when that is safe, and otherwise in double quotes on one line, with newlines, control characters, invisible characters and whitespace other than a space escaped. Double-quoted values decode `\\`, `\"`, `\n`, `\r`, `\t` and `\u{HEX}`, and single-quoted values are literal. The single-key buffer has a header that ends with the line `# ---- the value starts below this line ----`. Everything after that line is the value, `#` lines included. The value may be quoted, or pasted as is (trimmed, and it may span lines). `""` sets an empty value. murk refuses to save a buffer it cannot read (a line without `=`, an invalid or duplicate key, or an unclosed quote), and the error names only the line number. It also refuses to save if the vault file changed on disk while the editor was open.
+
+The wipe is best effort. It cannot undo a write to a journaled or copy-on-write disk, and editors may leave swap files. With `MURK_STRICT` set, `edit` aborts before it starts the editor unless the scratch file is on a RAM-backed filesystem (tmpfs or ramfs). Without `MURK_STRICT`, murk uses the best-effort wipe on any filesystem. A default macOS setup has no RAM-backed temp directory, so strict `edit` fails there. To avoid the editor altogether, pipe values into `add` or `rotate`, or load them from a file with `import`.
 
 ---
 
@@ -481,7 +495,7 @@ The child runs supervised, not `exec`-ed: its stdout and stderr are pipes, and e
 
 ### `murk agent grant --name NAME --only KEY [--ttl DUR] [--renew] [--out PATH [--force]] [--vault NAME]`
 
-Mints a fresh ephemeral age identity and gives it read access to exactly the `--only` keys (repeatable, required) — never the operator's own key. The agent becomes a vault recipient and gets a private (per-recipient) ciphertext of each `--only` key's shared value and its own record in `agents`; it is excluded from the `everyone` layer and is not a recipient of the meta. Records grant metadata (scope, TTL, issuer) in the encrypted meta. A live grant name is refused unless `--renew` is passed, which revokes the existing key and mints the replacement in one vault write. `--ttl` accepts `30m`/`2h`/`7d` (default `2h`), at most `365d`; a longer TTL is refused. Reads fail closed after expiry, though the enforcement is binary-level, not cryptographic (see THREAT_MODEL.md). The agent key is written to `~/.config/murk/agent-keys/<vault-hash>-NAME` (or `--out PATH`, or `--out -` to stream it to stdout), always owner-only (`0600`): it is written to a temporary file beside the destination and renamed into place only after the vault is saved, so a failed save leaves an existing key file untouched. `--out PATH` refuses a file that already exists — it may be the operator's own key — unless `--force` is passed, and refuses before the vault changes; the default path is murk's own slot for the grant and is replaced on renewal. The key file is headed by `# murk-trusted-signer:` lines (see Agent grants). Run the agent with `MURK_KEY_FILE` pointing at that key and `MURK_STRICT=1` so it can't fall back to the operator's stored key.
+Mints a fresh ephemeral age identity and gives it read access to exactly the `--only` keys (repeatable, required) — never the operator's own key. The agent becomes a vault recipient and gets a private (per-recipient) ciphertext of each `--only` key's shared value and its own record in `agents`; it is excluded from the `everyone` layer and is not a recipient of the meta. Records grant metadata (scope, TTL, issuer) in the encrypted meta. A live grant name is refused unless `--renew` is passed, which revokes the existing key and mints the replacement in one vault write. `--ttl` takes a positive number with a unit of `s`, `m`, `h` or `d`, such as `30m`, `2h` or `7d` (default `2h`), at most `365d`; a longer TTL is refused. Reads fail closed after expiry, though the enforcement is binary-level, not cryptographic (see THREAT_MODEL.md). The agent key is written to `~/.config/murk/agent-keys/<vault-hash>-NAME` (or `--out PATH`, or `--out -` to stream it to stdout), always owner-only (`0600`): it is written to a temporary file beside the destination and renamed into place only after the vault is saved, so a failed save leaves an existing key file untouched. `--out PATH` refuses a file that already exists — it may be the operator's own key — unless `--force` is passed, and refuses before the vault changes; the default path is murk's own slot for the grant and is replaced on renewal. The key file is headed by `# murk-trusted-signer:` lines (see Agent grants). Run the agent with `MURK_KEY_FILE` pointing at that key and `MURK_AGENT=1`. `MURK_AGENT=1` forces strict mode, so the process cannot fall back to the operator's stored key.
 
 ---
 
@@ -513,7 +527,7 @@ See `docs/ai-agents.md` for setup (`murk agent init`) and a verify snippet.
 
 ### `murk import [FILE] [--group NAME] [--vault NAME]`
 
-Imports secrets from a `.env` file. Parses `KEY=VALUE` lines (supports `export` prefix, single/double quotes). Skips `MURK_*` keys with a warning. Invalid key names are skipped with a warning. If keys already exist, murk refuses the import unless you give `--force`. `--group` assigns all imported secrets to a tier (`everyone`, `me`, or a named group), as for `murk add`. Without `--group`, each existing key keeps its tier and new keys are shared. If murk refuses any key (for example, a key that a group you are not a member of holds), it imports nothing.
+Imports secrets from a `.env` file. Each entry is `KEY=VALUE`, optionally prefixed with `export `. Bare values are taken literally and trimmed. Double-quoted values decode `\\`, `\"`, `\n`, `\r`, `\t` and `\u{HEX}`, single-quoted values are literal, and both may span lines. A bare value that contains ` #` keeps the `#` as part of the value, and murk prints a notice for that line. An unclosed quote aborts the import with nothing imported. murk skips every `MURK_*` name, lines without `=` and invalid key names, with a notice that gives the line number and never the value. If a key appears twice, murk keeps the later value and prints `line N: KEY is already set on line M; the later value is kept`, again without the value. If keys already exist, murk refuses the import unless you give `--force`. `--group` assigns all imported secrets to a tier (`everyone`, `me`, or a named group), as for `murk add`. Without `--group`, each existing key keeps its tier and new keys are shared. If murk refuses any key (for example, a key that a group you are not a member of holds), it imports nothing.
 
 ---
 
@@ -545,7 +559,7 @@ Lists all recipients. With `MURK_KEY`, shows display names from the encrypted me
 
 ### `murk circle authorize PUBKEY [--name NAME] [--group NAME] [--vault NAME]`
 
-Adds a new recipient. Re-encrypts all shared secrets to include the new public key. Accepts `age1...`, `ssh-ed25519 ...`, or `github:username` formats. With `--group`, also adds the new recipient(s) to that group in the same step (you must be a member of the group).
+Adds a new recipient. Re-encrypts all shared secrets to include the new public key. Accepts `age1...`, `ssh-ed25519 ...`, or `github:username` formats. With `--group`, also adds the new recipient(s) to that group in the same step (you must be a member of the group). murk refuses `ssh-rsa` recipients, however the key is spaced or commented, unless you pass `--allow-ssh-rsa` (see RUSTSEC-2023-0071). For `github:username`, it skips RSA keys with a warning and refuses only when every key is RSA.
 
 ---
 
@@ -593,7 +607,7 @@ Removes the policy. Agent mode becomes unrestricted again.
 
 ### `murk circle revoke RECIPIENT [--rotate] [--values-from FILE] [--vault NAME]`
 
-Removes a recipient by pubkey or display name. Re-encrypts all shared secrets without their key. Removes their private entries.
+Removes a recipient by pubkey or display name. Re-encrypts all shared secrets without their key. Removes their private entries. murk refuses to revoke your own key, whether you name it directly or through your display name, before it prompts or writes anything. Another recipient has to revoke you.
 
 Lists the secrets the revoked recipient had access to. With `--rotate`, prompts for a new value for each value they could read, in the same session, and re-encrypts it in its own tier: the shared value stays shared, and a value in a group they belonged to stays in that group, encrypted to its remaining members. Values they could not read (other groups, your personal overrides) are not prompted for. A group value the revoked recipient could read but you can't (you are not in that group) can't be re-encrypted by you: its current ciphertext still opens with their key until a member of that group rotates it. The revoke says so, and the key keeps its pending-rotation marker. A key they reached only through their own personal override is not marked, since nothing of it is left to rotate. The revoke and the rotated values are written together in one save, so input that is refused, runs short, or is aborted writes nothing and the recipient is not revoked either; the error says how to revoke now (`murk circle revoke RECIPIENT` without `--rotate`) and rotate afterwards (`murk rotate --all --values-from FILE`). Piped values and `--values-from FILE` follow the rules of `murk rotate`. Keys `--values-from` doesn't name stay marked, and `murk rotate --list` keeps listing them. Without the flag on an interactive terminal, offers to rotate; otherwise prints a hint. The recipient can still decrypt previous versions from git history, so rotation is the only way to close the exposure.
 
@@ -622,9 +636,9 @@ JSON strings are exact (JSON escapes control characters); escaping for the termi
 
 ---
 
-### `murk merge-driver ANCESTOR OURS THEIRS [PATH]`
+### `murk merge-driver BASE OURS THEIRS [PATH]`
 
-Git merge driver for `.murk` files. Merges non-conflicting secret changes automatically. With a key it checks both sides against the trust pin of `PATH` (git's `%P`, default `.murk`), refuses an untrusted side as a conflict, and signs the merged result. See Signatures.
+Git merge driver for `.murk` files, called by git (the command is hidden from help). git supplies the three paths (`%O`, `%A`, `%B`) and the vault's path `%P`; the result replaces OURS. It merges non-conflicting secret changes automatically. With a key (`MURK_KEY`, `MURK_KEY_FILE`, or the stored key for the vault, which strict and agent mode do not look up) it checks both sides against the trust pin of `PATH` (git's `%P`, default `.murk`), refuses an untrusted side as a conflict, regenerates the meta and signs the merged result. Without a key it merges cleanly only when the merge changed nothing the meta covers: if the merged secrets, recipients, schema or policy differ from OURS, or THEIRS changed the encrypted meta (groups, grants, GitHub pins or signers), it exits 1 and writes nothing (when there are no merge conflicts), and you abort the merge and redo it with a key. A clean keyless merge keeps OURS' meta, MAC and signature and warns that the meta was not regenerated. See Signatures.
 
 ---
 
@@ -669,7 +683,7 @@ Exports a schema-only copy of the vault — key names, descriptions, examples, a
 
 ### `murk scan [PATHS]... [--vault NAME]`
 
-Scans files for leaked secret values. Decrypts the vault and searches text files under the given paths (defaults to the current directory) for value substrings. Skips hidden directories, `target/`, `node_modules/`, lockfiles, vault files, and binary files; values shorter than 8 characters are skipped to avoid false positives. Exits 1 if any leak is found. A given path that doesn't exist or can't be read exits 2 before scanning. A file or directory under it that can't be read is reported, and the scan exits 1 as incomplete instead of reporting no leaks.
+Scans files for leaked secret values. Decrypts the vault and searches text files under the given paths (defaults to the current directory) for value substrings. Skips hidden directories, `target/` and `node_modules/`, files ending in `.lock` or `.murk`, and unreadable or binary (non-UTF-8) files. It ignores values shorter than 8 bytes to avoid false positives. Exits 1 if any leak is found. A given path that doesn't exist or can't be read exits 2 before scanning. A file or directory under it that can't be read is reported, and the scan exits 1 as incomplete instead of reporting no leaks.
 
 ---
 
@@ -707,12 +721,16 @@ murk is appropriate for dev tooling and small teams. It is not designed for regu
 
 ## Crate Dependencies
 
-- `age` / `rage` — encryption
-- `bip39` — recovery phrase generation
-- `serde` / `serde_json` — serialization
-- `clap` — CLI argument parsing
-- `blake3` — keyed integrity hashing
-- `sha2` — legacy integrity hashing (backward compatibility)
-- `chrono` — timestamps
-- `colored` — terminal output
-- `rpassword` — hidden input prompting
+Main dependencies. `Cargo.toml` has the full list:
+
+- `age`: encryption (the `age` crate from the rage project)
+- `bip39`: recovery phrase generation
+- `serde` / `serde_json`: serialization
+- `clap`: CLI argument parsing
+- `blake3`: keyed integrity hashing and signing-key derivation
+- `ed25519-dalek`: vault signatures
+- `ssh-key`: parses OpenSSH ed25519 private keys for signing
+- `sha2`: the `<vault-hash>` in key and pin paths, key fingerprints, and legacy integrity hashes (backward compatibility)
+- `chrono`: timestamps
+- `colored`: terminal output
+- `rpassword`: hidden input prompting

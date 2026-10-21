@@ -19,9 +19,9 @@ Display names are stored only inside the encrypted `meta` blob, never in the pla
 
 ## The integrity MAC
 
-Every save computes a BLAKE3 keyed hash over the vault's key names, per-key ciphertexts, recipient list, schema, group and grant definitions, policy, and any pending-rotation markers, storing the digest as `mac` alongside its key (`hmac_key`) in the encrypted meta. On load, murk recomputes and checks it, catching accidental corruption or a non-recipient's tampering immediately.
+Every save computes a BLAKE3 keyed hash over the vault's key names, per-key ciphertexts, recipient list, schema, group and grant definitions, policy, and any pending-rotation markers, storing the digest as `mac` alongside its key (`mac_key`) in the encrypted meta. On load, murk recomputes and checks it, catching accidental corruption or a non-recipient's tampering immediately.
 
-It is **not** a defense against a malicious recipient or anyone else with write access to the repo. age only needs recipients' *public* keys (which sit in the plaintext header) to re-encrypt content, so a repo-writer can mint a fresh `hmac_key`, recompute a valid MAC over tampered content, and re-encrypt `meta` to match. Authorship integrity comes from the signature below, not the MAC.
+It is **not** a defense against a malicious recipient or anyone else with write access to the repo. age only needs recipients' *public* keys (which sit in the plaintext header) to re-encrypt content, so a repo-writer can mint a fresh `mac_key`, recompute a valid MAC over tampered content, and re-encrypt `meta` to match. Authorship integrity comes from the signature below, not the MAC.
 
 ## Signatures
 
