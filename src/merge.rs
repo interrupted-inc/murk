@@ -752,12 +752,16 @@ fn merge_key_is_grant(sides: &[&Vault]) -> bool {
     let Ok(pubkey) = identity.pubkey_string() else {
         return false;
     };
+    // A grant loads through its `agents` record and can't open the meta. Only
+    // a 2.x vault listed grants among the meta's readers; on 3.x a meta record
+    // bound to a key that opens the meta is a ghost, not a grant.
     sides.iter().any(|side| {
         crate::agents::loader_blob(side, &identity).is_some()
-            || matches!(
-                crate::decrypt_meta(side, &identity),
-                Ok(Some(meta)) if meta.grants.values().any(|g| g.pubkey == pubkey)
-            )
+            || (side.version.starts_with("2.")
+                && matches!(
+                    crate::decrypt_meta(side, &identity),
+                    Ok(Some(meta)) if meta.grants.values().any(|g| g.pubkey == pubkey)
+                ))
     })
 }
 
@@ -2815,6 +2819,55 @@ mod tests {
             "a conflicted merge must not get a fresh MAC"
         );
         assert_eq!(result.vault.meta, ours.meta);
+    }
+
+    #[test]
+    fn a_ghost_grant_on_the_operators_key_does_not_block_their_merge() {
+        // A 3.x meta record (and `agents` blob) bound to the merging key is a
+        // ghost: the key opens the meta, so it is an operator and may merge.
+        // The real grant (no meta access, its own blob) is still refused.
+        use crate::testutil::{ENV_LOCK, generate_keypair, make_recipient};
+
+        let _env = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (op_sk, op_pk) = generate_keypair();
+        let (agent_sk, agent_pk) = generate_keypair();
+        let grant = |pubkey: &str| crate::types::GrantEntry {
+            pubkey: pubkey.to_string(),
+            scope: vec!["DB_URL".into()],
+            issued_at: "2026-01-01T00:00:00Z".into(),
+            expires_at: "2999-01-01T00:00:00Z".into(),
+            issuer: op_pk.clone(),
+        };
+        let meta = crate::types::Meta {
+            grants: BTreeMap::from([
+                ("ghost".to_string(), grant(&op_pk)),
+                ("bot".to_string(), grant(&agent_pk)),
+            ]),
+            ..Default::default()
+        };
+        let mut side = base_vault();
+        side.version = crate::types::VAULT_VERSION.into();
+        side.recipients = vec![op_pk.clone(), agent_pk.clone()];
+        side.meta = crate::encrypt_value(
+            &serde_json::to_vec(&meta).unwrap(),
+            std::slice::from_ref(&make_recipient(&op_pk)),
+        )
+        .unwrap();
+        side.agents = crate::agents::blobs_for(&meta.grants, &[]).unwrap();
+
+        unsafe { std::env::set_var("MURK_KEY", &op_sk) };
+        let operator_refused = merge_key_is_grant(&[&side]);
+        unsafe { std::env::set_var("MURK_KEY", &agent_sk) };
+        let grant_refused = merge_key_is_grant(&[&side]);
+        unsafe { std::env::remove_var("MURK_KEY") };
+
+        assert!(
+            !operator_refused,
+            "the operator's merge must not be refused"
+        );
+        assert!(grant_refused, "the real grant's merge must be refused");
     }
 
     #[test]

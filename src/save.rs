@@ -1583,13 +1583,13 @@ mod tests {
     }
 
     #[test]
-    fn a_grant_record_bound_to_the_operators_key_does_not_make_them_a_grant() {
+    fn a_grant_record_bound_to_the_operators_key_is_refused_as_tampering() {
         // A meta writer could bind a grant record to an operator's own key (a
-        // "ghost" grant): that made the operator read-only, or, expired, locked
-        // them out. Here bob, a second recipient and trusted signer, writes one
-        // for alice's key and signs it. Alice's key opened the meta, so it is
-        // no grant: she reads and writes as before, her own signature on the
-        // next save is accepted, and that save drops the record.
+        // "ghost" grant) to make the operator read-only, or, expired, lock them
+        // out. Here bob, a second recipient and trusted signer, writes one for
+        // alice's key and signs it. Grants get freshly minted keys, so a record
+        // naming a trusted signer is tampering: alice's load refuses the vault
+        // rather than treating her as a grant.
         let _lock = ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1655,13 +1655,6 @@ mod tests {
         vault::write(&path, &vault).unwrap();
 
         let loaded = load_vault(ps);
-        let saved = loaded.as_ref().ok().map(|(v, m, _)| {
-            let mut v = v.clone();
-            let mut current = m.clone();
-            current.values.insert("NEW".into(), secret("n"));
-            save_vault(ps, &mut v, m, &current)
-        });
-        let reloaded = load_vault(ps);
         unsafe { std::env::remove_var("MURK_KEY") };
         unsafe { std::env::remove_var("MURK_TRUSTED_SIGNERS") };
         match prev_home {
@@ -1669,12 +1662,13 @@ mod tests {
             None => unsafe { std::env::remove_var("HOME") },
         }
 
-        let (_, murk, _) = loaded.expect("the operator still loads");
-        assert!(!murk.loaded_as_grant);
-        assert!(!murk.grants.contains_key("ghost"));
-        saved.unwrap().expect("the operator can still write");
-        let (_, murk, _) = reloaded.unwrap();
-        assert_eq!(murk.values["NEW"].as_str(), "n");
-        assert!(murk.grants.is_empty(), "the save drops the ghost record");
+        let Err(err) = loaded else {
+            panic!("a grant record bound to a trusted signer must be refused");
+        };
+        assert!(
+            matches!(err, MurkError::Trust(_))
+                && err.to_string().contains("binds agent grant ghost"),
+            "{err}"
+        );
     }
 }
