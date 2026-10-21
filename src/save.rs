@@ -725,6 +725,7 @@ fn record_own_save(
                     before: before.as_ref(),
                 },
                 &crate::trust::head_of(vault_path),
+                crate::trust::commit_of(vault_path).as_deref(),
             )
         } else {
             let Some(prior) = prior else { return Ok(None) };

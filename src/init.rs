@@ -277,6 +277,7 @@ pub fn pin_created_vault(
                 readmit: &std::collections::BTreeSet::new(),
             },
             &head,
+            crate::trust::commit_of(vault_path).as_deref(),
         )))
     })
 }

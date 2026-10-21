@@ -538,17 +538,36 @@ pub fn head_state(abs_vault: &Path) -> HeadState {
     }
 }
 
-/// Whether the commit checked out in the checkout holding `abs_vault` is in
-/// the history of local branch `branch` (equal to its tip or an ancestor of
-/// it), and the vault file is exactly the one committed at HEAD — so the vault
-/// being read is that commit's, not an uncommitted copy of another. False when
-/// git fails, the branch does not exist, or the name could be read as an
-/// option.
-pub fn committed_vault_in_history_of(abs_vault: &Path, branch: &str) -> bool {
+/// The commit checked out in the checkout holding `abs_vault`, as a full
+/// hexadecimal id. `None` outside git, on an unborn branch, or when git
+/// fails.
+pub fn head_commit(abs_vault: &Path) -> Option<String> {
+    let dir = abs_vault.parent()?;
+    worktree_root(dir)?;
+    let out = git_command()
+        .args(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
+        .current_dir(dir)
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let id = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    (out.status.success() && is_commit_id(&id)).then_some(id)
+}
+
+fn is_commit_id(id: &str) -> bool {
+    matches!(id.len(), 40 | 64) && id.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Whether the commit checked out in the checkout holding `abs_vault` is
+/// `commit` or an ancestor of it, and the vault file is exactly the one
+/// committed at HEAD — so the vault being read is that commit's, not an
+/// uncommitted copy of another. False when git fails, `commit` is unknown
+/// here, or it is not a full commit id.
+pub fn committed_vault_at_or_before(abs_vault: &Path, commit: &str) -> bool {
     let (Some(dir), Some(name)) = (abs_vault.parent(), abs_vault.file_name()) else {
         return false;
     };
-    if branch.starts_with('-') || worktree_root(dir).is_none() {
+    if !is_commit_id(commit) || worktree_root(dir).is_none() {
         return false;
     }
     let quiet = |cmd: &mut Command| {
@@ -561,7 +580,7 @@ pub fn committed_vault_in_history_of(abs_vault: &Path, branch: &str) -> bool {
     quiet(
         git_command()
             .args(["merge-base", "--is-ancestor", "HEAD"])
-            .arg(format!("refs/heads/{branch}")),
+            .arg(commit),
     ) && quiet(
         git_command()
             .args(["cat-file", "-e"])
