@@ -774,9 +774,10 @@ fn forged_header_field_fails_verify() {
 }
 
 /// A vault written and signed by murk 0.13.0 (header version 2.0, MAC
-/// `blake3v7`-era scheme, signed view 1 inside the meta), with its key.
+/// `blake3v7`-era scheme, signed view 1 inside the meta), with its test-only
+/// key. The key file starts with a `#` comment line, which murk skips.
 const V0_13_VAULT: &str = include_str!("fixtures/v0_13_signed.murk");
-const V0_13_KEY: &str = include_str!("fixtures/v0_13_signed.key");
+const V0_13_KEY: &str = include_str!("fixtures/v0_13_signed.test-only.key");
 
 #[test]
 fn vault_from_0_13_verifies_and_upgrades_on_write() {

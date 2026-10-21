@@ -1,4 +1,4 @@
-# murk — Specification v2.0
+# murk — Specification v3.0
 
 > Encrypted secrets manager for developers. One key unlocks everything.
 
