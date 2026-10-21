@@ -82,6 +82,8 @@ struct Fixture {
     grant_key: PathBuf,
     expired_key: PathBuf,
     ids: BTreeMap<&'static str, Who>,
+    /// `MURK_TRUSTED_SIGNERS` naming every recipient.
+    signers: String,
 }
 
 fn git(repo: &Path, home: &Path, args: &[&str]) {
@@ -119,10 +121,12 @@ impl Fixture {
         fs::create_dir_all(&repo).unwrap();
         fs::create_dir_all(&home).unwrap();
 
-        // `init_vault` roots HOME at the repo; drop what it leaves there so the
-        // cells find no stored key and no `.env`.
+        // `init_vault` roots HOME at the repo. Move its config (the owner's
+        // trust pin for this vault) to the fixture's HOME and drop the stored
+        // key and `.env`, so the cells find no key and no stray config.
         let (owner_secret, _) = init_vault(&repo);
-        fs::remove_dir_all(repo.join(".config")).unwrap();
+        fs::rename(repo.join(".config"), home.join(".config")).unwrap();
+        fs::remove_dir_all(home.join(".config/murk/keys")).unwrap();
         fs::remove_file(repo.join(".env")).unwrap();
 
         let mut ids = BTreeMap::new();
@@ -140,20 +144,25 @@ impl Fixture {
             ids.insert(label, Who::generate(label));
         }
 
+        // Every recipient signs some write here or in a cell, and each cell runs
+        // the vault at a new path with a fresh HOME (no trust pin), so every
+        // command names all recipients as trusted signers, as CI would.
+        let signers = std::cell::RefCell::new(String::new());
         let run = |who: &str, args: &[&str], stdin: &str| {
-            let out = murk_bin(&home)
-                .current_dir(&repo)
+            let mut cmd = murk_bin(&home);
+            cmd.current_dir(&repo)
                 .env("MURK_KEY", &ids[who].secret)
-                .env("MURK_VAULT", "test.murk")
-                .args(args)
-                .write_stdin(stdin)
-                .output()
-                .unwrap();
+                .env("MURK_VAULT", "test.murk");
+            if !signers.borrow().is_empty() {
+                cmd.env("MURK_TRUSTED_SIGNERS", &*signers.borrow());
+            }
+            let out = cmd.args(args).write_stdin(stdin).output().unwrap();
             assert!(
                 out.status.success(),
                 "fixture: {who} murk {args:?}: {}",
                 String::from_utf8_lossy(&out.stderr)
             );
+            String::from_utf8(out.stdout).unwrap()
         };
 
         // Display names match the labels, so rows can name recipients.
@@ -171,6 +180,25 @@ impl Fixture {
                 "",
             );
         }
+        let entries: Vec<String> = [
+            "owner",
+            "member",
+            "gmember",
+            "nonmember",
+            "override",
+            "spare",
+        ]
+        .iter()
+        .map(|who| {
+            run(who, &["trust", "--print-key"], "")
+                .lines()
+                .next()
+                .unwrap()
+                .trim()
+                .to_string()
+        })
+        .collect();
+        *signers.borrow_mut() = entries.join(",");
         run("owner", &["group", "create", "ops"], "");
         run("owner", &["group", "add", "ops", "--member", "gmember"], "");
         run("owner", &["group", "add", "ops", "--member", "spare"], "");
@@ -292,6 +320,7 @@ impl Fixture {
             grant_key,
             expired_key,
             ids,
+            signers: signers.into_inner(),
         }
     }
 }
@@ -338,7 +367,9 @@ fn run_cell(fx: &Fixture, row: &Row, role: Role) -> (Verdict, Result<(), String>
     let before = fs::read(&guard).unwrap();
 
     let mut cmd = murk_bin(&home);
-    cmd.current_dir(&repo).env("MURK_VAULT", "test.murk");
+    cmd.current_dir(&repo)
+        .env("MURK_VAULT", "test.murk")
+        .env("MURK_TRUSTED_SIGNERS", &fx.signers);
     match role {
         Role::Grant | Role::GrantAgent | Role::GrantExpired => {
             let src = if role == Role::GrantExpired {
@@ -464,6 +495,7 @@ fn run_cell(fx: &Fixture, row: &Row, role: Role) -> (Verdict, Result<(), String>
                     "owner"
                 };
                 let load = murk_bin(&home)
+                    .env("MURK_TRUSTED_SIGNERS", &fx.signers)
                     .current_dir(&repo)
                     .env("MURK_KEY", &fx.ids[loader].secret)
                     .args(["export", "--vault", row.guard])
