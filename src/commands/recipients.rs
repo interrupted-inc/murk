@@ -322,6 +322,40 @@ pub(crate) fn cmd_revoke(
             }
         })
         .collect();
+    // The anchor recorded in the vault can be edited by any trusted signer.
+    // The key files this machine wrote cannot, so add what they list: a grant
+    // whose local key file trusts a revoked key is revoked even if its
+    // recorded anchor was trimmed.
+    let revoked_keys: Vec<String> = targets.iter().flatten().cloned().collect();
+    for (name, grant) in &mut current.grants {
+        let Ok(path) = murk_cli::agent_key_file_path(vault_path, name) else {
+            continue;
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let holds_grant_key = murk_cli::crypto::parse_identity(&text)
+            .and_then(|id| id.pubkey_string())
+            .is_ok_and(|pk| murk_cli::same_recipient(&pk, &grant.pubkey));
+        let Ok(anchor) = murk_cli::agents::anchor_from_key_text(&text) else {
+            continue;
+        };
+        if !holds_grant_key {
+            continue;
+        }
+        for key in anchor.keys() {
+            if revoked_keys
+                .iter()
+                .any(|r| murk_cli::same_recipient(r, key))
+                && !grant
+                    .anchors
+                    .iter()
+                    .any(|a| murk_cli::same_recipient(a, key))
+            {
+                grant.anchors.push(key.clone());
+            }
+        }
+    }
     let result = try_or_die(murk_cli::revoke_recipient(
         &mut vault,
         &mut current,
