@@ -8,6 +8,8 @@
 //! Generates:
 //!   - docs/cli-reference.md   — the command reference, from the clap model.
 //!   - docs/env-reference.md   — the environment-variable reference.
+//!   - docs/completions/*      — shell completions, from the clap model.
+//!   - docs/man/*              — man pages, from the clap model.
 //!
 //! Regenerate:  `cargo run --features doc-gen --bin gen-docs`
 //! Check (CI):  `cargo run --features doc-gen --bin gen-docs -- --check`
@@ -60,12 +62,11 @@ struct EnvVar {
 /// Doc-only registry of the environment variables murk honors.
 ///
 /// clap only annotates `MURK_VAULT` (via `#[arg(env = ...)]`); every other
-/// variable is read ad hoc in `src/env.rs`, `src/hardening.rs`, and
-/// `src/pins.rs`, so a complete reference needs this list. Names mirror the
-/// `ENV_*` constants in `src/env.rs` and the reads in those modules — keep it in
-/// sync when env handling changes (CI `--check` fails until
-/// `docs/env-reference.md` is regenerated). Summaries avoid literal `|` so they
-/// stay valid inside the Markdown table.
+/// variable is read ad hoc under `src/`, so a complete reference needs this
+/// list. Names mirror the `ENV_*` constants in `src/env.rs` and the reads under
+/// `src/`. Update this list when you add or remove an environment read. CI
+/// `--check` only catches edits to the list, not missing entries. Summaries
+/// avoid literal `|` so they stay valid inside the Markdown table.
 const ENV_GROUPS: &[(&str, &[EnvVar])] = &[
     (
         "Identity and vault selection",
@@ -89,11 +90,11 @@ const ENV_GROUPS: &[(&str, &[EnvVar])] = &[
         &[
             EnvVar {
                 name: "MURK_STRICT",
-                summary: "Truthy fails closed rather than let a secret touch disk, and disables the automatic key lookup under `~/.config/murk/keys`.",
+                summary: "Truthy turns on strict mode. It disables the automatic key lookup under `~/.config/murk/keys`, needs RAM-backed scratch for `murk edit`, refuses to write `get` or `export` output to a regular file, and refuses a vault that was signed before on this machine and is now unsigned. It does not stop a process from writing values elsewhere (`murk diff --json` prints values, for example).",
             },
             EnvVar {
                 name: "MURK_AGENT",
-                summary: "Marks the process as running for an AI agent. Forces strict mode unconditionally. `murk agent exec` sets it on its child.",
+                summary: "Truthy marks the process as running for an AI agent. Forces strict mode unconditionally. `murk agent exec` sets it on its child.",
             },
             EnvVar {
                 name: "MURK_SELF_SCOPE",
@@ -101,7 +102,7 @@ const ENV_GROUPS: &[(&str, &[EnvVar])] = &[
             },
             EnvVar {
                 name: "MURK_NO_SIGNER_PIN",
-                summary: "Opts out of signer-registry pinning (TOFU) on load — an escape hatch for a deliberate signer-key change, not for everyday use.",
+                summary: "Turns off signer-registry pinning (trust on first use) when the vault loads. Any value turns it off, even empty or `0`. Use it only when a signer key changes on purpose.",
             },
         ],
     ),
@@ -118,11 +119,11 @@ const ENV_GROUPS: &[(&str, &[EnvVar])] = &[
             },
             EnvVar {
                 name: "XDG_RUNTIME_DIR",
-                summary: "Preferred (typically tmpfs) scratch location for `murk edit`'s temporary file, over `/tmp`.",
+                summary: "Directory for `murk edit`'s temporary file, if it exists. Usually tmpfs. Otherwise murk uses the system temp directory (`$TMPDIR`, else `/tmp`).",
             },
             EnvVar {
-                name: "HOME (USERPROFILE on Windows)",
-                summary: "Base directory for murk state: `~/.config/murk/keys`, `agent-keys`, and `signer-pins`.",
+                name: "HOME, then USERPROFILE",
+                summary: "Base directory for murk state: `~/.config/murk/keys`, `agent-keys` and `signer-pins`. murk reads `HOME` and falls back to `USERPROFILE` on any platform. `murk completion install` and `murk circle authorize ssh:` need `HOME`.",
             },
         ],
     ),
@@ -135,7 +136,9 @@ fn env_reference() -> (PathBuf, String) {
          The environment variables murk reads, and the CLI flags they mirror \
          where one exists. This is the terse reference. The narrative version \
          with resolution order and interactions lives in the Environment \
-         variables concept page.\n",
+         variables concept page.\n\n\
+         A variable marked \"truthy\" is on when set to `1`, `true` or `yes` \
+         (any case). Other values, including `0`, mean off.\n",
     );
     for (group, vars) in ENV_GROUPS {
         body.push_str(&format!(
@@ -175,9 +178,13 @@ fn man_pages() -> Vec<(PathBuf, String)> {
 
 fn collect_man(cmd: &clap::Command, path: &[&str], out: &mut Vec<(PathBuf, String)>) {
     // `bin_name` (a runtime String) drives the SYNOPSIS, so it shows the real
-    // spaced invocation ("murk agent plan"). The filename uses the git-man
-    // dashed convention ("murk-agent-plan.1"). Both come from the command path.
-    let render_cmd = cmd.clone().bin_name(path.join(" "));
+    // spaced invocation ("murk agent plan"). `display_name` drives the page
+    // title and NAME, so each page is unique ("murk-agent-plan"). The filename
+    // uses the git-man dashed convention ("murk-agent-plan.1").
+    let render_cmd = cmd
+        .clone()
+        .bin_name(path.join(" "))
+        .display_name(path.join("-"));
     let mut buf = Vec::new();
     clap_mangen::Man::new(render_cmd)
         .render(&mut buf)

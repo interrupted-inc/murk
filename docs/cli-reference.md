@@ -76,11 +76,11 @@ Encrypted secrets manager for developers — one file, age encryption, git-frien
 * `ls` — List all key names
 * `export` — Export all secrets as shell export statements
 * `import` — Import secrets from a .env file
-* `describe` — Add or update a key description
+* `describe` — Set a key's description, example, tags and rotation or expiry policy
 * `info` — Show public schema and key info
 * `skeleton` — Export schema-only vault with no secrets or recipients
 * `exec` — Run a command with secrets injected as environment variables
-* `agent` — Agent-oriented commands (schema-only output for AI agent prompts)
+* `agent` — Give AI agents scoped, time-limited access to secrets
 * `mcp` — Run an MCP (Model Context Protocol) stdio server for AI agents
 * `policy` — Manage the agent access policy
 * `circle` — Manage recipients
@@ -178,10 +178,10 @@ Generate a random secret and store it
 
 ###### **Options:**
 
-* `--length <LENGTH>` — Length in bytes (default 32)
+* `--length <LENGTH>` — Length in bytes
 
   Default value: `32`
-* `--hex` — Output as hex instead of base64
+* `--hex` — Encode the value as hex instead of URL-safe base64
 * `--desc <DESC>` — Description for this key
 * `--example <EXAMPLE>` — Example value
 * `--group <GROUP>` — Who can read it: a group name, `everyone` (default), or `me`
@@ -206,10 +206,10 @@ Rotate secrets with new values
 
 * `--all` — Rotate all secrets in the vault
 * `--generate` — Generate random values instead of prompting
-* `--length <LENGTH>` — Length in bytes for generated values (default 32)
+* `--length <LENGTH>` — Length in bytes for generated values
 
   Default value: `32`
-* `--hex` — Output generated values as hex instead of base64
+* `--hex` — Encode generated values as hex instead of URL-safe base64
 * `--list` — List keys needing rotation instead of rotating (exits 1 if any)
 * `--json` — Output the listing as JSON (with --list, always exits 0)
 * `--vault <VAULT>` — Vault filename
@@ -320,7 +320,7 @@ Import secrets from a .env file
 
 ###### **Options:**
 
-* `--force` — Overwrite existing secrets without prompting
+* `--force` — Overwrite existing secrets. Without it, import stops if any key already exists
 * `--group <GROUP>` — Assign imported secrets to this group (default: everyone)
 * `--example <EXAMPLE>` — Example value applied to every imported key
 * `--vault <VAULT>` — Vault filename
@@ -331,18 +331,20 @@ Import secrets from a .env file
 
 ## `murk describe`
 
-Add or update a key description
+Set a key's description, example, tags and rotation or expiry policy
+
+Each call replaces the description. It also replaces the example: omitting `--example` clears it. `--tag` replaces the tags only when given. `--rotate-every` and `--expires` change only when given.
 
 **Usage:** `murk describe [OPTIONS] <KEY> <DESCRIPTION>`
 
 ###### **Arguments:**
 
 * `<KEY>` — Secret key name
-* `<DESCRIPTION>` — Description text
+* `<DESCRIPTION>` — Description text (replaces the current one)
 
 ###### **Options:**
 
-* `--example <EXAMPLE>` — Example value
+* `--example <EXAMPLE>` — Example value. Omitting it clears the current example
 * `--tag <TAG>` — Tag for grouping (repeatable, replaces existing tags)
 * `--rotate-every <DAYS>` — Rotation interval, e.g. `90d` or `90` (days). `never` clears it
 * `--expires <DATE>` — Hard expiry date, e.g. `2026-09-01`. `never` clears it
@@ -397,7 +399,7 @@ Run a command with secrets injected as environment variables
 
 * `--only <ONLY>` — Only inject these specific keys (repeatable)
 * `--tag <TAG>` — Filter by tag (repeatable)
-* `--clean-env` — Strip inherited environment (only murk secrets + PATH)
+* `--clean-env` — Start the command with only murk secrets plus PATH, HOME and TERM on Unix (on Windows, PATH and a fixed set of system variables)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`
@@ -406,19 +408,19 @@ Run a command with secrets injected as environment variables
 
 ## `murk agent`
 
-Agent-oriented commands (schema-only output for AI agent prompts)
+Give AI agents scoped, time-limited access to secrets
 
 **Usage:** `murk agent <COMMAND>`
 
 ###### **Subcommands:**
 
 * `plan` — Emit schema-only context safe to paste into an AI agent prompt
-* `exec` — Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only, masks injected values in the output)
+* `exec` — Run a command with strict agent-safe defaults (keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires --only, masks injected values in the output)
 * `grant` — Mint a scoped ephemeral key that can read only the named secrets
 * `init` — One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely
 * `ls` — List active agent grants and their TTLs
-* `revoke` — Revoke an agent grant and rotate the keys it could read
-* `connect` — Wire `murk mcp` into an AI editor's MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it
+* `revoke` — Revoke an agent grant
+* `connect` — Add `murk mcp` to an AI client's MCP config and mint a scoped grant for it
 * `disconnect` — Remove murk's entry from an AI editor's MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys
 
 
@@ -442,7 +444,7 @@ Emit schema-only context safe to paste into an AI agent prompt
 
 ## `murk agent exec`
 
-Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only, masks injected values in the output)
+Run a command with strict agent-safe defaults (keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires --only, masks injected values in the output)
 
 **Usage:** `murk agent exec [OPTIONS] --only <ONLY> <COMMAND>...`
 
@@ -519,7 +521,9 @@ List active agent grants and their TTLs
 
 ## `murk agent revoke`
 
-Revoke an agent grant and rotate the keys it could read
+Revoke an agent grant
+
+The grant's key can still decrypt old versions of the vault from git history, so rotate the secrets it could read: pass `--rotate`, or answer the prompt on a terminal.
 
 **Usage:** `murk agent revoke [OPTIONS] <NAME>`
 
@@ -529,7 +533,7 @@ Revoke an agent grant and rotate the keys it could read
 
 ###### **Options:**
 
-* `--rotate` — Rotate the keys it could read in the same session
+* `--rotate` — Rotate the secrets the grant could read, in the same run. murk stores a new value for each. It does not rotate them at the provider
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`
@@ -538,19 +542,19 @@ Revoke an agent grant and rotate the keys it could read
 
 ## `murk agent connect`
 
-Wire `murk mcp` into an AI editor's MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it
+Add `murk mcp` to an AI client's MCP config and mint a scoped grant for it
 
 **Usage:** `murk agent connect [OPTIONS] --only <ONLY> [CLIENT]`
 
 ###### **Arguments:**
 
-* `<CLIENT>` — Editor to configure. Omit to auto-detect (claude, cursor, vscode, zed, gemini, omp, codex)
+* `<CLIENT>` — Client to configure: claude, cursor, vscode, zed, gemini, omp or codex. Omit it to configure every client that already has a config file or marker directory (such as `.cursor/`) next to the vault
 
 ###### **Options:**
 
 * `--only <ONLY>` — Keys the agent may read (required — fails closed)
 * `--allow-tag <ALLOW_TAG>` — Set the agent allow-list to these tags before granting (repeatable)
-* `--allow-exec` — Also expose `murk agent exec` to the agent (adds --allow-exec)
+* `--allow-exec` — Also enable the `murk_exec` tool in the MCP server (writes `--allow-exec` into the client config)
 * `--ttl <TTL>` — Grant time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)
 
   Default value: `2h`
@@ -692,8 +696,8 @@ Add a recipient to the vault
 
 * `--name <NAME>` — Display name for this recipient
 * `--group <GROUP>` — Also add the new recipient to this group
-* `--force` — Accept changed GitHub keys without confirmation
-* `--allow-ssh-rsa` — Allow ssh-rsa recipients (rejected by default — use ed25519)
+* `--force` — Accept changed GitHub keys. Without it, authorize stops when a user's keys differ from the pinned set
+* `--allow-ssh-rsa` — Allow ssh-rsa keys. They are refused or skipped by default, so prefer ed25519
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`
@@ -855,6 +859,8 @@ Scan files for leaked secret values
 
 Show secret changes vs a git ref
 
+The old revision is decrypted without checking its MAC or signature, so treat its values as unverified.
+
 **Usage:** `murk diff [OPTIONS] [GIT_REF]`
 
 ###### **Arguments:**
@@ -866,7 +872,7 @@ Show secret changes vs a git ref
 ###### **Options:**
 
 * `--show-values` — Show actual values (not just key names)
-* `--json` — Output as JSON
+* `--json` — Output as JSON. Always includes the old and new values
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`

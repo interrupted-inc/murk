@@ -1,8 +1,8 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH rotate 1  "rotate " 
+.TH murk-rotate 1  "rotate " 
 .SH NAME
-rotate \- Rotate secrets with new values
+murk\-rotate \- Rotate secrets with new values
 .SH SYNOPSIS
 \fBmurk rotate\fR [\fB\-\-all\fR] [\fB\-\-generate\fR] [\fB\-\-length\fR] [\fB\-\-hex\fR] [\fB\-\-list\fR] [\fB\-\-json\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIKEY\fR] 
 .SH DESCRIPTION
@@ -16,10 +16,10 @@ Rotate all secrets in the vault
 Generate random values instead of prompting
 .TP
 \fB\-\-length\fR \fI<LENGTH>\fR [default: 32]
-Length in bytes for generated values (default 32)
+Length in bytes for generated values
 .TP
 \fB\-\-hex\fR
-Output generated values as hex instead of base64
+Encode generated values as hex instead of URL\-safe base64
 .TP
 \fB\-\-list\fR
 List keys needing rotation instead of rotating (exits 1 if any)

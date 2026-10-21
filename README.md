@@ -257,7 +257,7 @@ murk restore
 | `murk agent exec --only KEY -- CMD...` | Run a command with strict agent-safe defaults (clean env, no `MURK_KEY`, injected values masked in the output; needs a grant key or `--allow-operator-key`) |
 | `murk agent grant --name NAME --only KEY --ttl DUR` | Mint a short-lived scoped key that reads only the named secrets (reads fail closed after the TTL — revoke to close it for good) |
 | `murk agent ls` | List active agent grants and their TTLs |
-| `murk agent revoke NAME [--rotate]` | Revoke a grant and rotate the keys it could read |
+| `murk agent revoke NAME [--rotate]` | Revoke a grant (`--rotate` also rotates the secrets it could read) |
 | `murk mcp [--allow-exec]` | Run a stdio MCP server exposing scoped secrets to AI agents (needs a grant + `MURK_AGENT`) |
 | `murk policy show\|set\|clear` | Manage the agent allow-list (tags agents may receive) |
 
@@ -282,7 +282,7 @@ murk restore
 
 | Command | Description |
 |---------|-------------|
-| `murk diff [REF]` | Show secret changes since a git ref |
+| `murk diff [REF] [--show-values] [--json]` | Show which secrets changed since a git ref. Prints key names only, unless you pass `--show-values`. `--json` always includes the old and new values |
 | `murk setup-merge-driver` | Configure git to merge `.murk` vaults without decrypting |
 
 **Shell**

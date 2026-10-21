@@ -1,25 +1,27 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH diff 1  "diff " 
+.TH murk-diff 1  "diff " 
 .SH NAME
-diff \- Show secret changes vs a git ref
+murk\-diff \- Show secret changes vs a git ref
 .SH SYNOPSIS
 \fBmurk diff\fR [\fB\-\-show\-values\fR] [\fB\-\-json\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIGIT_REF\fR] 
 .SH DESCRIPTION
 Show secret changes vs a git ref
+.PP
+The old revision is decrypted without checking its MAC or signature, so treat its values as unverified.
 .SH OPTIONS
 .TP
 \fB\-\-show\-values\fR
 Show actual values (not just key names)
 .TP
 \fB\-\-json\fR
-Output as JSON
+Output as JSON. Always includes the old and new values
 .TP
 \fB\-\-vault\fR \fI<VAULT>\fR [default: .murk]
 Vault filename
 .TP
 \fB\-h\fR, \fB\-\-help\fR
-Print help
+Print help (see a summary with \*(Aq\-h\*(Aq)
 .TP
 [\fIGIT_REF\fR] [default: HEAD]
 Git ref to compare against

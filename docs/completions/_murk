@@ -68,13 +68,13 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (generate)
 _arguments "${_arguments_options[@]}" : \
-'--length=[Length in bytes (default 32)]:LENGTH:_default' \
+'--length=[Length in bytes]:LENGTH:_default' \
 '--desc=[Description for this key]:DESC:_default' \
 '--example=[Example value]:EXAMPLE:_default' \
 '--group=[Who can read it\: a group name, \`everyone\` (default), or \`me\`]:GROUP:_default' \
 '*--tag=[Tag for grouping (repeatable)]:TAG:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
-'--hex[Output as hex instead of base64]' \
+'--hex[Encode the value as hex instead of URL-safe base64]' \
 '-h[Print help]' \
 '--help[Print help]' \
 ':key -- Secret key name:_default' \
@@ -82,11 +82,11 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (rotate)
 _arguments "${_arguments_options[@]}" : \
-'--length=[Length in bytes for generated values (default 32)]:LENGTH:_default' \
+'--length=[Length in bytes for generated values]:LENGTH:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '--all[Rotate all secrets in the vault]' \
 '--generate[Generate random values instead of prompting]' \
-'--hex[Output generated values as hex instead of base64]' \
+'--hex[Encode generated values as hex instead of URL-safe base64]' \
 '(--all --generate --hex)--list[List keys needing rotation instead of rotating (exits 1 if any)]' \
 '(--all --generate --hex)--json[Output the listing as JSON (with --list, always exits 0)]' \
 '-h[Print help]' \
@@ -143,7 +143,7 @@ _arguments "${_arguments_options[@]}" : \
 '--group=[Assign imported secrets to this group (default\: everyone)]:GROUP:_default' \
 '--example=[Example value applied to every imported key]:EXAMPLE:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
-'--force[Overwrite existing secrets without prompting]' \
+'--force[Overwrite existing secrets. Without it, import stops if any key already exists]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '::file -- Path to the .env file to import:_default' \
@@ -151,15 +151,15 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (describe)
 _arguments "${_arguments_options[@]}" : \
-'--example=[Example value]:EXAMPLE:_default' \
+'--example=[Example value. Omitting it clears the current example]:EXAMPLE:_default' \
 '*--tag=[Tag for grouping (repeatable, replaces existing tags)]:TAG:_default' \
 '--rotate-every=[Rotation interval, e.g. \`90d\` or \`90\` (days). \`never\` clears it]:DAYS:_default' \
 '--expires=[Hard expiry date, e.g. \`2026-09-01\`. \`never\` clears it]:DATE:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
-'-h[Print help]' \
-'--help[Print help]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
 ':key -- Secret key name:_default' \
-':description -- Description text:_default' \
+':description -- Description text (replaces the current one):_default' \
 && ret=0
 ;;
 (info)
@@ -185,7 +185,7 @@ _arguments "${_arguments_options[@]}" : \
 '*--only=[Only inject these specific keys (repeatable)]:ONLY:_default' \
 '*--tag=[Filter by tag (repeatable)]:TAG:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
-'--clean-env[Strip inherited environment (only murk secrets + PATH)]' \
+'--clean-env[Start the command with only murk secrets plus PATH, HOME and TERM on Unix (on Windows, PATH and a fixed set of system variables)]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::command -- Command and arguments to execute:_default' \
@@ -261,9 +261,9 @@ _arguments "${_arguments_options[@]}" : \
 (revoke)
 _arguments "${_arguments_options[@]}" : \
 '--vault=[Vault filename]:VAULT:_default' \
-'--rotate[Rotate the keys it could read in the same session]' \
-'-h[Print help]' \
-'--help[Print help]' \
+'--rotate[Rotate the secrets the grant could read, in the same run. murk stores a new value for each. It does not rotate them at the provider]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
 ':name -- Grant name:_default' \
 && ret=0
 ;;
@@ -274,10 +274,10 @@ _arguments "${_arguments_options[@]}" : \
 '--ttl=[Grant time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)]:TTL:_default' \
 '--name=[Grant name (used to disconnect/revoke it later)]:NAME:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
-'--allow-exec[Also expose \`murk agent exec\` to the agent (adds --allow-exec)]' \
+'--allow-exec[Also enable the \`murk_exec\` tool in the MCP server (writes \`--allow-exec\` into the client config)]' \
 '-h[Print help]' \
 '--help[Print help]' \
-'::client -- Editor to configure. Omit to auto-detect (claude, cursor, vscode, zed, gemini, omp, codex):_default' \
+'::client -- Client to configure\: claude, cursor, vscode, zed, gemini, omp or codex. Omit it to configure every client that already has a config file or marker directory (such as `.cursor/`) next to the vault:_default' \
 && ret=0
 ;;
 (disconnect)
@@ -448,8 +448,8 @@ _arguments "${_arguments_options[@]}" : \
 '--name=[Display name for this recipient]:NAME:_default' \
 '--group=[Also add the new recipient to this group]:GROUP:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
-'--force[Accept changed GitHub keys without confirmation]' \
-'--allow-ssh-rsa[Allow ssh-rsa recipients (rejected by default — use ed25519)]' \
+'--force[Accept changed GitHub keys. Without it, authorize stops when a user'\''s keys differ from the pinned set]' \
+'--allow-ssh-rsa[Allow ssh-rsa keys. They are refused or skipped by default, so prefer ed25519]' \
 '-h[Print help]' \
 '--help[Print help]' \
 ':pubkey -- Public key (age1...), ssh\:path, ssh\: (default ~/.ssh/id_ed25519.pub), or github\:username:_default' \
@@ -500,8 +500,8 @@ esac
 _arguments "${_arguments_options[@]}" : \
 '--name=[Display name for this recipient]:NAME:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
-'--force[Accept changed GitHub keys without confirmation]' \
-'--allow-ssh-rsa[Allow ssh-rsa recipients (rejected by default — use ed25519)]' \
+'--force[Accept changed GitHub keys. Without it, authorize stops when a user'\''s keys differ from the pinned set]' \
+'--allow-ssh-rsa[Allow ssh-rsa keys. They are refused or skipped by default, so prefer ed25519]' \
 '-h[Print help]' \
 '--help[Print help]' \
 ':pubkey -- Public key (age1...), ssh\:path, ssh\: (default ~/.ssh/id_ed25519.pub), or github\:username:_default' \
@@ -630,9 +630,9 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '--vault=[Vault filename]:VAULT:_default' \
 '--show-values[Show actual values (not just key names)]' \
-'--json[Output as JSON]' \
-'-h[Print help]' \
-'--help[Print help]' \
+'--json[Output as JSON. Always includes the old and new values]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
 '::git_ref -- Git ref to compare against:_default' \
 && ret=0
 ;;
@@ -1012,11 +1012,11 @@ _murk_commands() {
 'ls:List all key names' \
 'export:Export all secrets as shell export statements' \
 'import:Import secrets from a .env file' \
-'describe:Add or update a key description' \
+'describe:Set a key'\''s description, example, tags and rotation or expiry policy' \
 'info:Show public schema and key info' \
 'skeleton:Export schema-only vault with no secrets or recipients' \
 'exec:Run a command with secrets injected as environment variables' \
-'agent:Agent-oriented commands (schema-only output for AI agent prompts)' \
+'agent:Give AI agents scoped, time-limited access to secrets' \
 'mcp:Run an MCP (Model Context Protocol) stdio server for AI agents' \
 'policy:Manage the agent access policy' \
 'circle:Manage recipients' \
@@ -1043,12 +1043,12 @@ _murk__subcmd__add_commands() {
 _murk__subcmd__agent_commands() {
     local commands; commands=(
 'plan:Emit schema-only context safe to paste into an AI agent prompt' \
-'exec:Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only, masks injected values in the output)' \
+'exec:Run a command with strict agent-safe defaults (keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires --only, masks injected values in the output)' \
 'grant:Mint a scoped ephemeral key that can read only the named secrets' \
 'init:One-shot onboarding\: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely' \
 'ls:List active agent grants and their TTLs' \
-'revoke:Revoke an agent grant and rotate the keys it could read' \
-'connect:Wire \`murk mcp\` into an AI editor'\''s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it' \
+'revoke:Revoke an agent grant' \
+'connect:Add \`murk mcp\` to an AI client'\''s MCP config and mint a scoped grant for it' \
 'disconnect:Remove murk'\''s entry from an AI editor'\''s MCP config. No CLIENT clears every configured editor. \`--rotate\` also revokes the grant and rotates its keys' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
@@ -1078,12 +1078,12 @@ _murk__subcmd__agent__subcmd__grant_commands() {
 _murk__subcmd__agent__subcmd__help_commands() {
     local commands; commands=(
 'plan:Emit schema-only context safe to paste into an AI agent prompt' \
-'exec:Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only, masks injected values in the output)' \
+'exec:Run a command with strict agent-safe defaults (keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires --only, masks injected values in the output)' \
 'grant:Mint a scoped ephemeral key that can read only the named secrets' \
 'init:One-shot onboarding\: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely' \
 'ls:List active agent grants and their TTLs' \
-'revoke:Revoke an agent grant and rotate the keys it could read' \
-'connect:Wire \`murk mcp\` into an AI editor'\''s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it' \
+'revoke:Revoke an agent grant' \
+'connect:Add \`murk mcp\` to an AI client'\''s MCP config and mint a scoped grant for it' \
 'disconnect:Remove murk'\''s entry from an AI editor'\''s MCP config. No CLIENT clears every configured editor. \`--rotate\` also revokes the grant and rotates its keys' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
@@ -1373,11 +1373,11 @@ _murk__subcmd__help_commands() {
 'ls:List all key names' \
 'export:Export all secrets as shell export statements' \
 'import:Import secrets from a .env file' \
-'describe:Add or update a key description' \
+'describe:Set a key'\''s description, example, tags and rotation or expiry policy' \
 'info:Show public schema and key info' \
 'skeleton:Export schema-only vault with no secrets or recipients' \
 'exec:Run a command with secrets injected as environment variables' \
-'agent:Agent-oriented commands (schema-only output for AI agent prompts)' \
+'agent:Give AI agents scoped, time-limited access to secrets' \
 'mcp:Run an MCP (Model Context Protocol) stdio server for AI agents' \
 'policy:Manage the agent access policy' \
 'circle:Manage recipients' \
@@ -1404,12 +1404,12 @@ _murk__subcmd__help__subcmd__add_commands() {
 _murk__subcmd__help__subcmd__agent_commands() {
     local commands; commands=(
 'plan:Emit schema-only context safe to paste into an AI agent prompt' \
-'exec:Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only, masks injected values in the output)' \
+'exec:Run a command with strict agent-safe defaults (keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires --only, masks injected values in the output)' \
 'grant:Mint a scoped ephemeral key that can read only the named secrets' \
 'init:One-shot onboarding\: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely' \
 'ls:List active agent grants and their TTLs' \
-'revoke:Revoke an agent grant and rotate the keys it could read' \
-'connect:Wire \`murk mcp\` into an AI editor'\''s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it' \
+'revoke:Revoke an agent grant' \
+'connect:Add \`murk mcp\` to an AI client'\''s MCP config and mint a scoped grant for it' \
 'disconnect:Remove murk'\''s entry from an AI editor'\''s MCP config. No CLIENT clears every configured editor. \`--rotate\` also revokes the grant and rotates its keys' \
     )
     _describe -t commands 'murk help agent commands' commands "$@"

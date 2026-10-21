@@ -1,8 +1,8 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH authorize 1  "authorize " 
+.TH murk-circle-authorize 1  "authorize " 
 .SH NAME
-authorize \- Add a recipient to the vault
+murk\-circle\-authorize \- Add a recipient to the vault
 .SH SYNOPSIS
 \fBmurk circle authorize\fR [\fB\-\-name\fR] [\fB\-\-group\fR] [\fB\-\-force\fR] [\fB\-\-allow\-ssh\-rsa\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIPUBKEY\fR> 
 .SH DESCRIPTION
@@ -16,10 +16,10 @@ Display name for this recipient
 Also add the new recipient to this group
 .TP
 \fB\-\-force\fR
-Accept changed GitHub keys without confirmation
+Accept changed GitHub keys. Without it, authorize stops when a user\*(Aqs keys differ from the pinned set
 .TP
 \fB\-\-allow\-ssh\-rsa\fR
-Allow ssh\-rsa recipients (rejected by default — use ed25519)
+Allow ssh\-rsa keys. They are refused or skipped by default, so prefer ed25519
 .TP
 \fB\-\-vault\fR \fI<VAULT>\fR [default: .murk]
 Vault filename

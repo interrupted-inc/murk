@@ -364,7 +364,7 @@ eval "$(murk export)"
 
 ### `murk exec [--only KEY] [--tag TAG] [--clean-env] COMMAND...`
 
-Runs a command with decrypted secrets injected as environment variables. Scoped values override shared values. `--only` injects only the named keys (repeatable), `--tag` filters by tag, `--clean-env` strips the inherited environment so the child sees only murk secrets plus a minimal base. On Unix, murk replaces itself with the command via `exec`.
+Runs a command with decrypted secrets injected as environment variables. Scoped values override shared values. `--only` injects only the named keys (repeatable), `--tag` filters by tag, `--clean-env` strips the inherited environment so the child sees only murk secrets plus PATH, HOME and TERM on Unix (on Windows, PATH and a fixed set of system variables). On Unix, murk replaces itself with the command via `exec`.
 
 ---
 
@@ -450,7 +450,7 @@ Recovers `MURK_KEY` from a BIP39 recovery phrase. Prompts for the phrase interac
 
 ### `murk circle`
 
-Lists all recipients. With `MURK_KEY`, shows display names from the encrypted meta and marks the current user with `*`.
+Lists all recipients. With `MURK_KEY`, shows display names from the encrypted meta and marks the current user with `◆`.
 
 ---
 
@@ -512,7 +512,7 @@ Lists the secrets the revoked recipient had access to. With `--rotate`, prompts 
 
 ### `murk diff [REF] [--show-values] [--json] [--vault NAME]`
 
-Shows which secrets changed between the current vault and a git ref (defaults to `HEAD`). `--show-values` prints the actual values, not just key names. `--json` outputs JSON.
+Shows which secrets changed between the current vault and a git ref (defaults to `HEAD`). It prints key names only, unless you pass `--show-values`. `--json` always includes the old and new values. The old revision is decrypted without checking its MAC or signature.
 
 ---
 

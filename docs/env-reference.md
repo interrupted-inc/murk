@@ -4,6 +4,8 @@
 
 The environment variables murk reads, and the CLI flags they mirror where one exists. This is the terse reference. The narrative version with resolution order and interactions lives in the Environment variables concept page.
 
+A variable marked "truthy" is on when set to `1`, `true` or `yes` (any case). Other values, including `0`, mean off.
+
 ## Identity and vault selection
 
 | Variable | Description |
@@ -16,10 +18,10 @@ The environment variables murk reads, and the CLI flags they mirror where one ex
 
 | Variable | Description |
 | --- | --- |
-| `MURK_STRICT` | Truthy fails closed rather than let a secret touch disk, and disables the automatic key lookup under `~/.config/murk/keys`. |
-| `MURK_AGENT` | Marks the process as running for an AI agent. Forces strict mode unconditionally. `murk agent exec` sets it on its child. |
+| `MURK_STRICT` | Truthy turns on strict mode. It disables the automatic key lookup under `~/.config/murk/keys`, needs RAM-backed scratch for `murk edit`, refuses to write `get` or `export` output to a regular file, and refuses a vault that was signed before on this machine and is now unsigned. It does not stop a process from writing values elsewhere (`murk diff --json` prints values, for example). |
+| `MURK_AGENT` | Truthy marks the process as running for an AI agent. Forces strict mode unconditionally. `murk agent exec` sets it on its child. |
 | `MURK_SELF_SCOPE` | Truthy holds your own key to the vault's agent allow-tag policy, as if you were an agent. Implied inside an agent context. |
-| `MURK_NO_SIGNER_PIN` | Opts out of signer-registry pinning (TOFU) on load — an escape hatch for a deliberate signer-key change, not for everyday use. |
+| `MURK_NO_SIGNER_PIN` | Turns off signer-registry pinning (trust on first use) when the vault loads. Any value turns it off, even empty or `0`. Use it only when a signer key changes on purpose. |
 
 ## Also honored
 
@@ -27,5 +29,5 @@ The environment variables murk reads, and the CLI flags they mirror where one ex
 | --- | --- |
 | `CI` | Truthy prints a nudge toward the scoped-agent path when a pipeline decrypts with a personal key. Advisory only. |
 | `EDITOR, VISUAL` | Editor launched by `murk edit`, checking `EDITOR` then `VISUAL`, falling back to `vi`. On Unix it runs through `sh`, as with git, so it may include arguments (`code --wait`). `MURK_KEY` and `MURK_KEY_FILE` are removed from its environment. |
-| `XDG_RUNTIME_DIR` | Preferred (typically tmpfs) scratch location for `murk edit`'s temporary file, over `/tmp`. |
-| `HOME (USERPROFILE on Windows)` | Base directory for murk state: `~/.config/murk/keys`, `agent-keys`, and `signer-pins`. |
+| `XDG_RUNTIME_DIR` | Directory for `murk edit`'s temporary file, if it exists. Usually tmpfs. Otherwise murk uses the system temp directory (`$TMPDIR`, else `/tmp`). |
+| `HOME, then USERPROFILE` | Base directory for murk state: `~/.config/murk/keys`, `agent-keys` and `signer-pins`. murk reads `HOME` and falls back to `USERPROFILE` on any platform. `murk completion install` and `murk circle authorize ssh:` need `HOME`. |

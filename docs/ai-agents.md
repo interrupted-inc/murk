@@ -179,7 +179,7 @@ An agent harness — Claude Code, Cursor, and the like — can auto-approve some
 | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
 | `murk add`, `murk rm`, `murk describe`, `murk import` | Write to the vault.                                                                                      |
 | `murk get`, `murk export`                             | Decrypt secret values and return them.                                                                   |
-| `murk diff`, `murk diff --show-values`                | Decrypt the old and current values to compute the diff; `--show-values` also prints them.                |
+| `murk diff`, `murk diff --show-values`, `murk diff --json` | Decrypt the old and current values to compute the diff. `--show-values` and `--json` print them. |
 | `murk verify`                                         | Loads and decrypts the whole vault to check integrity — reveals no values, but needs the key.            |
 | `murk scan`                                           | Decrypts every secret to search the working tree for leaked values.                                      |
 | `murk env`                                            | Writes an `.envrc` that runs `murk export` — sets up ambient decryption of your full scope in the shell. |

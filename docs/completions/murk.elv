@@ -33,11 +33,11 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand ls 'List all key names'
             cand export 'Export all secrets as shell export statements'
             cand import 'Import secrets from a .env file'
-            cand describe 'Add or update a key description'
+            cand describe 'Set a key''s description, example, tags and rotation or expiry policy'
             cand info 'Show public schema and key info'
             cand skeleton 'Export schema-only vault with no secrets or recipients'
             cand exec 'Run a command with secrets injected as environment variables'
-            cand agent 'Agent-oriented commands (schema-only output for AI agent prompts)'
+            cand agent 'Give AI agents scoped, time-limited access to secrets'
             cand mcp 'Run an MCP (Model Context Protocol) stdio server for AI agents'
             cand policy 'Manage the agent access policy'
             cand circle 'Manage recipients'
@@ -83,22 +83,22 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand --help 'Print help'
         }
         &'murk;generate'= {
-            cand --length 'Length in bytes (default 32)'
+            cand --length 'Length in bytes'
             cand --desc 'Description for this key'
             cand --example 'Example value'
             cand --group 'Who can read it: a group name, `everyone` (default), or `me`'
             cand --tag 'Tag for grouping (repeatable)'
             cand --vault 'Vault filename'
-            cand --hex 'Output as hex instead of base64'
+            cand --hex 'Encode the value as hex instead of URL-safe base64'
             cand -h 'Print help'
             cand --help 'Print help'
         }
         &'murk;rotate'= {
-            cand --length 'Length in bytes for generated values (default 32)'
+            cand --length 'Length in bytes for generated values'
             cand --vault 'Vault filename'
             cand --all 'Rotate all secrets in the vault'
             cand --generate 'Generate random values instead of prompting'
-            cand --hex 'Output generated values as hex instead of base64'
+            cand --hex 'Encode generated values as hex instead of URL-safe base64'
             cand --list 'List keys needing rotation instead of rotating (exits 1 if any)'
             cand --json 'Output the listing as JSON (with --list, always exits 0)'
             cand -h 'Print help'
@@ -139,18 +139,18 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand --group 'Assign imported secrets to this group (default: everyone)'
             cand --example 'Example value applied to every imported key'
             cand --vault 'Vault filename'
-            cand --force 'Overwrite existing secrets without prompting'
+            cand --force 'Overwrite existing secrets. Without it, import stops if any key already exists'
             cand -h 'Print help'
             cand --help 'Print help'
         }
         &'murk;describe'= {
-            cand --example 'Example value'
+            cand --example 'Example value. Omitting it clears the current example'
             cand --tag 'Tag for grouping (repeatable, replaces existing tags)'
             cand --rotate-every 'Rotation interval, e.g. `90d` or `90` (days). `never` clears it'
             cand --expires 'Hard expiry date, e.g. `2026-09-01`. `never` clears it'
             cand --vault 'Vault filename'
-            cand -h 'Print help'
-            cand --help 'Print help'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
         }
         &'murk;info'= {
             cand --tag 'Filter by tag (repeatable)'
@@ -170,7 +170,7 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand --only 'Only inject these specific keys (repeatable)'
             cand --tag 'Filter by tag (repeatable)'
             cand --vault 'Vault filename'
-            cand --clean-env 'Strip inherited environment (only murk secrets + PATH)'
+            cand --clean-env 'Start the command with only murk secrets plus PATH, HOME and TERM on Unix (on Windows, PATH and a fixed set of system variables)'
             cand -h 'Print help'
             cand --help 'Print help'
         }
@@ -178,12 +178,12 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand -h 'Print help'
             cand --help 'Print help'
             cand plan 'Emit schema-only context safe to paste into an AI agent prompt'
-            cand exec 'Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only, masks injected values in the output)'
+            cand exec 'Run a command with strict agent-safe defaults (keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires --only, masks injected values in the output)'
             cand grant 'Mint a scoped ephemeral key that can read only the named secrets'
             cand init 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely'
             cand ls 'List active agent grants and their TTLs'
-            cand revoke 'Revoke an agent grant and rotate the keys it could read'
-            cand connect 'Wire `murk mcp` into an AI editor''s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it'
+            cand revoke 'Revoke an agent grant'
+            cand connect 'Add `murk mcp` to an AI client''s MCP config and mint a scoped grant for it'
             cand disconnect 'Remove murk''s entry from an AI editor''s MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
@@ -231,9 +231,9 @@ set edit:completion:arg-completer[murk] = {|@words|
         }
         &'murk;agent;revoke'= {
             cand --vault 'Vault filename'
-            cand --rotate 'Rotate the keys it could read in the same session'
-            cand -h 'Print help'
-            cand --help 'Print help'
+            cand --rotate 'Rotate the secrets the grant could read, in the same run. murk stores a new value for each. It does not rotate them at the provider'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
         }
         &'murk;agent;connect'= {
             cand --only 'Keys the agent may read (required — fails closed)'
@@ -241,7 +241,7 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand --ttl 'Grant time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)'
             cand --name 'Grant name (used to disconnect/revoke it later)'
             cand --vault 'Vault filename'
-            cand --allow-exec 'Also expose `murk agent exec` to the agent (adds --allow-exec)'
+            cand --allow-exec 'Also enable the `murk_exec` tool in the MCP server (writes `--allow-exec` into the client config)'
             cand -h 'Print help'
             cand --help 'Print help'
         }
@@ -254,12 +254,12 @@ set edit:completion:arg-completer[murk] = {|@words|
         }
         &'murk;agent;help'= {
             cand plan 'Emit schema-only context safe to paste into an AI agent prompt'
-            cand exec 'Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only, masks injected values in the output)'
+            cand exec 'Run a command with strict agent-safe defaults (keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires --only, masks injected values in the output)'
             cand grant 'Mint a scoped ephemeral key that can read only the named secrets'
             cand init 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely'
             cand ls 'List active agent grants and their TTLs'
-            cand revoke 'Revoke an agent grant and rotate the keys it could read'
-            cand connect 'Wire `murk mcp` into an AI editor''s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it'
+            cand revoke 'Revoke an agent grant'
+            cand connect 'Add `murk mcp` to an AI client''s MCP config and mint a scoped grant for it'
             cand disconnect 'Remove murk''s entry from an AI editor''s MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
@@ -339,8 +339,8 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand --name 'Display name for this recipient'
             cand --group 'Also add the new recipient to this group'
             cand --vault 'Vault filename'
-            cand --force 'Accept changed GitHub keys without confirmation'
-            cand --allow-ssh-rsa 'Allow ssh-rsa recipients (rejected by default — use ed25519)'
+            cand --force 'Accept changed GitHub keys. Without it, authorize stops when a user''s keys differ from the pinned set'
+            cand --allow-ssh-rsa 'Allow ssh-rsa keys. They are refused or skipped by default, so prefer ed25519'
             cand -h 'Print help'
             cand --help 'Print help'
         }
@@ -364,8 +364,8 @@ set edit:completion:arg-completer[murk] = {|@words|
         &'murk;authorize'= {
             cand --name 'Display name for this recipient'
             cand --vault 'Vault filename'
-            cand --force 'Accept changed GitHub keys without confirmation'
-            cand --allow-ssh-rsa 'Allow ssh-rsa recipients (rejected by default — use ed25519)'
+            cand --force 'Accept changed GitHub keys. Without it, authorize stops when a user''s keys differ from the pinned set'
+            cand --allow-ssh-rsa 'Allow ssh-rsa keys. They are refused or skipped by default, so prefer ed25519'
             cand -h 'Print help'
             cand --help 'Print help'
         }
@@ -442,9 +442,9 @@ set edit:completion:arg-completer[murk] = {|@words|
         &'murk;diff'= {
             cand --vault 'Vault filename'
             cand --show-values 'Show actual values (not just key names)'
-            cand --json 'Output as JSON'
-            cand -h 'Print help'
-            cand --help 'Print help'
+            cand --json 'Output as JSON. Always includes the old and new values'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
         }
         &'murk;setup-merge-driver'= {
             cand -h 'Print help'
@@ -494,11 +494,11 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand ls 'List all key names'
             cand export 'Export all secrets as shell export statements'
             cand import 'Import secrets from a .env file'
-            cand describe 'Add or update a key description'
+            cand describe 'Set a key''s description, example, tags and rotation or expiry policy'
             cand info 'Show public schema and key info'
             cand skeleton 'Export schema-only vault with no secrets or recipients'
             cand exec 'Run a command with secrets injected as environment variables'
-            cand agent 'Agent-oriented commands (schema-only output for AI agent prompts)'
+            cand agent 'Give AI agents scoped, time-limited access to secrets'
             cand mcp 'Run an MCP (Model Context Protocol) stdio server for AI agents'
             cand policy 'Manage the agent access policy'
             cand circle 'Manage recipients'
@@ -550,12 +550,12 @@ set edit:completion:arg-completer[murk] = {|@words|
         }
         &'murk;help;agent'= {
             cand plan 'Emit schema-only context safe to paste into an AI agent prompt'
-            cand exec 'Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only, masks injected values in the output)'
+            cand exec 'Run a command with strict agent-safe defaults (keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires --only, masks injected values in the output)'
             cand grant 'Mint a scoped ephemeral key that can read only the named secrets'
             cand init 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely'
             cand ls 'List active agent grants and their TTLs'
-            cand revoke 'Revoke an agent grant and rotate the keys it could read'
-            cand connect 'Wire `murk mcp` into an AI editor''s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it'
+            cand revoke 'Revoke an agent grant'
+            cand connect 'Add `murk mcp` to an AI client''s MCP config and mint a scoped grant for it'
             cand disconnect 'Remove murk''s entry from an AI editor''s MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys'
         }
         &'murk;help;agent;plan'= {
