@@ -36,8 +36,9 @@ pub(crate) fn random_secret(length: usize, hex: bool) -> zeroize::Zeroizing<Stri
 
 /// Map `--group`/`--scoped` onto a tier (see [`SecretTier::parse`] for the
 /// reserved names); `--scoped` is a deprecated alias for `--group me`. Both
-/// flags at once is a usage error.
-pub(crate) fn resolve_secret_tier(group: Option<&str>, scoped: bool) -> SecretTier {
+/// flags at once is a usage error. `None` when neither flag is given: the
+/// write keeps an existing key in its tier (see [`murk_cli::set_secret`]).
+pub(crate) fn resolve_secret_tier(group: Option<&str>, scoped: bool) -> Option<SecretTier> {
     if let Some(g) = group {
         if scoped {
             die(
@@ -45,16 +46,42 @@ pub(crate) fn resolve_secret_tier(group: Option<&str>, scoped: bool) -> SecretTi
                 1,
             );
         }
-        SecretTier::parse(g)
+        Some(SecretTier::parse(g))
     } else if scoped {
         eprintln!(
             "{} --scoped is deprecated; use --group me",
             "warn".yellow().bold()
         );
-        SecretTier::Me
+        Some(SecretTier::Me)
     } else {
-        SecretTier::Everyone
+        None
     }
+}
+
+/// Display suffix for the tiers a write landed in, e.g. ` (group prod)`.
+fn tiers_label(tiers: &[SecretTier]) -> String {
+    tiers.iter().map(tier_label).collect()
+}
+
+/// Tell the user when an explicit tier moved `key` out of the tiers it held.
+fn report_move(key: &str, write: &murk_cli::SecretWrite) {
+    if write.moved_from.is_empty() {
+        return;
+    }
+    let name = |t: &SecretTier| match t {
+        SecretTier::Everyone => "everyone".to_string(),
+        SecretTier::Me => "me".to_string(),
+        SecretTier::Group(g) => format!("group {g}"),
+    };
+    let from: Vec<String> = write.moved_from.iter().map(name).collect();
+    let to: Vec<String> = write.tiers.iter().map(name).collect();
+    eprintln!(
+        "{} moved {} from {} to {}",
+        "◆".magenta(),
+        key.bold(),
+        from.join(" and "),
+        to.join(" and ")
+    );
 }
 
 /// Read a key's value for the given tier from the working state.
@@ -72,39 +99,6 @@ pub(crate) fn tier_get(
             .and_then(|m| m.get(pubkey))
             .cloned(),
         SecretTier::Group(name) => current.grouped.get(key).and_then(|m| m.get(name)).cloned(),
-    }
-}
-
-/// Set a key's value for the given tier in the working state.
-pub(crate) fn tier_set(
-    current: &mut murk_cli::types::Murk,
-    tier: &SecretTier,
-    pubkey: &str,
-    key: &str,
-    value: zeroize::Zeroizing<String>,
-) {
-    match tier {
-        SecretTier::Everyone => {
-            // everyone is the base tier — drop any group assignment so the
-            // shared value isn't shadowed by stale grouped ciphertext.
-            current.grouped.remove(key);
-            current.values.insert(key.to_string(), value);
-        }
-        SecretTier::Me => {
-            // me is an override; leave the base tier untouched.
-            current
-                .private
-                .entry(key.to_string())
-                .or_default()
-                .insert(pubkey.to_string(), value);
-        }
-        SecretTier::Group(name) => {
-            // the named group becomes the sole base tier.
-            current.values.remove(key);
-            let entry = current.grouped.entry(key.to_string()).or_default();
-            entry.clear();
-            entry.insert(name.to_string(), value);
-        }
     }
 }
 
@@ -171,51 +165,30 @@ pub(crate) fn cmd_add(
     let tier = resolve_secret_tier(group, scoped);
 
     let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
+    let pubkey = try_or_die(identity.pubkey_string());
     let original = murk.clone();
     let mut current = murk;
 
-    let (needs_desc_hint, label) = match &tier {
-        SecretTier::Group(name) => {
-            let pubkey = try_or_die(identity.pubkey_string());
-            let needs = try_or_die(murk_cli::add_grouped_secret(
-                &mut vault,
-                &mut current,
-                key,
-                value,
-                desc,
-                example,
-                name,
-                tags,
-                &pubkey,
-            ));
-            (needs, format!(" (group {name})"))
-        }
-        tier => {
-            let scoped = matches!(tier, SecretTier::Me);
-            let pubkey = scoped.then(|| try_or_die(identity.pubkey_string()));
-            let needs = murk_cli::add_secret(
-                &mut vault,
-                &mut current,
-                key,
-                value,
-                desc,
-                example,
-                scoped,
-                tags,
-                pubkey.as_deref(),
-            );
-            (
-                needs,
-                if scoped {
-                    " (me)".to_string()
-                } else {
-                    String::new()
-                },
-            )
-        }
-    };
+    let write = try_or_die(murk_cli::set_secret(
+        &mut vault,
+        &mut current,
+        key,
+        value,
+        desc,
+        example,
+        tier.as_ref(),
+        tags,
+        &pubkey,
+    ));
+    let needs_desc_hint = write.needs_desc_hint;
 
-    eprintln!("{} added {}{label}", "◆".magenta(), key.bold());
+    report_move(key, &write);
+    eprintln!(
+        "{} added {}{}",
+        "◆".magenta(),
+        key.bold(),
+        tiers_label(&write.tiers)
+    );
 
     if needs_desc_hint {
         eprintln!(
@@ -281,6 +254,7 @@ pub(crate) fn cmd_import(
     }
 
     let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
+    let pubkey = try_or_die(identity.pubkey_string());
     let original = murk.clone();
     let mut current = murk;
 
@@ -310,54 +284,39 @@ pub(crate) fn cmd_import(
         }
     }
 
-    let imported: Vec<String> = match &tier {
-        SecretTier::Everyone => murk_cli::import_secrets(&mut vault, &mut current, &pairs, example),
-        SecretTier::Me => {
-            let pubkey = try_or_die(identity.pubkey_string());
-            for (key, value) in &pairs {
-                murk_cli::add_secret(
-                    &mut vault,
-                    &mut current,
-                    key,
-                    value,
-                    None,
-                    example,
-                    true,
-                    &[],
-                    Some(&pubkey),
-                );
-            }
-            pairs.iter().map(|(k, _)| k.clone()).collect()
-        }
-        SecretTier::Group(name) => {
-            let pubkey = try_or_die(identity.pubkey_string());
-            for (key, value) in &pairs {
-                try_or_die(murk_cli::add_grouped_secret(
-                    &mut vault,
-                    &mut current,
-                    key,
-                    value,
-                    None,
-                    example,
-                    name,
-                    &[],
-                    &pubkey,
-                ));
-            }
-            pairs.iter().map(|(k, _)| k.clone()).collect()
-        }
-    };
+    // Any refusal dies before the vault is saved, so the import is all or nothing.
+    let mut imported = Vec::with_capacity(pairs.len());
+    for (key, value) in &pairs {
+        let write = try_or_die(murk_cli::set_secret(
+            &mut vault,
+            &mut current,
+            key,
+            value,
+            None,
+            example,
+            tier.as_ref(),
+            &[],
+            &pubkey,
+        ));
+        imported.push((key, write));
+    }
 
-    for key in &imported {
-        eprintln!("  {} {}", "◆".magenta(), key.bold());
+    for (key, write) in &imported {
+        report_move(key, write);
+        eprintln!(
+            "  {} {}{}",
+            "◆".magenta(),
+            key.bold(),
+            tiers_label(&write.tiers)
+        );
     }
 
     save_vault(vault_path, &mut vault, &original, &current);
     let count = imported.len();
     let label = match &tier {
-        SecretTier::Group(name) => format!(" into group {name}"),
-        SecretTier::Me => " (me)".to_string(),
-        SecretTier::Everyone => String::new(),
+        Some(SecretTier::Group(name)) => format!(" into group {name}"),
+        Some(SecretTier::Me) => " (me)".to_string(),
+        Some(SecretTier::Everyone) | None => String::new(),
     };
     eprintln!(
         "{} imported {count} secret{}{label}",
@@ -391,48 +350,29 @@ pub(crate) fn cmd_generate(
     let value = random_secret(length, hex);
 
     let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
+    let pubkey = try_or_die(identity.pubkey_string());
     let original = murk.clone();
     let mut current = murk;
 
-    let label = match &tier {
-        SecretTier::Group(name) => {
-            let pubkey = try_or_die(identity.pubkey_string());
-            try_or_die(murk_cli::add_grouped_secret(
-                &mut vault,
-                &mut current,
-                key,
-                &value,
-                desc,
-                example,
-                name,
-                tags,
-                &pubkey,
-            ));
-            format!(" (group {name})")
-        }
-        tier => {
-            let scoped = matches!(tier, SecretTier::Me);
-            let pubkey = scoped.then(|| try_or_die(identity.pubkey_string()));
-            murk_cli::add_secret(
-                &mut vault,
-                &mut current,
-                key,
-                &value,
-                desc,
-                example,
-                scoped,
-                tags,
-                pubkey.as_deref(),
-            );
-            if scoped {
-                " (me)".to_string()
-            } else {
-                String::new()
-            }
-        }
-    };
+    let write = try_or_die(murk_cli::set_secret(
+        &mut vault,
+        &mut current,
+        key,
+        &value,
+        desc,
+        example,
+        tier.as_ref(),
+        tags,
+        &pubkey,
+    ));
 
-    eprintln!("{} generated {}{label}", "◆".magenta(), key.bold());
+    report_move(key, &write);
+    eprintln!(
+        "{} generated {}{}",
+        "◆".magenta(),
+        key.bold(),
+        tiers_label(&write.tiers)
+    );
 
     save_vault(vault_path, &mut vault, &original, &current);
 }
@@ -850,7 +790,10 @@ pub(crate) fn apply_agent_policy(
 }
 
 pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vault_path: &str) {
-    let tier = resolve_secret_tier(group, scoped);
+    // The tier whose values are edited. A line for a key outside it is written
+    // with `set_secret`: into `explicit` when given, else where the key lives.
+    let explicit = resolve_secret_tier(group, scoped);
+    let tier = explicit.clone().unwrap_or(SecretTier::Everyone);
 
     let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
     let original = murk.clone();
@@ -879,6 +822,15 @@ pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vau
         }
     }
 
+    // Editing a listed shared or group value is refused, like `add`, when a
+    // group the operator is not in also holds the key.
+    let check_listed = |vault: &types::Vault, current: &types::Murk, k: &str| {
+        if tier != SecretTier::Me {
+            let tiers = murk_cli::key_tiers(vault, current, k, &pubkey);
+            try_or_die(murk_cli::check_foreign_groups(k, &tiers));
+        }
+    };
+
     let tier_label = match &tier {
         SecretTier::Everyone => String::new(),
         SecretTier::Me => " (me)".to_string(),
@@ -891,6 +843,7 @@ pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vau
         let value = tier_get(&current, &tier, &pubkey, k).unwrap_or_else(|| {
             die(&format_args!("key {} not found{tier_label}", k.bold()), 1);
         });
+        check_listed(&vault, &current, k);
         (
             format!(
                 "# Editing {k}{tier_label}\n# Save and quit to apply. Empty value or exit non-zero to abort.\n",
@@ -990,7 +943,16 @@ pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vau
             return;
         }
 
-        tier_set(&mut current, &tier, &pubkey, k, new_value);
+        // The value exists in this tier (the buffer was built from it), so it is
+        // replaced in place without moving the key.
+        try_or_die(murk_cli::rotate_secret(
+            &mut vault,
+            &mut current,
+            k,
+            &new_value,
+            &tier,
+            &pubkey,
+        ));
 
         save_vault(vault_path, &mut vault, &original, &current);
         eprintln!("{} updated {}{tier_label}", "◆".magenta(), k.bold());
@@ -1033,17 +995,37 @@ pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vau
             match old_entries.get(k) {
                 Some(old_v) if old_v.as_str() == v.as_str() => {} // Unchanged.
                 Some(_) => {
-                    tier_set(&mut current, &tier, &pubkey, k, v.clone());
+                    check_listed(&vault, &current, k);
+                    try_or_die(murk_cli::rotate_secret(
+                        &mut vault,
+                        &mut current,
+                        k,
+                        v,
+                        &tier,
+                        &pubkey,
+                    ));
                     updated += 1;
                 }
                 None => {
-                    tier_set(&mut current, &tier, &pubkey, k, v.clone());
-                    // Ensure schema entry exists for new keys.
-                    vault
-                        .schema
-                        .entry(k.clone())
-                        .or_insert_with(murk_cli::types::SchemaEntry::default);
-                    added += 1;
+                    // Not listed in this tier: the key is new, or lives elsewhere.
+                    let existed = vault.secrets.contains_key(k);
+                    let write = try_or_die(murk_cli::set_secret(
+                        &mut vault,
+                        &mut current,
+                        k,
+                        v,
+                        None,
+                        None,
+                        explicit.as_ref(),
+                        &[],
+                        &pubkey,
+                    ));
+                    report_move(k, &write);
+                    if existed {
+                        updated += 1;
+                    } else {
+                        added += 1;
+                    }
                 }
             }
         }

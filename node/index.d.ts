@@ -41,10 +41,15 @@ export declare class Vault {
    * recipients and the vault is re-signed and written back to disk under an
    * exclusive lock, so it is safe against concurrent writers.
    *
-   * `tier` selects the destination — `"everyone"` (default, shared to all
-   * recipients), `"me"` (a personal value encrypted to the caller only), or a
-   * group name (encrypted to that group's members; the caller must be a
-   * member). An existing key is overwritten in place.
+   * `tier` selects the destination — `"everyone"` (shared to all recipients),
+   * `"me"` (a personal value encrypted to the caller only), or a group name
+   * (encrypted to that group's members; the caller must be a member). Giving
+   * a tier moves an existing key there. Without one, an existing key keeps its
+   * tier: a group value stays in its group and a personal override stays the
+   * caller's own. Only a new key defaults to `"everyone"`. A key held by a
+   * group the caller is not a member of can't be written (except as a `"me"`
+   * override), and a key holding only other recipients' overrides needs an
+   * explicit tier: otherwise the call throws.
    *
    * PLAINTEXT CAVEAT: unlike the read path — where plaintext only ever appears
    * *after* decryption — a write means the caller already holds the secret as a
@@ -74,10 +79,13 @@ export declare function add(key: string, value: string, options?: AddOptions | u
 
 /**
  * Options for [`Vault::add`]. All fields are optional; an omitted `tier`
- * defaults to `everyone` (the shared value).
+ * keeps an existing key in its tier and makes a new key shared (`everyone`).
  */
 export interface AddOptions {
-  /** `"everyone"` (default), `"me"` (personal scoped), or a group name. */
+  /**
+   * `"everyone"`, `"me"` (personal scoped), or a group name. Omit it to keep
+   * an existing key where it is; a new key is then shared (`everyone`).
+   */
   tier?: string
   /** Human-readable description recorded in the vault schema. */
   desc?: string

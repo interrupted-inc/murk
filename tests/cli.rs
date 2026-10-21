@@ -5428,58 +5428,6 @@ fn non_member_save_preserves_group_secret() {
         .stdout(predicate::str::contains("prod_secret"));
 }
 
-#[test]
-fn add_shared_clears_group_assignment() {
-    // Regression: assigning a key to everyone must drop its prior group entry,
-    // so the new shared value isn't shadowed by stale grouped ciphertext.
-    let dir = TempDir::new().unwrap();
-    let (alice_key, _alice_pk) = init_vault(&dir);
-
-    let carol_dir = TempDir::new().unwrap();
-    let (carol_key, carol_pk) = init_vault(&carol_dir);
-    murk(&dir, &alice_key)
-        .args([
-            "circle",
-            "authorize",
-            &carol_pk,
-            "--name",
-            "carol",
-            "--vault",
-            "test.murk",
-        ])
-        .assert()
-        .success();
-
-    murk(&dir, &alice_key)
-        .args(["group", "create", "prod", "--vault", "test.murk"])
-        .assert()
-        .success();
-    murk(&dir, &alice_key)
-        .args(["add", "TOKEN", "--group", "prod", "--vault", "test.murk"])
-        .write_stdin("group_val\n")
-        .assert()
-        .success();
-    // carol (not in prod) can't read it yet.
-    murk(&dir, &carol_key)
-        .args(["get", "TOKEN", "--vault", "test.murk"])
-        .assert()
-        .failure();
-
-    // Reassign to everyone.
-    murk(&dir, &alice_key)
-        .args(["add", "TOKEN", "--vault", "test.murk"])
-        .write_stdin("shared_val\n")
-        .assert()
-        .success();
-
-    // carol now reads the shared value (not the stale group ciphertext).
-    murk(&dir, &carol_key)
-        .args(["get", "TOKEN", "--vault", "test.murk"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("shared_val"));
-}
-
 // ── agent grants ──
 
 /// Read the agent key written by `agent grant --out <path>`.

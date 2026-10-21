@@ -108,6 +108,34 @@ function setupAgentVault() {
   return { dir, opKey, agentKey, tightenPolicy }
 }
 
+// A vault whose operator is the only member of group `backend`, holding a
+// group-only key GROUP_DB, with a second recipient (`outsider`) authorized
+// outside the group.
+function setupGroupVault() {
+  const dir = mkdtempSync(join(tmpdir(), 'murk-node-group-'))
+  runMurk(dir, ['init', '--vault', '.murk'], 'groupowner\n')
+  const opKey = readKeyFromDotenv(dir)
+  const opEnv = { MURK_KEY: opKey }
+
+  const outsiderDir = mkdtempSync(join(tmpdir(), 'murk-node-outsider-'))
+  runMurk(outsiderDir, ['init', '--vault', '.murk'], 'outsider\n')
+  const outsiderKey = readKeyFromDotenv(outsiderDir)
+  const outsiderPk = JSON.parse(readFileSync(join(outsiderDir, '.murk'), 'utf8')).recipients[0]
+  rmSync(outsiderDir, { recursive: true, force: true })
+
+  runMurk(dir, ['circle', 'authorize', outsiderPk, '--name', 'outsider', '--vault', '.murk'], '', opEnv)
+  runMurk(dir, ['group', 'create', 'backend', '--vault', '.murk'], '', opEnv)
+  runMurk(dir, ['add', 'GROUP_DB', '--group', 'backend', '--vault', '.murk'], 'old-db\n', opEnv)
+
+  const path = join(dir, '.murk')
+  // Base tiers of a key in the vault file: [has shared value, group names].
+  const storedTiers = (key) => {
+    const entry = JSON.parse(readFileSync(path, 'utf8')).secrets[key]
+    return [Boolean(entry.shared), Object.keys(entry.grouped ?? {})]
+  }
+  return { dir, path, opKey, outsiderKey, storedTiers }
+}
+
 let testDir, testKey
 
 // Setup
@@ -279,6 +307,43 @@ test('vault.describe documents a key without a value', () => {
   assert.strictEqual(reloaded.get('DOCUMENTED'), null)
 })
 
+// Updating an existing key without a tier keeps it where it is, so a routine
+// write never widens who can read it.
+console.log('\nSetting up group vault...')
+const grp = setupGroupVault()
+
+test('vault.add without a tier keeps a group-only key in its group', () => {
+  process.env.MURK_KEY = grp.opKey
+  load(grp.path).add('GROUP_DB', 'new-db')
+  assert.strictEqual(get('GROUP_DB', grp.path), 'new-db')
+  assert.deepStrictEqual(grp.storedTiers('GROUP_DB'), [false, ['backend']])
+  process.env.MURK_KEY = grp.outsiderKey
+  assert.strictEqual(get('GROUP_DB', grp.path), null)
+})
+
+test("vault.add with tier 'everyone' moves a group key to the shared tier", () => {
+  process.env.MURK_KEY = grp.opKey
+  load(grp.path).add('MOVED_DB', 'old', { tier: 'backend' })
+  load(grp.path).add('MOVED_DB', 'open', { tier: 'everyone' })
+  assert.deepStrictEqual(grp.storedTiers('MOVED_DB'), [true, []])
+  process.env.MURK_KEY = grp.outsiderKey
+  assert.strictEqual(get('MOVED_DB', grp.path), 'open')
+})
+
+test("vault.add by a non-member to a group's key throws and changes nothing", () => {
+  const before = readFileSync(grp.path, 'utf8')
+  process.env.MURK_KEY = grp.outsiderKey
+  assert.throws(
+    () => load(grp.path).add('GROUP_DB', 'outsider-db'),
+    /held by group backend, which you are not a member of/,
+  )
+  assert.strictEqual(readFileSync(grp.path, 'utf8'), before)
+  process.env.MURK_KEY = grp.opKey
+  assert.strictEqual(get('GROUP_DB', grp.path), 'new-db')
+})
+
+process.env.MURK_KEY = testKey
+
 // Agent policy enforcement: a granted agent identity is gated by the vault's
 // policy from the binding, just like the CLI gates it at `agent exec`.
 console.log('\nSetting up agent policy vault...')
@@ -366,6 +431,7 @@ test('tightening the policy retroactively blocks the agent export', () => {
 // Cleanup
 rmSync(testDir, { recursive: true, force: true })
 rmSync(agent.dir, { recursive: true, force: true })
+rmSync(grp.dir, { recursive: true, force: true })
 
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

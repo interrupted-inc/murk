@@ -288,50 +288,144 @@ pub fn list_keys<'a>(vault: &'a types::Vault, tags: &[String]) -> Vec<&'a str> {
         .collect()
 }
 
-/// Import multiple secrets at once.
+/// What [`set_secret`] wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretWrite {
+    /// The key was new and got no description, so the caller may suggest one.
+    pub needs_desc_hint: bool,
+    /// The tiers that now hold the written value.
+    pub tiers: Vec<crate::SecretTier>,
+    /// The base tiers (shared or named groups) the key held before an explicit
+    /// tier moved it elsewhere. Empty when the key did not change tier.
+    pub moved_from: Vec<crate::SecretTier>,
+}
+
+/// Write `value` to `key` as the operator `pubkey`.
 ///
-/// For each `(key, value)` pair, inserts the value into murk and ensures a
-/// schema entry exists. Returns the list of imported key names.
+/// With `tier: None` the key keeps the tier(s) it is in: a shared value stays
+/// shared, a group value stays in its group (re-encrypted to the group's
+/// current members on save), and a key whose only value is the operator's
+/// personal override updates that override. Only a new key (one with no value
+/// at all) gets a shared value.
 ///
-/// Values arrive already wrapped in [`Zeroizing`] so callers do not have to
-/// hold plaintext in a bare `String` across the import boundary.
-pub fn import_secrets(
+/// With an explicit `tier` the value goes there, as [`add_secret`] and
+/// [`add_grouped_secret`] do; [`SecretWrite::moved_from`] reports the base
+/// tiers the key left.
+///
+/// Errors before changing anything when a group the operator is not a member
+/// of holds a value of `key` and the write targets its base tier (see
+/// [`check_foreign_groups`]). A personal override (`me`) is still allowed.
+/// Also errors, with `tier: None`, when the key's only values are other
+/// recipients' overrides: there is no tier to keep, and the key isn't new, so
+/// the caller must choose one.
+#[allow(clippy::too_many_arguments)]
+pub fn set_secret(
     vault: &mut types::Vault,
     murk: &mut types::Murk,
-    pairs: &[(String, Zeroizing<String>)],
+    key: &str,
+    value: &str,
+    desc: Option<&str>,
     example: Option<&str>,
-) -> Vec<String> {
-    let now = now_utc();
-    let mut imported = Vec::new();
-    for (key, value) in pairs {
-        // Shared (everyone) base tier — drop any prior group assignment.
-        murk.grouped.remove(key);
-        murk.values.insert(key.clone(), value.clone());
+    tier: Option<&crate::SecretTier>,
+    tags: &[String],
+    pubkey: &str,
+) -> Result<SecretWrite, crate::error::MurkError> {
+    use crate::SecretTier;
 
-        if let Some(entry) = vault.schema.get_mut(key.as_str()) {
-            entry.updated = Some(now.clone());
-            if let Some(e) = example {
-                entry.example = Some(e.into());
-            }
-            // A value write clears any outstanding post-revoke rotation marker.
-            entry.revoked_at = None;
-        } else {
-            vault.schema.insert(
-                key.clone(),
-                types::SchemaEntry {
-                    description: String::new(),
-                    example: example.map(Into::into),
-                    tags: vec![],
-                    created: Some(now.clone()),
-                    updated: Some(now.clone()),
-                    ..Default::default()
-                },
-            );
-        }
-
-        imported.push(key.clone());
+    let before = key_tiers(vault, murk, key, pubkey);
+    if tier != Some(&SecretTier::Me) {
+        check_foreign_groups(key, &before)?;
     }
-    imported
+    let mut base: Vec<SecretTier> = before
+        .shared
+        .then_some(SecretTier::Everyone)
+        .into_iter()
+        .chain(before.groups.iter().cloned().map(SecretTier::Group))
+        .collect();
+
+    let Some(tier) = tier else {
+        if base.is_empty() {
+            let others_only = !before.own_override
+                && vault
+                    .secrets
+                    .get(key)
+                    .is_some_and(|e| !e.private.is_empty());
+            if others_only {
+                return Err(crate::error::MurkError::Secret(format!(
+                    "{key} holds only other recipients' personal overrides — choose who can read the new value with --group (everyone, me, or a group name)"
+                )));
+            }
+            base.push(if before.own_override {
+                SecretTier::Me
+            } else {
+                SecretTier::Everyone
+            });
+        }
+        for t in &base {
+            let v = Zeroizing::new(value.to_owned());
+            match t {
+                SecretTier::Everyone => {
+                    murk.values.insert(key.into(), v);
+                }
+                SecretTier::Group(name) => {
+                    murk.grouped
+                        .entry(key.into())
+                        .or_default()
+                        .insert(name.clone(), v);
+                }
+                SecretTier::Me => {
+                    murk.private
+                        .entry(key.into())
+                        .or_default()
+                        .insert(pubkey.into(), v);
+                }
+            }
+        }
+        // Only a shared or group write replaces a value a revoked recipient
+        // could read; an override write leaves the rotation owed.
+        let clears_revoke = base.iter().any(|t| *t != SecretTier::Me);
+        return Ok(SecretWrite {
+            needs_desc_hint: upsert_schema(vault, key, desc, example, tags, clears_revoke),
+            tiers: base,
+            moved_from: Vec::new(),
+        });
+    };
+
+    let needs_desc_hint = match tier {
+        SecretTier::Group(name) => {
+            add_grouped_secret(vault, murk, key, value, desc, example, name, tags, pubkey)?
+        }
+        SecretTier::Everyone | SecretTier::Me => add_secret(
+            vault,
+            murk,
+            key,
+            value,
+            desc,
+            example,
+            *tier == SecretTier::Me,
+            tags,
+            Some(pubkey),
+        ),
+    };
+    // An override sits on top of the base tier, so it never moves the key.
+    let moved = *tier != SecretTier::Me && !base.is_empty() && base != [tier.clone()];
+    Ok(SecretWrite {
+        needs_desc_hint,
+        tiers: vec![tier.clone()],
+        moved_from: if moved { base } else { Vec::new() },
+    })
+}
+
+/// Refuse a write to `key`'s shared or group value when a group the operator is
+/// not a member of holds a value of it: only a member can replace that value,
+/// and a base value beside it would be readable by recipients outside the group.
+pub fn check_foreign_groups(key: &str, tiers: &KeyTiers) -> Result<(), crate::error::MurkError> {
+    match tiers.foreign_groups.first() {
+        Some(group) => Err(crate::error::MurkError::Group(format!(
+            "{key} is held by group {group}, which you are not a member of — only its members can update it"
+        ))),
+        None => Ok(()),
+    }
 }
 
 /// Update a key's plaintext schema metadata.
@@ -702,19 +796,6 @@ mod tests {
     }
 
     #[test]
-    fn import_secrets_applies_example_to_all() {
-        let mut vault = empty_vault();
-        let mut murk = empty_murk();
-        let pairs = vec![
-            ("A".into(), Zeroizing::new("a".into())),
-            ("B".into(), Zeroizing::new("b".into())),
-        ];
-        import_secrets(&mut vault, &mut murk, &pairs, Some("shared-example"));
-        assert_eq!(vault.schema["A"].example.as_deref(), Some("shared-example"));
-        assert_eq!(vault.schema["B"].example.as_deref(), Some("shared-example"));
-    }
-
-    #[test]
     fn remove_secret_clears_all() {
         let mut vault = empty_vault();
         vault.schema.insert(
@@ -963,53 +1044,6 @@ mod tests {
     }
 
     #[test]
-    fn import_secrets_basic() {
-        let mut vault = empty_vault();
-        let mut murk = empty_murk();
-
-        let pairs = vec![
-            ("KEY1".into(), Zeroizing::new("val1".into())),
-            ("KEY2".into(), Zeroizing::new("val2".into())),
-        ];
-        let imported = import_secrets(&mut vault, &mut murk, &pairs, None);
-
-        assert_eq!(imported, vec!["KEY1", "KEY2"]);
-        assert_eq!(murk.values["KEY1"].as_str(), "val1");
-        assert_eq!(murk.values["KEY2"].as_str(), "val2");
-        assert!(vault.schema.contains_key("KEY1"));
-        assert!(vault.schema.contains_key("KEY2"));
-    }
-
-    #[test]
-    fn import_secrets_existing_schema_preserved() {
-        let mut vault = empty_vault();
-        vault.schema.insert(
-            "KEY1".into(),
-            types::SchemaEntry {
-                description: "existing desc".into(),
-                example: Some("ex".into()),
-                tags: vec!["tag".into()],
-                ..Default::default()
-            },
-        );
-        let mut murk = empty_murk();
-
-        let pairs = vec![("KEY1".into(), Zeroizing::new("new_val".into()))];
-        import_secrets(&mut vault, &mut murk, &pairs, None);
-
-        assert_eq!(murk.values["KEY1"].as_str(), "new_val");
-        assert_eq!(vault.schema["KEY1"].description, "existing desc");
-    }
-
-    #[test]
-    fn import_secrets_empty() {
-        let mut vault = empty_vault();
-        let mut murk = empty_murk();
-        let imported = import_secrets(&mut vault, &mut murk, &[], None);
-        assert!(imported.is_empty(), "{imported:?}");
-    }
-
-    #[test]
     fn remove_secret_nonexistent() {
         let mut vault = empty_vault();
         let mut murk = empty_murk();
@@ -1172,10 +1206,116 @@ mod tests {
             ..Default::default()
         });
         let mut murk = empty_murk();
-        import_secrets(&mut vault, &mut murk, &[("K".into(), secret("new"))], None);
+        set_secret(
+            &mut vault,
+            &mut murk,
+            "K",
+            "new",
+            None,
+            None,
+            None,
+            &[],
+            "pk",
+        )
+        .unwrap();
         assert_eq!(vault.schema["K"].revoked_at, None);
         let issues = rotation_health(&vault, ts("2030-01-01T00:00:00Z"));
         assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn set_secret_override_write_keeps_revoke_marker() {
+        // The key's only value is the operator's override: rewriting it leaves
+        // the exposed base value (if any) unchanged, so the rotation stays owed.
+        let mut vault = vault_with(types::SchemaEntry {
+            revoked_at: Some("2026-06-18T00:00:00Z".into()),
+            ..Default::default()
+        });
+        let mut murk = empty_murk();
+        murk.private
+            .entry("K".into())
+            .or_default()
+            .insert("pk".into(), secret("old"));
+        let write = set_secret(
+            &mut vault,
+            &mut murk,
+            "K",
+            "new",
+            None,
+            None,
+            None,
+            &[],
+            "pk",
+        )
+        .unwrap();
+        assert_eq!(write.tiers, vec![crate::SecretTier::Me]);
+        assert_eq!(murk.private["K"]["pk"].as_str(), "new");
+        assert!(!murk.values.contains_key("K"));
+        assert_eq!(
+            vault.schema["K"].revoked_at.as_deref(),
+            Some("2026-06-18T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn set_secret_new_keys_are_shared_and_get_a_schema_entry() {
+        let mut vault = empty_vault();
+        let mut murk = empty_murk();
+        for (key, value) in [("KEY1", "val1"), ("KEY2", "val2")] {
+            let write = set_secret(
+                &mut vault,
+                &mut murk,
+                key,
+                value,
+                None,
+                Some("shared-example"),
+                None,
+                &[],
+                "pk",
+            )
+            .unwrap();
+            assert_eq!(write.tiers, vec![crate::SecretTier::Everyone]);
+            assert!(write.needs_desc_hint);
+        }
+        assert_eq!(murk.values["KEY1"].as_str(), "val1");
+        assert_eq!(murk.values["KEY2"].as_str(), "val2");
+        assert_eq!(
+            vault.schema["KEY1"].example.as_deref(),
+            Some("shared-example")
+        );
+        assert_eq!(
+            vault.schema["KEY2"].example.as_deref(),
+            Some("shared-example")
+        );
+    }
+
+    #[test]
+    fn set_secret_update_keeps_existing_schema_metadata() {
+        let mut vault = vault_with(types::SchemaEntry {
+            description: "existing desc".into(),
+            example: Some("ex".into()),
+            tags: vec!["tag".into()],
+            ..Default::default()
+        });
+        let mut murk = empty_murk();
+        murk.values.insert("K".into(), secret("old"));
+        let write = set_secret(
+            &mut vault,
+            &mut murk,
+            "K",
+            "new",
+            None,
+            None,
+            None,
+            &[],
+            "pk",
+        )
+        .unwrap();
+        assert!(!write.needs_desc_hint);
+        assert_eq!(murk.values["K"].as_str(), "new");
+        assert_eq!(vault.schema["K"].description, "existing desc");
+        assert_eq!(vault.schema["K"].example.as_deref(), Some("ex"));
+        assert_eq!(vault.schema["K"].tags, vec!["tag"]);
     }
 
     #[test]

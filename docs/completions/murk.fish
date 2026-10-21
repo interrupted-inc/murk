@@ -67,7 +67,7 @@ complete -c murk -n "__fish_murk_using_subcommand restore" -s h -l help -d 'Prin
 complete -c murk -n "__fish_murk_using_subcommand recover" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand add" -l desc -d 'Description for this key' -r
 complete -c murk -n "__fish_murk_using_subcommand add" -l example -d 'Example value' -r
-complete -c murk -n "__fish_murk_using_subcommand add" -l group -d 'Who can read it: a group name, `everyone` (default), or `me`' -r
+complete -c murk -n "__fish_murk_using_subcommand add" -l group -d 'Who can read it: a group name, `everyone`, or `me`. Omit to keep an existing key\'s tier; a new key is shared with everyone' -r
 complete -c murk -n "__fish_murk_using_subcommand add" -l tag -d 'Tag for grouping (repeatable)' -r
 complete -c murk -n "__fish_murk_using_subcommand add" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand add" -l scoped -d 'Deprecated alias for `--group me`'
@@ -75,7 +75,7 @@ complete -c murk -n "__fish_murk_using_subcommand add" -s h -l help -d 'Print he
 complete -c murk -n "__fish_murk_using_subcommand generate" -l length -d 'Length in bytes (default 32)' -r
 complete -c murk -n "__fish_murk_using_subcommand generate" -l desc -d 'Description for this key' -r
 complete -c murk -n "__fish_murk_using_subcommand generate" -l example -d 'Example value' -r
-complete -c murk -n "__fish_murk_using_subcommand generate" -l group -d 'Who can read it: a group name, `everyone` (default), or `me`' -r
+complete -c murk -n "__fish_murk_using_subcommand generate" -l group -d 'Who can read it: a group name, `everyone`, or `me`. Omit to keep an existing key\'s tier; a new key is shared with everyone' -r
 complete -c murk -n "__fish_murk_using_subcommand generate" -l tag -d 'Tag for grouping (repeatable)' -r
 complete -c murk -n "__fish_murk_using_subcommand generate" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand generate" -l hex -d 'Output as hex instead of base64'
@@ -106,7 +106,7 @@ complete -c murk -n "__fish_murk_using_subcommand export" -l vault -d 'Vault fil
 complete -c murk -n "__fish_murk_using_subcommand export" -l json -d 'Output as JSON'
 complete -c murk -n "__fish_murk_using_subcommand export" -l allow-reserved -d 'Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)'
 complete -c murk -n "__fish_murk_using_subcommand export" -s h -l help -d 'Print help'
-complete -c murk -n "__fish_murk_using_subcommand import" -l group -d 'Assign imported secrets to this group (default: everyone)' -r
+complete -c murk -n "__fish_murk_using_subcommand import" -l group -d 'Assign imported secrets to this group (`everyone`, `me`, or a group name). Omit to keep each existing key\'s tier; new keys are shared with everyone' -r
 complete -c murk -n "__fish_murk_using_subcommand import" -l example -d 'Example value applied to every imported key' -r
 complete -c murk -n "__fish_murk_using_subcommand import" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand import" -l force -d 'Overwrite existing secrets without prompting'

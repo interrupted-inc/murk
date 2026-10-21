@@ -76,7 +76,7 @@ set edit:completion:arg-completer[murk] = {|@words|
         &'murk;add'= {
             cand --desc 'Description for this key'
             cand --example 'Example value'
-            cand --group 'Who can read it: a group name, `everyone` (default), or `me`'
+            cand --group 'Who can read it: a group name, `everyone`, or `me`. Omit to keep an existing key''s tier; a new key is shared with everyone'
             cand --tag 'Tag for grouping (repeatable)'
             cand --vault 'Vault filename'
             cand --scoped 'Deprecated alias for `--group me`'
@@ -87,7 +87,7 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand --length 'Length in bytes (default 32)'
             cand --desc 'Description for this key'
             cand --example 'Example value'
-            cand --group 'Who can read it: a group name, `everyone` (default), or `me`'
+            cand --group 'Who can read it: a group name, `everyone`, or `me`. Omit to keep an existing key''s tier; a new key is shared with everyone'
             cand --tag 'Tag for grouping (repeatable)'
             cand --vault 'Vault filename'
             cand --hex 'Output as hex instead of base64'
@@ -139,7 +139,7 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand --help 'Print help'
         }
         &'murk;import'= {
-            cand --group 'Assign imported secrets to this group (default: everyone)'
+            cand --group 'Assign imported secrets to this group (`everyone`, `me`, or a group name). Omit to keep each existing key''s tier; new keys are shared with everyone'
             cand --example 'Example value applied to every imported key'
             cand --vault 'Vault filename'
             cand --force 'Overwrite existing secrets without prompting'
