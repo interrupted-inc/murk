@@ -89,11 +89,32 @@ could read.
 `murk circle revoke` removes every spelling of the key, and murk refuses an
 `age1...` key with a non-canonical encoding, so an alias form of
 it can't survive the revocation. Once a machine has accepted the revoking
-vault, the revoked key is no longer a trusted signer there. Replaying an
-older revision from before the revocation, which would re-enrol them or put
-back rotated values, is refused as a rollback on that branch. If you really
+vault, it refuses any vault the revoked key signs, on every branch. An older
+revision that still lists them, replayed to re-enrol them or put back rotated
+values, is refused as a rollback wherever the revoke has reached: the branch
+it was made on, and the branches it was merged or pulled into.
+
+Revoke on the main branch. A revoke on an unmerged branch doesn't stop main's
+vaults from listing them until you merge it, and that merge is a
+[conflict](/guides/git-merge-ssh/#conflicts) to resolve by hand. If you really
 do need to go back to an older vault, see [rollback and deliberate
 reverts](/concepts/recipients-signatures/#rollback-and-deliberate-reverts).
+
+## Agent grants that trusted them
+
+Revoking a teammate also revokes every agent grant whose key file trusts
+them as a signer, and murk deletes the grant key files it keeps itself. It
+can't reach any other copy: a key file written with `--out`, handed to the
+agent host, or made on another operator's machine. Such a copy still trusts
+the revoked teammate. If they sign a vault built from a copy from before the
+revoke, the agent reads the values they chose. The grant's TTL doesn't limit
+this, because they can write a later expiry into that vault.
+
+So delete every other copy of each revoked grant's key file, including the
+one on the agent host, then re-mint the grant (`murk agent grant --name NAME
+--only KEY --renew`). The revoke lists the grants and prints the commands.
+Also remove the revoked teammate's entry from `MURK_TRUSTED_SIGNERS` wherever
+it's set.
 
 ## Checking what needs rotating
 
