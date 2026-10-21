@@ -215,7 +215,7 @@ pub(crate) fn cmd_diff(git_ref: &str, show_values: bool, json: bool, vault_path:
         let canon = |v: &murk_cli::types::Vault| -> std::collections::BTreeMap<String, String> {
             v.recipients
                 .iter()
-                .map(|r| (murk_cli::crypto::canonical_recipient(r), r.clone()))
+                .map(|r| (murk_cli::canonical_recipient(r).into_owned(), r.clone()))
                 .collect()
         };
         let (before, after) = (canon(old), canon(&_vault));
@@ -250,7 +250,7 @@ pub(crate) fn cmd_diff(git_ref: &str, show_values: bool, json: bool, vault_path:
         if let Some(old_meta) = &old_meta {
             let keys = |m: &std::collections::BTreeMap<String, String>| {
                 m.iter()
-                    .map(|(pk, vk)| (murk_cli::crypto::canonical_recipient(pk), vk.clone()))
+                    .map(|(pk, vk)| (murk_cli::canonical_recipient(pk).into_owned(), vk.clone()))
                     .collect::<std::collections::BTreeMap<_, _>>()
             };
             let (was, now) = (keys(&old_meta.signers), keys(&current_murk.signers));
@@ -271,8 +271,10 @@ pub(crate) fn cmd_diff(git_ref: &str, show_values: bool, json: bool, vault_path:
             murk_cli::types::SignatureState::Signed { signer, .. } => Some(signer.clone()),
             murk_cli::types::SignatureState::Unsigned => None,
         };
-        let canon_opt =
-            |s: &Option<String>| s.as_deref().map(murk_cli::crypto::canonical_recipient);
+        let canon_opt = |s: &Option<String>| {
+            s.as_deref()
+                .map(|k| murk_cli::canonical_recipient(k).into_owned())
+        };
         if canon_opt(&old_signer) != canon_opt(&new_signer) {
             header_changes += 1;
             let show = |s: &Option<String>| {

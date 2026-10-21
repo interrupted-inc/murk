@@ -248,9 +248,9 @@ fn drop_ghost_grants(
         return;
     }
     if let Ok(pubkey) = identity.pubkey_string() {
-        let me = crypto::canonical_recipient(&pubkey);
+        let me = crate::recipients::canonical_recipient(&pubkey).into_owned();
         meta.grants
-            .retain(|_, g| crypto::canonical_recipient(&g.pubkey) != me);
+            .retain(|_, g| crate::recipients::canonical_recipient(&g.pubkey).into_owned() != me);
     }
 }
 
@@ -270,18 +270,9 @@ fn newer_murk(what: &str) -> MurkError {
 
 /// Whether `pubkey` names one of the vault's public header recipients. SSH
 /// entries may be stored with a trailing comment while `pubkey_string()` drops
-/// it, so ssh keys compare by key type and blob only.
+/// it, so this compares canonical forms.
 pub(crate) fn is_listed_recipient(vault: &types::Vault, pubkey: &str) -> bool {
-    fn ssh_head(s: &str) -> Option<(&str, &str)> {
-        let mut it = s.split_whitespace();
-        match (it.next(), it.next()) {
-            (Some(kind), Some(blob)) if kind.starts_with("ssh-") => Some((kind, blob)),
-            _ => None,
-        }
-    }
-    vault.recipients.iter().any(|r| {
-        r == pubkey || matches!((ssh_head(r), ssh_head(pubkey)), (Some(a), Some(b)) if a == b)
-    })
+    crate::recipients::find_recipient(vault, pubkey).is_some()
 }
 
 /// What the merge driver needs from one side of a merge after its MAC and
@@ -357,7 +348,10 @@ fn decrypt_vault_with_signature(
     // bound to it was dropped as a ghost in `resolve_meta_state`). A 2.x vault
     // still encrypted its meta to grants; a grant key reading one has no trust
     // anchor, so it is refused until the operator re-saves.
-    if grants.values().any(|g| g.pubkey == pubkey) {
+    if grants
+        .values()
+        .any(|g| crate::recipients::same_recipient(&g.pubkey, &pubkey))
+    {
         return Err(MurkError::Grant(
             "this vault predates murk 0.14's agent records, so an agent grant can't read \
              it: ask the operator to save it with murk 0.14 or later and re-mint the grant"
@@ -427,7 +421,10 @@ fn own_private(
 ) -> HashMap<String, HashMap<String, Zeroizing<String>>> {
     let mut private: HashMap<String, HashMap<String, Zeroizing<String>>> = HashMap::new();
     for (key, entry) in &vault.secrets {
-        if let Some(encoded) = entry.private.get(pubkey)
+        // An older murk may have keyed ours by another spelling of our key (an
+        // SSH comment, an uppercase age key), so match by canonical key; the
+        // value is filed under our canonical pubkey either way.
+        if let Some(encoded) = crate::recipients::scoped_entry_for(entry, pubkey)
             && let Ok(value) = decrypt_value(encoded, identity).and_then(|pt| {
                 plaintext_bytes_to_zeroizing_string(&pt)
                     .map_err(|e| MurkError::Secret(e.to_string()))
@@ -575,8 +572,10 @@ impl InspectedVault {
         if let (types::SignatureState::Signed { signer, .. }, Some(vk)) =
             (&self.murk.signature, &self.signer_vk)
         {
-            pin.signers
-                .insert(crypto::canonical_recipient(signer), vk.clone());
+            pin.signers.insert(
+                crate::recipients::canonical_recipient(signer).into_owned(),
+                vk.clone(),
+            );
         }
         crate::pins::write(vault_path, &pin)
     }

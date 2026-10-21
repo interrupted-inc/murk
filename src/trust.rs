@@ -41,9 +41,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::crypto::canonical_recipient;
 pub use crate::git::HeadState;
 use crate::pins::{self, TrustPin};
+use crate::recipients::canonical_recipient;
 use crate::types;
 
 /// Environment variable naming the keys trusted to sign, comma or newline
@@ -168,13 +168,13 @@ pub fn parse_trusted_signer(entry: &str) -> Result<(String, Option<String>), Str
     }
     match vk {
         Some(vk) if crate::signing::is_verifying_key(vk) => {
-            Ok((canonical_recipient(key), Some(vk.to_string())))
+            Ok((canonical_recipient(key).into_owned(), Some(vk.to_string())))
         }
         Some(_) => Err(format!(
             "not a verifying key after {}:",
             crate::truncate_pubkey(key)
         )),
-        None if is_ssh => Ok((canonical_recipient(key), None)),
+        None if is_ssh => Ok((canonical_recipient(key).into_owned(), None)),
         None => Err(format!(
             "{} needs its verifying key: write it as `age1…:<verifying key>` (`murk trust --print-key` prints it)",
             crate::truncate_pubkey(key)
@@ -206,7 +206,7 @@ pub fn env_trusted_signers() -> Result<Option<TrustedSigners>, String> {
 fn grant_keys(grants: &BTreeMap<String, types::GrantEntry>) -> BTreeSet<String> {
     grants
         .values()
-        .map(|g| canonical_recipient(&g.pubkey))
+        .map(|g| canonical_recipient(&g.pubkey).into_owned())
         .collect()
 }
 
@@ -250,7 +250,7 @@ pub fn verify_anchored(vault: &types::Vault, anchor: &TrustedSigners) -> Result<
     let Some(sig) = &vault.sig else {
         return Err(Refusal::Unsigned);
     };
-    let signer = canonical_recipient(&sig.signer);
+    let signer = canonical_recipient(&sig.signer).into_owned();
     let Some(expected) = anchor.get(&signer) else {
         return Err(Refusal::UntrustedSigner {
             signer: sig.signer.clone(),
@@ -288,7 +288,7 @@ pub fn signers_of(
     vault
         .recipients
         .iter()
-        .map(|r| canonical_recipient(r))
+        .map(|r| canonical_recipient(r).into_owned())
         .filter(|r| !grants.contains(r))
         .collect()
 }
@@ -300,7 +300,10 @@ pub fn canonical_groups(groups: &Groups) -> BTreeMap<String, BTreeSet<String>> {
         .map(|(g, members)| {
             (
                 g.clone(),
-                members.iter().map(|m| canonical_recipient(m)).collect(),
+                members
+                    .iter()
+                    .map(|m| canonical_recipient(m).into_owned())
+                    .collect(),
             )
         })
         .collect()
@@ -325,7 +328,7 @@ pub fn assess(
             a.into_iter()
                 .chain(e.iter())
                 .flatten()
-                .map(|(k, vk)| (canonical_recipient(k), vk.clone()))
+                .map(|(k, vk)| (canonical_recipient(k).into_owned(), vk.clone()))
                 .collect(),
         ),
     };
@@ -356,7 +359,7 @@ fn signer_key_refusal(
     trusted_pin: Option<&TrustPin>,
 ) -> Option<Refusal> {
     let vk = loaded.signer_vk?;
-    let signer_c = canonical_recipient(signer);
+    let signer_c = canonical_recipient(signer).into_owned();
     let expected = match external_signers {
         Some(external) => external.get(&signer_c).cloned().flatten(),
         None => trusted_pin.and_then(|p| p.signers.get(&signer_c).cloned()),
@@ -390,7 +393,7 @@ fn verdict(
         }
         return Verdict::UnsignedAllowed;
     };
-    let signer_c = canonical_recipient(signer);
+    let signer_c = canonical_recipient(signer).into_owned();
     let refuse = Verdict::Refused;
 
     let current_grants = grant_keys(loaded.grants);
@@ -405,7 +408,7 @@ fn verdict(
             .vault
             .recipients
             .iter()
-            .map(|r| canonical_recipient(r))
+            .map(|r| canonical_recipient(r).into_owned())
             .collect();
         if let Some(key) = pinned
             .iter()
@@ -554,8 +557,11 @@ pub fn group_change_violation(
     before: &BTreeMap<String, BTreeSet<String>>,
     signer: &str,
 ) -> Option<String> {
-    let signer = canonical_recipient(signer);
-    let recipients: BTreeSet<String> = recipients.iter().map(|r| canonical_recipient(r)).collect();
+    let signer = canonical_recipient(signer).into_owned();
+    let recipients: BTreeSet<String> = recipients
+        .iter()
+        .map(|r| canonical_recipient(r).into_owned())
+        .collect();
     let current = canonical_groups(after);
     for (group, members) in &current {
         let Some(was) = before.get(group) else {
@@ -627,12 +633,12 @@ pub fn accepted_pin(
         (loaded.signature, loaded.signer_vk)
     {
         signers
-            .entry(canonical_recipient(signer))
+            .entry(canonical_recipient(signer).into_owned())
             .or_insert_with(|| vk.to_string());
     }
     if signed {
         for (pk, vk) in loaded.registry {
-            let pk = canonical_recipient(pk);
+            let pk = canonical_recipient(pk).into_owned();
             if trusted.contains(&pk) {
                 signers.entry(pk).or_insert_with(|| vk.clone());
             }
@@ -716,10 +722,10 @@ pub fn recipient_changes(
 /// control characters in it (a `\r` that would overwrite the line, a `\n`
 /// that would cut the message) are replaced.
 pub fn label(names: &std::collections::HashMap<String, String>, key: &str) -> String {
-    let canon = canonical_recipient(key);
+    let canon = canonical_recipient(key).into_owned();
     let name = names
         .iter()
-        .find(|(pk, _)| canonical_recipient(pk) == canon)
+        .find(|(pk, _)| canonical_recipient(pk).into_owned() == canon)
         .map(|(_, n)| n.as_str())
         .filter(|n| !n.is_empty());
     let short = crate::truncate_pubkey(key);

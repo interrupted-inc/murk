@@ -226,6 +226,7 @@ complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcom
 complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from revoke" -l values-from -d 'With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)' -r
 complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from revoke" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from revoke" -l rotate -d 'Rotate the secrets they had access to in the same session'
+complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from revoke" -l force -d 'Revoke every key of a multi-key GitHub user without confirmation'
 complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from revoke" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from help" -f -a "authorize" -d 'Add a recipient to the vault'
 complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from help" -f -a "revoke" -d 'Remove a recipient from the vault'
@@ -238,6 +239,7 @@ complete -c murk -n "__fish_murk_using_subcommand authorize" -s h -l help -d 'Pr
 complete -c murk -n "__fish_murk_using_subcommand revoke" -l values-from -d 'With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)' -r
 complete -c murk -n "__fish_murk_using_subcommand revoke" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand revoke" -l rotate -d 'Rotate the secrets they had access to in the same session'
+complete -c murk -n "__fish_murk_using_subcommand revoke" -l force -d 'Revoke every key of a multi-key GitHub user without confirmation'
 complete -c murk -n "__fish_murk_using_subcommand revoke" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand group; and not __fish_seen_subcommand_from create ls add rm help" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand group; and not __fish_seen_subcommand_from create ls add rm help" -f -a "create" -d 'Create a new recipient group (you become its first member)'

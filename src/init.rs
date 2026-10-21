@@ -141,11 +141,12 @@ pub struct InitStatus {
 pub fn check_init_status(vault: &types::Vault, secret_key: &str) -> Result<InitStatus, String> {
     let identity = crypto::parse_identity(secret_key).map_err(|e| e.to_string())?;
     let pubkey = identity.pubkey_string().map_err(|e| e.to_string())?;
-    let authorized = vault.recipients.contains(&pubkey);
+    let listed = crate::recipients::find_recipient(vault, &pubkey);
+    let authorized = listed.is_some();
 
-    let display_name = if authorized {
+    let display_name = if let Some(listed) = listed {
         crate::decrypt_meta(vault, &identity)?
-            .and_then(|meta| meta.recipients.get(&pubkey).cloned())
+            .and_then(|meta| meta.recipients.get(listed).cloned())
             .filter(|name| !name.is_empty())
     } else {
         None

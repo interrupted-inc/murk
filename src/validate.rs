@@ -39,7 +39,7 @@ pub(crate) fn vault(v: &Vault) -> Result<(), String> {
         recipient(&format!("recipients[{i}]"), r)?;
         // Two spellings of one key (bech32 case, ssh comment) would let an
         // alias survive `circle revoke`.
-        if !seen.insert(crate::crypto::canonical_recipient(r)) {
+        if !seen.insert(crate::recipients::canonical_recipient(r).into_owned()) {
             return Err(format!(
                 "recipients[{i}]: duplicate of an earlier recipient {}",
                 show(r)

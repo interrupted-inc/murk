@@ -204,14 +204,11 @@ pub(crate) fn sign_vault(
     })
 }
 
-/// Whether `signer` names a current recipient, comparing canonical spellings
-/// (bech32 case, ssh comments).
+/// Whether `signer` names a current recipient, in any spelling of its key (a
+/// recipient may be stored as `ssh-ed25519 <b64> user@host`, or as an uppercase
+/// age key, while `signer` is the identity's canonical pubkey).
 fn signer_is_recipient(vault: &types::Vault, signer: &str) -> bool {
-    let signer = crypto::canonical_recipient(signer);
-    vault
-        .recipients
-        .iter()
-        .any(|r| crypto::canonical_recipient(r) == signer)
+    crate::recipients::find_recipient(vault, signer).is_some()
 }
 
 /// A signature that verified. `vk` is the registry verifying key an age
@@ -275,10 +272,10 @@ pub(crate) fn registry_entry<'a>(
     signers: &'a BTreeMap<String, String>,
     signer: &str,
 ) -> Option<&'a String> {
-    let signer = crypto::canonical_recipient(signer);
+    let signer = crate::recipients::canonical_recipient(signer).into_owned();
     signers
         .iter()
-        .find(|(pk, _)| crypto::canonical_recipient(pk) == signer)
+        .find(|(pk, _)| crate::recipients::canonical_recipient(pk).into_owned() == signer)
         .map(|(_, vk)| vk)
 }
 

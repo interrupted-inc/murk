@@ -4,6 +4,8 @@
 //! Recipient management: authorize, revoke, and list vault recipients.
 
 use crate::{crypto, types};
+use std::borrow::Cow;
+use std::collections::BTreeSet;
 
 /// Maximum number of recipients per vault.
 const MAX_RECIPIENTS: usize = 100;
@@ -14,6 +16,89 @@ pub struct RecipientEntry {
     pub pubkey: String,
     pub display_name: Option<String>,
     pub is_self: bool,
+}
+
+/// Canonical form of a recipient pubkey string. SSH keys reduce to
+/// `type base64`, dropping the trailing comment (which carries no key
+/// material) and any extra whitespace. age X25519 and plugin recipients
+/// (`age1…`) are Bech32, which is case-insensitive, so they fold to lowercase.
+/// Two strings name the same recipient iff their canonical forms are equal.
+pub fn canonical_recipient(pk: &str) -> Cow<'_, str> {
+    let trimmed = pk.trim();
+    let mut fields = trimmed.split_whitespace();
+    match (fields.next(), fields.next()) {
+        (Some(kind), Some(blob)) if kind.starts_with("ssh-") => {
+            let single_space = trimmed.len() == kind.len() + 1 + blob.len()
+                && trimmed.as_bytes()[kind.len()] == b' ';
+            if single_space {
+                Cow::Borrowed(trimmed)
+            } else {
+                Cow::Owned(format!("{kind} {blob}"))
+            }
+        }
+        _ if is_bech32_recipient(trimmed) && trimmed.bytes().any(|b| b.is_ascii_uppercase()) => {
+            Cow::Owned(trimmed.to_ascii_lowercase())
+        }
+        _ => Cow::Borrowed(trimmed),
+    }
+}
+
+/// Whether `pk` has the `age1` prefix of an age X25519 or plugin recipient, in
+/// either case.
+fn is_bech32_recipient(pk: &str) -> bool {
+    pk.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("age1"))
+}
+
+/// Whether two recipient strings name the same key (see [`canonical_recipient`]).
+pub fn same_recipient(a: &str, b: &str) -> bool {
+    a == b || canonical_recipient(a) == canonical_recipient(b)
+}
+
+/// The comment field of an SSH public key line (`type base64 comment`), if any.
+fn ssh_comment(pk: &str) -> Option<&str> {
+    let trimmed = pk.trim();
+    if !trimmed.starts_with("ssh-") {
+        return None;
+    }
+    let mut rest = trimmed;
+    for _ in 0..2 {
+        rest = rest.trim_start().split_once(char::is_whitespace)?.1;
+    }
+    Some(rest.trim()).filter(|c| !c.is_empty())
+}
+
+/// The stored vault recipient entry naming the same key as `pk`, if any.
+pub(crate) fn find_recipient<'a>(vault: &'a types::Vault, pk: &str) -> Option<&'a String> {
+    vault.recipients.iter().find(|r| same_recipient(r, pk))
+}
+
+/// The scoped ciphertext addressed to `pk` in `entry`, under any spelling of
+/// the key (an older murk may have keyed it with an SSH comment or in
+/// uppercase).
+pub(crate) fn scoped_entry_for<'a>(entry: &'a types::SecretEntry, pk: &str) -> Option<&'a String> {
+    entry.private.get(pk).or_else(|| {
+        entry
+            .private
+            .iter()
+            .find_map(|(k, v)| same_recipient(k, pk).then_some(v))
+    })
+}
+
+/// Sets of vault recipient entries that name the same key (e.g. an SSH key
+/// stored both with and without a comment by an older murk). Each set has at
+/// least two entries, in vault order.
+pub fn duplicate_recipients(vault: &types::Vault) -> Vec<Vec<&str>> {
+    let mut sets: Vec<(Cow<'_, str>, Vec<&str>)> = Vec::new();
+    for pk in &vault.recipients {
+        let canon = canonical_recipient(pk);
+        match sets.iter_mut().find(|(c, _)| *c == canon) {
+            Some((_, entries)) => entries.push(pk),
+            None => sets.push((canon, vec![pk])),
+        }
+    }
+    sets.into_iter()
+        .filter_map(|(_, entries)| (entries.len() > 1).then_some(entries))
+        .collect()
 }
 
 /// List all recipients in the vault with optional name resolution.
@@ -46,7 +131,7 @@ pub fn list_recipients(
             let (display_name, is_self) = match &meta_data {
                 Some((meta, my_pubkey)) => {
                     let name = meta.recipients.get(pk).filter(|n| !n.is_empty()).cloned();
-                    (name, pk == my_pubkey)
+                    (name, same_recipient(pk, my_pubkey))
                 }
                 None => (None, false),
             };
@@ -59,31 +144,42 @@ pub fn list_recipients(
         .collect())
 }
 
-/// Add a recipient to the vault. Returns an error if the pubkey is invalid or already present.
+/// Add a recipient to the vault and return the stored (canonical) pubkey.
+///
+/// SSH keys are stored as `type base64`; a trailing comment becomes the display
+/// name when `name` is not given. Returns an error if the pubkey is invalid or
+/// the same key is already present, in any form.
 pub fn authorize_recipient(
     vault: &mut types::Vault,
     murk: &mut types::Murk,
     pubkey: &str,
     name: Option<&str>,
-) -> Result<(), crate::error::MurkError> {
+) -> Result<String, crate::error::MurkError> {
     use crate::error::MurkError;
 
-    if crypto::parse_recipient(pubkey).is_err() {
+    let canonical = canonical_recipient(pubkey).into_owned();
+    // SSH keys are checked in canonical form; anything else as given, so a
+    // mixed-case Bech32 key (invalid per BIP-173) is refused, not folded.
+    let as_given = if canonical.starts_with("ssh-") {
+        &canonical
+    } else {
+        pubkey
+    };
+    let parsed = crypto::parse_recipient(as_given).and(crypto::parse_recipient(&canonical));
+    let Ok(parsed) = parsed else {
         return Err(MurkError::Recipient(format!(
             "invalid public key: {pubkey}"
         )));
+    };
+    if let Some(why) = parsed.weakness() {
+        return Err(MurkError::Recipient(format!(
+            "invalid public key: {pubkey}: {why}"
+        )));
     }
 
-    // Compare canonical spellings: `AGE1…` and `age1…`, or one ssh key with two
-    // comments, are the same key, and a second spelling would survive `revoke`.
-    let canonical = crypto::canonical_recipient(pubkey);
-    if vault
-        .recipients
-        .iter()
-        .any(|r| crypto::canonical_recipient(r) == canonical)
-    {
+    if find_recipient(vault, &canonical).is_some() {
         return Err(MurkError::Recipient(format!(
-            "{pubkey} is already a recipient"
+            "{canonical} is already a recipient"
         )));
     }
 
@@ -93,20 +189,13 @@ pub fn authorize_recipient(
         )));
     }
 
-    // Store age keys in their canonical (lowercase) spelling; ssh keys keep
-    // their comment, which is only a label.
-    let stored = if pubkey.starts_with("ssh-") {
-        pubkey.to_string()
-    } else {
-        canonical
-    };
-    vault.recipients.push(stored.clone());
+    vault.recipients.push(canonical.clone());
 
-    if let Some(n) = name {
-        murk.recipients.insert(stored, n.into());
+    if let Some(n) = name.or_else(|| ssh_comment(pubkey)) {
+        murk.recipients.insert(canonical.clone(), n.into());
     }
 
-    Ok(())
+    Ok(canonical)
 }
 
 /// Result of revoking a recipient.
@@ -121,11 +210,79 @@ pub struct RevokeResult {
     pub exposed_groups: Vec<String>,
 }
 
-/// Remove a recipient from the vault. `recipient` can be a pubkey or a display name.
+/// Resolve `recipient` (a pubkey, a display name, or `github:<user>`) to the
+/// stored vault entries a revoke would remove.
 ///
-/// When matched by display name, removes **all** recipients sharing that name
-/// (e.g. multiple SSH keys added via `github:username`).
-/// Returns an error if the recipient is not found or would remove the last recipient.
+/// A pubkey matches every entry naming the same key, so duplicates left by an
+/// older murk (the same SSH key with and without a comment) go together. A
+/// display name matches every key carrying it; more than one distinct key is
+/// ambiguous unless it names a GitHub user (`<user>@github`), whose keys all
+/// belong to one person. Returns the entries grouped by key, in vault order.
+pub fn revoke_targets(
+    vault: &types::Vault,
+    murk: &types::Murk,
+    recipient: &str,
+) -> Result<Vec<Vec<String>>, crate::error::MurkError> {
+    use crate::error::MurkError;
+
+    let github_name = recipient
+        .strip_prefix("github:")
+        .map(|user| format!("{user}@github"));
+    let name = github_name.as_deref().unwrap_or(recipient);
+
+    let canon = canonical_recipient(recipient);
+    let keys: BTreeSet<Cow<'_, str>> = if vault
+        .recipients
+        .iter()
+        .any(|pk| canonical_recipient(pk) == canon)
+    {
+        BTreeSet::from([canon])
+    } else {
+        murk.recipients
+            .iter()
+            .filter(|(_, n)| n.as_str() == name)
+            .map(|(pk, _)| canonical_recipient(pk))
+            .collect()
+    };
+    if keys.is_empty() {
+        return Err(MurkError::Recipient(format!(
+            "recipient not found: {recipient}"
+        )));
+    }
+    if keys.len() > 1 && !name.ends_with("@github") {
+        return Err(MurkError::Recipient(format!(
+            "ambiguous name \"{recipient}\" matches {} recipients — use a pubkey to revoke",
+            keys.len()
+        )));
+    }
+
+    // Entries per key: every vault entry for it, plus any name-map entry not
+    // in the vault header so its display name goes too.
+    let mut groups: Vec<(Cow<'_, str>, Vec<String>)> = Vec::new();
+    let stored = vault.recipients.iter().chain(
+        murk.recipients
+            .keys()
+            .filter(|pk| !vault.recipients.contains(pk)),
+    );
+    for pk in stored {
+        let canon = canonical_recipient(pk);
+        if !keys.contains(&canon) {
+            continue;
+        }
+        match groups.iter_mut().find(|(c, _)| *c == canon) {
+            Some((_, entries)) => entries.push(pk.clone()),
+            None => groups.push((canon, vec![pk.clone()])),
+        }
+    }
+    Ok(groups.into_iter().map(|(_, entries)| entries).collect())
+}
+
+/// Remove a recipient from the vault. `recipient` can be a pubkey, a display
+/// name, or `github:<user>`; see [`revoke_targets`] for what it matches.
+///
+/// Every matched entry goes, with its display name, scoped overrides, group
+/// memberships and agent grants. Returns an error if the recipient is not
+/// found, the name is ambiguous, or it would remove the last recipient.
 pub fn revoke_recipient(
     vault: &mut types::Vault,
     murk: &mut types::Murk,
@@ -133,63 +290,32 @@ pub fn revoke_recipient(
 ) -> Result<RevokeResult, crate::error::MurkError> {
     use crate::error::MurkError;
 
-    let wanted = crypto::canonical_recipient(recipient);
-    let by_key: Vec<String> = vault
-        .recipients
-        .iter()
-        .filter(|r| crypto::canonical_recipient(r) == wanted)
-        .cloned()
+    // Match every map by canonical key, not by the spellings found in the
+    // header and name map: a scoped override, group member or grant may be
+    // keyed by yet another spelling of the same key.
+    let keys: BTreeSet<String> = revoke_targets(vault, murk, recipient)?
+        .into_iter()
+        .flatten()
+        .map(|pk| canonical_recipient(&pk).into_owned())
         .collect();
-    let matched: Vec<String> = if by_key.is_empty() {
-        let matched: Vec<String> = murk
-            .recipients
-            .iter()
-            .filter(|(_, name)| name.as_str() == recipient)
-            .map(|(pk, _)| pk.clone())
-            .collect();
-        if matched.is_empty() {
-            return Err(MurkError::Recipient(format!(
-                "recipient not found: {recipient}"
-            )));
-        }
-        if matched.len() > 1 {
-            return Err(MurkError::Recipient(format!(
-                "ambiguous name \"{recipient}\" matches {} recipients — use a pubkey to revoke",
-                matched.len()
-            )));
-        }
-        matched
-    } else {
-        by_key
-    };
-    // Every spelling of the matched key goes, so an alias can't keep access.
-    let targets: std::collections::BTreeSet<String> = matched
-        .iter()
-        .map(|pk| crypto::canonical_recipient(pk))
-        .collect();
-    let pubkeys: Vec<String> = vault
-        .recipients
-        .iter()
-        .filter(|r| targets.contains(&crypto::canonical_recipient(r)))
-        .cloned()
-        .collect();
+    let revoked = |pk: &str| keys.contains(canonical_recipient(pk).as_ref());
 
-    if vault.recipients.len() <= pubkeys.len() {
+    if vault.recipients.iter().all(|pk| revoked(pk)) {
         return Err(MurkError::Recipient(
             "cannot revoke last recipient — vault would become permanently inaccessible".into(),
         ));
     }
 
     // Groups any revoked pubkey belonged to (captured before removal below).
-    let revoked_groups: std::collections::BTreeSet<String> = murk
+    let revoked_groups: BTreeSet<String> = murk
         .groups
         .iter()
-        .filter(|(_, members)| members.iter().any(|pk| pubkeys.contains(pk)))
+        .filter(|(_, members)| members.iter().any(|pk| revoked(pk)))
         .map(|(name, _)| name.clone())
         .collect();
 
     // Report keys the revoked recipient could actually decrypt — computed
-    // BEFORE the removal loop below, which strips their scoped entries. Covers
+    // BEFORE the removal below, which strips their scoped entries. Covers
     // shared secrets (every recipient can read), their scoped entries, and any
     // group they belonged to.
     let exposed_keys: Vec<String> = vault
@@ -197,40 +323,40 @@ pub fn revoke_recipient(
         .iter()
         .filter(|(_, entry)| {
             !entry.shared.is_empty()
-                || pubkeys.iter().any(|pk| entry.private.contains_key(pk))
+                || entry.private.keys().any(|pk| revoked(pk))
                 || entry.grouped.keys().any(|g| revoked_groups.contains(g))
         })
         .map(|(key, _)| key.clone())
         .collect();
 
-    let mut display_name = None;
-    for pubkey in &pubkeys {
-        vault.recipients.retain(|pk| pk != pubkey);
+    // Name the recipient after its first header entry that has one.
+    let display_name = vault
+        .recipients
+        .iter()
+        .chain(murk.recipients.keys())
+        .filter(|pk| revoked(pk))
+        .find_map(|pk| murk.recipients.get(pk).cloned());
+    vault.recipients.retain(|pk| !revoked(pk));
+    murk.recipients.retain(|pk, _| !revoked(pk));
 
-        if let Some(name) = murk.recipients.remove(pubkey) {
-            display_name = Some(name);
-        }
+    // Remove their scoped entries.
+    for scoped_map in murk.private.values_mut() {
+        scoped_map.retain(|pk, _| !revoked(pk));
+    }
+    for entry in vault.secrets.values_mut() {
+        entry.private.retain(|pk, _| !revoked(pk));
+    }
 
-        // Remove their scoped entries.
-        for scoped_map in murk.private.values_mut() {
-            scoped_map.remove(pubkey);
-        }
-        for entry in vault.secrets.values_mut() {
-            entry.private.remove(pubkey);
-        }
-
-        // Remove them from any groups they belonged to. save_vault re-encrypts
-        // affected groups (when the operator is a member and can read them).
-        for members in murk.groups.values_mut() {
-            members.retain(|pk| pk != pubkey);
-        }
+    // Remove them from any groups they belonged to. save_vault re-encrypts
+    // affected groups (when the operator is a member and can read them).
+    for members in murk.groups.values_mut() {
+        members.retain(|pk| !revoked(pk));
     }
 
     // Drop any agent grant whose ephemeral pubkey was just revoked, so revoking
     // an agent recipient (directly or via `agent revoke`) never leaves an
     // orphaned grant record pointing at a pubkey that is no longer a recipient.
-    murk.grants
-        .retain(|_, grant| !pubkeys.contains(&grant.pubkey));
+    murk.grants.retain(|_, grant| !revoked(&grant.pubkey));
 
     Ok(RevokeResult {
         display_name,
@@ -661,19 +787,213 @@ mod tests {
     #[test]
     fn revoke_by_name_rejects_ambiguous_match() {
         let (_, pk_owner) = generate_keypair();
-        let (_, pk_ssh1) = generate_keypair();
-        let (_, pk_ssh2) = generate_keypair();
+        let (_, pk_laptop) = generate_keypair();
+        let (_, pk_desktop) = generate_keypair();
         let mut vault = empty_vault();
-        vault.recipients = vec![pk_owner.clone(), pk_ssh1.clone(), pk_ssh2.clone()];
+        vault.recipients = vec![pk_owner.clone(), pk_laptop.clone(), pk_desktop.clone()];
         let mut murk = empty_murk();
-        murk.recipients
-            .insert(pk_ssh1.clone(), "alice@github".into());
-        murk.recipients
-            .insert(pk_ssh2.clone(), "alice@github".into());
+        murk.recipients.insert(pk_laptop.clone(), "alice".into());
+        murk.recipients.insert(pk_desktop.clone(), "alice".into());
 
-        let result = revoke_recipient(&mut vault, &mut murk, "alice@github");
-        assert!(result.is_err());
+        let result = revoke_recipient(&mut vault, &mut murk, "alice");
         assert!(result.unwrap_err().to_string().contains("ambiguous name"));
+        assert_eq!(vault.recipients.len(), 3);
+    }
+
+    /// Every key fetched for a GitHub user carries `<user>@github`, so that
+    /// name (or `github:<user>`) names one person and revokes all their keys.
+    #[test]
+    fn revoke_github_user_by_name_removes_every_key() {
+        for spec in ["alice@github", "github:alice"] {
+            let (_, pk_owner) = generate_keypair();
+            let (_, pk_ssh1) = generate_keypair();
+            let (_, pk_ssh2) = generate_keypair();
+            let mut vault = empty_vault();
+            vault.recipients = vec![pk_owner.clone(), pk_ssh1.clone(), pk_ssh2.clone()];
+            let mut murk = empty_murk();
+            murk.recipients
+                .insert(pk_ssh1.clone(), "alice@github".into());
+            murk.recipients
+                .insert(pk_ssh2.clone(), "alice@github".into());
+
+            let result = revoke_recipient(&mut vault, &mut murk, spec).unwrap();
+            assert_eq!(result.display_name.as_deref(), Some("alice@github"));
+            assert_eq!(vault.recipients, vec![pk_owner], "{spec}");
+            assert!(murk.recipients.is_empty(), "{spec}");
+        }
+    }
+
+    #[test]
+    fn authorize_ssh_key_stores_canonical_form_and_refuses_twins() {
+        let mut vault = empty_vault();
+        let mut murk = empty_murk();
+
+        let commented = format!("{SSH_ED25519_PK} bob@laptop");
+        assert!(authorize_recipient(&mut vault, &mut murk, &commented, None).is_ok());
+        assert_eq!(vault.recipients, vec![SSH_ED25519_PK.to_string()]);
+        assert_eq!(murk.recipients[SSH_ED25519_PK], "bob@laptop");
+
+        let spaced = SSH_ED25519_PK.replace(' ', "   ") + "\tbob@desktop";
+        for twin in [
+            SSH_ED25519_PK.to_string(),
+            format!("{SSH_ED25519_PK} other"),
+            spaced,
+        ] {
+            let err = authorize_recipient(&mut vault, &mut murk, &twin, Some("bob"))
+                .expect_err(&twin)
+                .to_string();
+            assert!(err.contains("already a recipient"), "{twin}: {err}");
+        }
+        assert_eq!(vault.recipients.len(), 1);
+        assert_eq!(murk.recipients[SSH_ED25519_PK], "bob@laptop");
+    }
+
+    /// An older murk stored SSH keys verbatim, so a vault can hold the same key
+    /// twice. Revoking either form removes every copy along with each copy's
+    /// name, scoped overrides and group memberships.
+    #[test]
+    fn revoke_removes_every_copy_of_a_duplicated_ssh_key() {
+        let commented = format!("{SSH_ED25519_PK} bob@laptop");
+        for spec in [
+            SSH_ED25519_PK.to_string(),
+            format!("{SSH_ED25519_PK} other"),
+        ] {
+            let (_, pk_owner) = generate_keypair();
+            let mut vault = empty_vault();
+            vault.recipients = vec![
+                pk_owner.clone(),
+                SSH_ED25519_PK.to_string(),
+                commented.clone(),
+            ];
+            vault.secrets.insert(
+                "KEY".into(),
+                types::SecretEntry {
+                    shared: "ct".into(),
+                    private: BTreeMap::from([
+                        (SSH_ED25519_PK.to_string(), "scoped_ct".into()),
+                        (commented.clone(), "scoped_ct".into()),
+                    ]),
+                    grouped: BTreeMap::default(),
+                },
+            );
+            let mut murk = empty_murk();
+            murk.recipients.insert(commented.clone(), "bob".into());
+            murk.private.insert(
+                "KEY".into(),
+                HashMap::from([(commented.clone(), secret("bob's override"))]),
+            );
+            murk.groups.insert(
+                "ops".into(),
+                vec![pk_owner.clone(), commented.clone(), SSH_ED25519_PK.into()],
+            );
+
+            revoke_recipient(&mut vault, &mut murk, &spec).unwrap();
+
+            assert_eq!(vault.recipients, vec![pk_owner.clone()], "{spec}");
+            assert!(vault.secrets["KEY"].private.is_empty(), "{spec}");
+            assert!(murk.private["KEY"].is_empty(), "{spec}");
+            assert!(murk.recipients.is_empty(), "{spec}");
+            assert_eq!(murk.groups["ops"], vec![pk_owner], "{spec}");
+        }
+    }
+
+    /// Overrides and group memberships may be keyed by a spelling of the key
+    /// that is in neither the header nor the name map (here the bare key, while
+    /// the header lists two commented twins). Revoke still removes them.
+    #[test]
+    fn revoke_removes_entries_keyed_by_any_spelling_of_the_key() {
+        let (_, pk_owner) = generate_keypair();
+        let mut vault = empty_vault();
+        vault.recipients = vec![
+            pk_owner.clone(),
+            format!("{SSH_ED25519_PK} bob@laptop"),
+            format!("{SSH_ED25519_PK} bob@desktop"),
+        ];
+        vault.secrets.insert(
+            "KEY".into(),
+            types::SecretEntry {
+                shared: "ct".into(),
+                private: BTreeMap::from([(SSH_ED25519_PK.to_string(), "scoped_ct".into())]),
+                grouped: BTreeMap::default(),
+            },
+        );
+        let mut murk = empty_murk();
+        murk.private.insert(
+            "KEY".into(),
+            HashMap::from([(SSH_ED25519_PK.to_string(), secret("bob's override"))]),
+        );
+        murk.groups
+            .insert("ops".into(), vec![pk_owner.clone(), SSH_ED25519_PK.into()]);
+
+        let result = revoke_recipient(
+            &mut vault,
+            &mut murk,
+            &format!("{SSH_ED25519_PK} bob@laptop"),
+        )
+        .unwrap();
+
+        assert_eq!(vault.recipients, vec![pk_owner.clone()]);
+        assert!(vault.secrets["KEY"].private.is_empty());
+        assert!(murk.private["KEY"].is_empty());
+        assert_eq!(murk.groups["ops"], vec![pk_owner]);
+        assert_eq!(result.exposed_keys, vec!["KEY"]);
+    }
+
+    /// Bech32 is case-insensitive: an uppercase age key is the same recipient
+    /// as its lowercase form. It is stored lowercase, a twin in the other case
+    /// is refused, and a mixed-case key (invalid Bech32) is rejected.
+    #[test]
+    fn authorize_age_key_folds_case_and_refuses_twins() {
+        let (_, pubkey) = generate_keypair();
+        let upper = pubkey.to_ascii_uppercase();
+        let mut vault = empty_vault();
+        let mut murk = empty_murk();
+
+        assert!(authorize_recipient(&mut vault, &mut murk, &upper, Some("bob")).is_ok());
+        assert_eq!(vault.recipients, vec![pubkey.clone()]);
+        assert_eq!(murk.recipients[&pubkey], "bob");
+
+        let err = authorize_recipient(&mut vault, &mut murk, &pubkey, None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("already a recipient"), "{err}");
+
+        let (_, other) = generate_keypair();
+        let mixed = format!("AGE1{}", &other[4..]);
+        let err = authorize_recipient(&mut vault, &mut murk, &mixed, None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("invalid public key"), "{err}");
+        assert_eq!(vault.recipients.len(), 1);
+    }
+
+    /// A vault can hold an age key in both cases (an older murk stored keys
+    /// verbatim). Revoking either spelling removes both and their overrides.
+    #[test]
+    fn revoke_removes_both_cases_of_an_age_key() {
+        let (_, pk_owner) = generate_keypair();
+        let (_, bob) = generate_keypair();
+        let bob_upper = bob.to_ascii_uppercase();
+        for spec in [&bob, &bob_upper] {
+            let mut vault = empty_vault();
+            vault.recipients = vec![pk_owner.clone(), bob.clone(), bob_upper.clone()];
+            vault.secrets.insert(
+                "KEY".into(),
+                types::SecretEntry {
+                    shared: "ct".into(),
+                    private: BTreeMap::from([(bob_upper.clone(), "scoped_ct".into())]),
+                    grouped: BTreeMap::default(),
+                },
+            );
+            let mut murk = empty_murk();
+            murk.recipients.insert(bob_upper.clone(), "bob".into());
+
+            let result = revoke_recipient(&mut vault, &mut murk, spec).unwrap();
+            assert_eq!(result.display_name.as_deref(), Some("bob"), "{spec}");
+            assert_eq!(vault.recipients, vec![pk_owner.clone()], "{spec}");
+            assert!(vault.secrets["KEY"].private.is_empty(), "{spec}");
+            assert!(murk.recipients.is_empty(), "{spec}");
+        }
     }
 
     // ── formatting tests ──

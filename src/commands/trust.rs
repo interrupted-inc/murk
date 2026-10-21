@@ -20,7 +20,7 @@ pub(crate) fn cmd_trust(yes: bool, vault_path: &str) {
         .identity
         .pubkey_string()
         .unwrap_or_else(|e| die(&e, 1));
-    let me = murk_cli::crypto::canonical_recipient(&pubkey);
+    let me = murk_cli::canonical_recipient(&pubkey).into_owned();
     let pinned_grant = inspected
         .assessment
         .pin
@@ -31,7 +31,7 @@ pub(crate) fn cmd_trust(yes: bool, vault_path: &str) {
             .murk
             .grants
             .values()
-            .any(|g| murk_cli::crypto::canonical_recipient(&g.pubkey) == me)
+            .any(|g| murk_cli::canonical_recipient(&g.pubkey).into_owned() == me)
     {
         die(
             &"an agent grant key cannot trust a vault\nask the operator to re-mint the grant",
@@ -190,7 +190,7 @@ fn print_summary(vault_path: &str, inspected: &murk_cli::InspectedVault) {
             if let Some(vk) = &signer_vk {
                 let pinned = pin.and_then(|p| {
                     p.signers
-                        .get(&murk_cli::crypto::canonical_recipient(signer))
+                        .get(&murk_cli::canonical_recipient(signer).into_owned())
                 });
                 let fp = murk_cli::signing::fingerprint(vk).unwrap_or_default();
                 eprintln!("  signing key {fp}");
@@ -205,7 +205,7 @@ fn print_summary(vault_path: &str, inspected: &murk_cli::InspectedVault) {
             if inspected.assessment.env_signers.is_none()
                 && pin.is_some_and(|p| {
                     !p.trusted
-                        .contains(&murk_cli::crypto::canonical_recipient(signer))
+                        .contains(&murk_cli::canonical_recipient(signer).into_owned())
                 })
             {
                 eprintln!(
@@ -223,12 +223,12 @@ fn print_summary(vault_path: &str, inspected: &murk_cli::InspectedVault) {
     let grants: std::collections::BTreeSet<String> = murk
         .grants
         .values()
-        .map(|g| murk_cli::crypto::canonical_recipient(&g.pubkey))
+        .map(|g| murk_cli::canonical_recipient(&g.pubkey).into_owned())
         .collect();
     eprintln!("{}", "recipients".bold());
     let mut shown = std::collections::BTreeSet::new();
     for r in &vault.recipients {
-        let canon = murk_cli::crypto::canonical_recipient(r);
+        let canon = murk_cli::canonical_recipient(r).into_owned();
         shown.insert(canon.clone());
         let label = murk_cli::trust::label(&murk.recipients, r);
         // The signing key each recipient's writes will be checked against —
@@ -238,7 +238,7 @@ fn print_summary(vault_path: &str, inspected: &murk_cli::InspectedVault) {
             .or_else(|| {
                 murk.signers
                     .iter()
-                    .find(|(pk, _)| murk_cli::crypto::canonical_recipient(pk) == canon)
+                    .find(|(pk, _)| murk_cli::canonical_recipient(pk).into_owned() == canon)
                     .map(|(_, vk)| vk)
             })
             .and_then(|vk| murk_cli::signing::fingerprint(vk))

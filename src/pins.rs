@@ -55,7 +55,7 @@ pub struct TrustPin {
     /// so a teammate revoked since still verifies for their old revisions.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub ever_trusted: BTreeSet<String>,
-    /// Canonical recipient keys (see [`crate::crypto::canonical_recipient`])
+    /// Canonical recipient keys (see [`crate::recipients::canonical_recipient`])
     /// trusted to sign this vault.
     #[serde(default)]
     pub trusted: BTreeSet<String>,

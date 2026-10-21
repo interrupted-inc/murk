@@ -354,6 +354,7 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand --values-from 'With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)'
             cand --vault 'Vault filename'
             cand --rotate 'Rotate the secrets they had access to in the same session'
+            cand --force 'Revoke every key of a multi-key GitHub user without confirmation'
             cand -h 'Print help'
             cand --help 'Print help'
         }
@@ -380,6 +381,7 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand --values-from 'With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)'
             cand --vault 'Vault filename'
             cand --rotate 'Rotate the secrets they had access to in the same session'
+            cand --force 'Revoke every key of a multi-key GitHub user without confirmation'
             cand -h 'Print help'
             cand --help 'Print help'
         }

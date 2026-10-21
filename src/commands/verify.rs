@@ -144,6 +144,37 @@ pub(crate) fn cmd_verify(vault_path: &str) {
         });
     }
 
+    for entries in murk_cli::duplicate_recipients(vault) {
+        findings.push(Finding {
+            category: "recipients",
+            message: format!(
+                "{} is listed {} times as a recipient",
+                murk_cli::truncate_pubkey(entries[0]),
+                entries.len()
+            ),
+            fix: Some(format!(
+                "`murk circle revoke \"{}\"` removes every copy; then re-authorize the key once",
+                murk_cli::canonical_recipient(entries[0])
+            )),
+        });
+    }
+
+    for pk in &vault.recipients {
+        if let Some(why) = murk_cli::crypto::parse_recipient(pk)
+            .ok()
+            .and_then(|r| r.weakness())
+        {
+            findings.push(Finding {
+                category: "recipients",
+                message: format!(
+                    "unsafe recipient {}: {why} — every save refuses until it is removed",
+                    murk_cli::truncate_pubkey(pk)
+                ),
+                fix: Some(format!("`murk circle revoke \"{pk}\"`")),
+            });
+        }
+    }
+
     if findings.is_empty() {
         eprintln!("{} vault integrity verified", "ok".green().bold());
         eprintln!("{} no safety issues found", "ok".green().bold());

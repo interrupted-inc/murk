@@ -1112,11 +1112,11 @@ fn merge_meta(
     let recipients: BTreeSet<String> = merged
         .recipients
         .iter()
-        .map(|r| crate::crypto::canonical_recipient(r))
+        .map(|r| crate::recipients::canonical_recipient(r).into_owned())
         .collect();
     let mut signers = BTreeMap::new();
     for (pk, vk) in ours_meta.signers.iter().chain(&theirs_meta.signers) {
-        let pk = crate::crypto::canonical_recipient(pk);
+        let pk = crate::recipients::canonical_recipient(pk).into_owned();
         if !recipients.contains(&pk) {
             continue;
         }

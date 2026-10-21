@@ -342,7 +342,7 @@ pub enum Command {
     /// Remove a recipient from the vault
     #[command(hide = true)]
     Revoke {
-        /// Recipient pubkey or display name
+        /// Recipient pubkey, display name, or github:username
         recipient: String,
         /// Rotate the secrets they had access to in the same session
         #[arg(long)]
@@ -350,6 +350,9 @@ pub enum Command {
         /// With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)
         #[arg(long, value_name = "FILE", requires = "rotate")]
         values_from: Option<String>,
+        /// Revoke every key of a multi-key GitHub user without confirmation
+        #[arg(long)]
+        force: bool,
         /// Vault filename
         #[arg(long, env = "MURK_VAULT", default_value = ".murk")]
         vault: String,
@@ -642,7 +645,7 @@ pub enum CircleCommand {
 
     /// Remove a recipient from the vault
     Revoke {
-        /// Recipient pubkey or display name
+        /// Recipient pubkey, display name, or github:username
         recipient: String,
         /// Rotate the secrets they had access to in the same session
         #[arg(long)]
@@ -650,6 +653,9 @@ pub enum CircleCommand {
         /// With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)
         #[arg(long, value_name = "FILE", requires = "rotate")]
         values_from: Option<String>,
+        /// Revoke every key of a multi-key GitHub user without confirmation
+        #[arg(long)]
+        force: bool,
         /// Vault filename
         #[arg(long, env = "MURK_VAULT", default_value = ".murk")]
         vault: String,

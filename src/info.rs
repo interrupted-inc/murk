@@ -154,9 +154,10 @@ pub fn vault_info(
 
     // Resolve self name from meta if pubkey is known.
     let self_name = self_pubkey.as_ref().and_then(|pk| {
+        let listed = crate::recipients::find_recipient(&vault, pk)?;
         meta_data
             .as_ref()
-            .and_then(|m| m.recipients.get(pk).cloned())
+            .and_then(|m| m.recipients.get(listed).cloned())
     });
 
     Ok(VaultInfo {

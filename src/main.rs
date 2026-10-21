@@ -222,12 +222,14 @@ fn run() {
             recipient,
             rotate,
             values_from,
+            force,
             vault,
         } => {
             cmd_revoke(
                 &recipient,
                 rotate,
                 values_from.as_deref(),
+                force,
                 &murk_cli::resolve_vault_path(&vault),
             );
         }
@@ -261,6 +263,7 @@ fn run() {
                     recipient,
                     rotate,
                     values_from,
+                    force,
                     vault,
                 }),
             ..
@@ -268,6 +271,7 @@ fn run() {
             &recipient,
             rotate,
             values_from.as_deref(),
+            force,
             &murk_cli::resolve_vault_path(&vault),
         ),
         Command::Group { sub } => cmd_group(sub),

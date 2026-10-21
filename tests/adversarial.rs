@@ -558,18 +558,6 @@ fn revoke_nonexistent_recipient() {
 }
 
 #[test]
-fn revoke_last_recipient_fails() {
-    let dir = TempDir::new().unwrap();
-    let (key, pubkey) = init_vault(&dir);
-
-    murk(&dir, &key)
-        .args(["circle", "revoke", &pubkey, "--vault", "test.murk"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("last recipient"));
-}
-
-#[test]
 fn authorize_invalid_pubkey() {
     let dir = TempDir::new().unwrap();
     let (key, _) = init_vault(&dir);

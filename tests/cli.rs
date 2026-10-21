@@ -1513,18 +1513,6 @@ fn revoke_by_pubkey_works() {
 }
 
 #[test]
-fn revoke_last_recipient_fails() {
-    let dir = TempDir::new().unwrap();
-    let (key, pubkey) = init_vault(&dir);
-
-    murk(&dir, &key)
-        .args(["circle", "revoke", &pubkey, "--vault", "test.murk"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("cannot revoke last recipient"));
-}
-
-#[test]
 fn revoke_unknown_fails() {
     let dir = TempDir::new().unwrap();
     let (key, _) = init_vault(&dir);
@@ -4781,21 +4769,47 @@ fn authorize_raw_ssh_rsa_rejected_by_default() {
         .stderr(predicate::str::contains("--allow-ssh-rsa"));
 }
 
+/// A real 2048-bit ssh-rsa public key (age can parse it), so the spellings
+/// below would be authorized if the ssh-rsa gate missed them.
+const SSH_RSA_KEY_BLOB: &str = "AAAAB3NzaC1yc2EAAAADAQABAAABAQCaRHg0uOKAavZimU/uWvaGT2lZfd94fHg86IgLPqik1mUYQnrP5Fpn9CzY9eMH1agGu111KLt+bY2uFUBxmz37kUW2PIqdjx33q+k4fEz6K2ndoQVx0y/8ZhIJUlG9KyCh8C/OAfK+7ruyZMp3hE/o6YZjBfSO7jrHAEQ3Z2UnwbAWiLsGFDNb2pBLz1rXRMwF3upSGmdUZq9/OacOgKvdNBhxdTEmLIAu5kKa9oLvc+S/b68nJn2Rd6IuY7KPIIhuLsMsvGl6e5p3Xpx96fJB+xaU/7VARLi5SqfnjgZfIgFH3BNm1pcXNAKbuPW7vHXcQDBwvdeeHZHJuOpqx/X/";
+
+/// murk stores SSH keys in canonical form, so leading whitespace, tabs or
+/// repeated spaces must not slip an ssh-rsa key past the gate, raw or via
+/// `ssh:`.
 #[test]
-fn authorize_raw_ssh_rsa_override_passes_the_gate() {
-    // We don't have a real parseable ssh-rsa key in-tree, so we verify the
-    // narrower property: with --allow-ssh-rsa, the ssh-rsa refusal gate is
-    // bypassed (warning printed), and control reaches the real key parser.
-    // Any downstream parse failure is acceptable — the point of this test
-    // is that `reject_rsa_keys` doesn't fire.
+fn authorize_ssh_rsa_rejected_in_any_spelling() {
     let dir = TempDir::new().unwrap();
     let (key, _) = init_vault(&dir);
+    let pub_file = dir.path().join("rsa.pub");
+    fs::write(&pub_file, format!("ssh-rsa\t{SSH_RSA_KEY_BLOB}\tme@host\n")).unwrap();
+
+    for spelling in [
+        format!(" ssh-rsa {SSH_RSA_KEY_BLOB}"),
+        format!("ssh-rsa\t{SSH_RSA_KEY_BLOB}"),
+        format!("ssh-rsa   {SSH_RSA_KEY_BLOB}  me@host"),
+        format!("ssh:{}", pub_file.display()),
+    ] {
+        murk(&dir, &key)
+            .args(["circle", "authorize", &spelling, "--vault", "test.murk"])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("refusing to authorize"));
+    }
+}
+
+/// With `--allow-ssh-rsa` the gate warns instead of refusing, and a real
+/// ssh-rsa key is authorized and stored in canonical form under its name.
+#[test]
+fn authorize_raw_ssh_rsa_override_passes_the_gate() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    let rsa = format!("ssh-rsa {SSH_RSA_KEY_BLOB}");
 
     murk(&dir, &key)
         .args([
             "circle",
             "authorize",
-            FAKE_SSH_RSA_KEY,
+            &format!("{rsa} me@host"),
             "--name",
             "rsa-user",
             "--allow-ssh-rsa",
@@ -4803,8 +4817,22 @@ fn authorize_raw_ssh_rsa_override_passes_the_gate() {
             "test.murk",
         ])
         .assert()
+        .success()
         .stderr(predicate::str::contains("authorized via --allow-ssh-rsa"))
         .stderr(predicate::str::contains("refusing to authorize").not());
+
+    let out = murk(&dir, &key)
+        .args(["circle", "--json", "--vault", "test.murk"])
+        .assert()
+        .success();
+    let circle: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert!(
+        circle
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!({"pubkey": rsa, "name": "rsa-user", "is_self": false})),
+        "{circle}"
+    );
 }
 
 #[test]

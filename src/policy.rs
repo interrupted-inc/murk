@@ -60,7 +60,9 @@ pub fn is_agent_identity(murk: &Murk, pubkey: &str) -> bool {
     if murk.loaded_by.as_deref() == Some(pubkey) {
         return murk.loaded_as_grant;
     }
-    murk.grants.values().any(|g| g.pubkey == pubkey)
+    murk.grants
+        .values()
+        .any(|g| crate::recipients::same_recipient(&g.pubkey, pubkey))
 }
 
 /// Whether the agent allow-tag policy governs what `pubkey` may read: always
@@ -120,7 +122,11 @@ pub fn enforce_agent_policy(
     let is_agent = is_agent_identity(murk, pubkey);
     if is_agent {
         let now = chrono::Utc::now();
-        for (name, grant) in murk.grants.iter().filter(|(_, g)| g.pubkey == pubkey) {
+        for (name, grant) in murk
+            .grants
+            .iter()
+            .filter(|(_, g)| crate::recipients::same_recipient(&g.pubkey, pubkey))
+        {
             check_grant_expiry(name, grant, now)?;
         }
     }

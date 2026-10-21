@@ -47,7 +47,7 @@ pub fn anchor_from_key_text(text: &str) -> Result<TrustedSigners, String> {
 pub fn anchor_lines(vault_path: &str, minter: &crypto::MurkIdentity) -> Result<String, String> {
     let mut signers = crate::trust::pinned_trusted_signers(vault_path)?;
     if let (Ok(pk), Some(sk)) = (minter.pubkey_string(), minter.signing_key()) {
-        let canonical = crypto::canonical_recipient(&pk);
+        let canonical = crate::recipients::canonical_recipient(&pk).into_owned();
         let vk = (!canonical.starts_with("ssh-")).then(|| sk.verifying_key());
         signers.insert(canonical, vk);
     }
@@ -65,11 +65,11 @@ pub fn anchor_lines(vault_path: &str, minter: &crypto::MurkIdentity) -> Result<S
 
 /// The `agents` entry for `pubkey`, matched canonically.
 pub(crate) fn blob_for<'a>(vault: &'a types::Vault, pubkey: &str) -> Option<&'a String> {
-    let want = crypto::canonical_recipient(pubkey);
+    let want = crate::recipients::canonical_recipient(pubkey).into_owned();
     vault
         .agents
         .iter()
-        .find(|(k, _)| crypto::canonical_recipient(k) == want)
+        .find(|(k, _)| crate::recipients::canonical_recipient(k).into_owned() == want)
         .map(|(_, blob)| blob)
 }
 
@@ -96,7 +96,8 @@ pub(crate) fn open_blob(
     };
     let plaintext = decrypt_value(blob, identity).map_err(|_| corrupt())?;
     let meta: AgentMeta = serde_json::from_slice(&plaintext).map_err(|_| corrupt())?;
-    if crypto::canonical_recipient(&meta.grant.pubkey) != crypto::canonical_recipient(pubkey)
+    if crate::recipients::canonical_recipient(&meta.grant.pubkey).into_owned()
+        != crate::recipients::canonical_recipient(pubkey).into_owned()
         || crate::grants::validate_grant_name(&meta.name).is_err()
     {
         return Err(corrupt());
@@ -155,11 +156,11 @@ pub(crate) fn meta_recipients(
 ) -> Vec<String> {
     let grant_keys: std::collections::BTreeSet<String> = grants
         .values()
-        .map(|g| crypto::canonical_recipient(&g.pubkey))
+        .map(|g| crate::recipients::canonical_recipient(&g.pubkey).into_owned())
         .collect();
     recipients
         .iter()
-        .filter(|pk| !grant_keys.contains(&crypto::canonical_recipient(pk)))
+        .filter(|pk| !grant_keys.contains(&crate::recipients::canonical_recipient(pk).into_owned()))
         .cloned()
         .collect()
 }

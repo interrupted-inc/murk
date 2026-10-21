@@ -966,7 +966,7 @@ _murk() {
             return 0
             ;;
         murk__subcmd__circle__subcmd__revoke)
-            opts="-h --rotate --values-from --vault --help"
+            opts="-h --rotate --values-from --force --vault --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2514,7 +2514,7 @@ _murk() {
             return 0
             ;;
         murk__subcmd__revoke)
-            opts="-h --rotate --values-from --vault --help"
+            opts="-h --rotate --values-from --force --vault --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

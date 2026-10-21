@@ -1722,6 +1722,7 @@ dependencies = [
  "clap_mangen",
  "colored",
  "constant_time_eq",
+ "curve25519-dalek 5.0.0",
  "ed25519-dalek 3.0.0",
  "fs2",
  "libc",

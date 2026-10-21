@@ -66,6 +66,9 @@ serde_json = "1.0.150"
 sha2 = "0.11.0"
 blake3 = "1"
 ed25519-dalek = "3"
+# Point checks on recipient keys (reject low-order and torsion points before
+# age encrypts to them). Already in the tree via ed25519-dalek.
+curve25519-dalek = { version = "5", default-features = false }
 # OpenSSH private-key parsing for ssh-ed25519 vault signing. RSA/encryption
 # features are deliberately off: we only need ed25519, and keeping RSA out avoids
 # widening the Marvin-attack surface (RUSTSEC-2023-0071, already tracked in deny.toml).
