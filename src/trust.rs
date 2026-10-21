@@ -77,6 +77,9 @@ pub struct Loaded<'a> {
     pub grants: &'a BTreeMap<String, types::GrantEntry>,
     /// Whether the loading identity can sign (age or ssh-ed25519).
     pub loader_can_sign: bool,
+    /// The loading key, when it is known to be an operator and so can never be
+    /// an agent grant: an ssh or plugin identity (grants are minted age keys).
+    pub operator_key: Option<String>,
 }
 
 /// Why a vault was refused.
@@ -385,9 +388,14 @@ fn signer_key_refusal(
 
 /// Whether a grant record in `loaded` names an operator key: a signer this
 /// machine trusts or ever trusted (on an operator's own machine, that includes
-/// their own key), or a key with a signing-key registry entry (grants never
-/// sign). The first such grant is tampering.
+/// their own key), a key with a signing-key registry entry (grants never
+/// sign), or the loading key when it is known to be an operator. The first
+/// such grant is tampering.
 fn grant_binding_refusal(loaded: &Loaded<'_>, pin: Option<&TrustPin>) -> Option<Refusal> {
+    let operator = loaded
+        .operator_key
+        .as_deref()
+        .map(|k| canonical_recipient(k).into_owned());
     let registry: BTreeSet<String> = loaded
         .registry
         .keys()
@@ -395,7 +403,8 @@ fn grant_binding_refusal(loaded: &Loaded<'_>, pin: Option<&TrustPin>) -> Option<
         .collect();
     loaded.grants.iter().find_map(|(name, grant)| {
         let key = canonical_recipient(&grant.pubkey).into_owned();
-        let operator = registry.contains(&key)
+        let operator = operator.as_ref() == Some(&key)
+            || registry.contains(&key)
             || pin.is_some_and(|p| {
                 !p.grants.contains(&key)
                     && (p.trusted.contains(&key) || p.ever_trusted.contains(&key))
@@ -678,7 +687,15 @@ pub fn accepted_pin(
         loaded.vault.vault_id.clone()
     };
     let signed = matches!(loaded.signature, types::SignatureState::Signed { .. });
-    let trusted = signers_of(loaded.vault, loaded.grants);
+    // The vault's non-grant recipients — where a grant record names a key this
+    // machine trusts as a signer, that key stays a signer.
+    let trusted: BTreeSet<String> = loaded
+        .vault
+        .recipients
+        .iter()
+        .map(|r| canonical_recipient(r).into_owned())
+        .filter(|r| !grants.contains(r))
+        .collect();
     // Verifying keys: the ones pinned before, plus the signer's own and the
     // registry entries of the vault's trusted signers — believed because the
     // vault carrying them is accepted. A pinned key is never replaced, and is
@@ -983,6 +1000,7 @@ mod tests {
                 groups: &self.groups,
                 grants: &self.grants,
                 loader_can_sign: true,
+                operator_key: None,
             }
         }
     }
@@ -1118,6 +1136,7 @@ mod tests {
         // pin keeps A a signer and never a grant.
         let recorded = accepted_pin(&ghost.loaded(), Some(&pin), false);
         assert!(!recorded.grants.contains(A));
+        assert!(recorded.trusted.contains(A), "A stays a trusted signer");
         // A pinned grant entry for a trusted signer does not override trust.
         let mut stale = pin.clone();
         stale.grants.insert(A.into());
@@ -1125,6 +1144,32 @@ mod tests {
             verdict(&Case::new(&[A, B], 2, A).loaded(), Some(&stale), None),
             Verdict::Trusted
         );
+
+        // A fresh machine (no pin) whose loading key is an operator for sure
+        // (ssh or plugin, never a grant) refuses a grant bound to that key.
+        let ssh = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDb";
+        let mut to_loader = Case::new(&[A, ssh], 3, A);
+        to_loader.grants.insert(
+            "ghost".into(),
+            types::GrantEntry {
+                pubkey: ssh.into(),
+                ..Default::default()
+            },
+        );
+        let mut as_operator = to_loader.loaded();
+        as_operator.operator_key = Some(ssh.into());
+        assert_eq!(
+            verdict(&as_operator, None, None),
+            Verdict::Refused(Refusal::GrantBindsOperator {
+                grant: "ghost".into(),
+                key: ssh.into()
+            })
+        );
+        // An age loader may be the grant itself: only the pin can tell.
+        assert!(matches!(
+            verdict(&to_loader.loaded(), None, None),
+            Verdict::Refused(Refusal::NotYetTrusted { .. })
+        ));
     }
 
     #[test]

@@ -247,6 +247,16 @@ impl MurkIdentity {
     }
 }
 
+/// The public key of `identity` when it is certainly an operator, never an
+/// agent grant: an ssh or plugin identity (murk mints grant keys as native age
+/// keys). `None` for age identities, which may be either.
+pub fn operator_key(identity: &MurkIdentity) -> Option<String> {
+    match identity {
+        MurkIdentity::Age(_) => None,
+        MurkIdentity::Ssh { .. } | MurkIdentity::Plugin { .. } => identity.pubkey_string().ok(),
+    }
+}
+
 /// The raw 32-byte X25519 secret of an age identity. Zeroized on drop.
 pub(crate) fn age_secret_bytes(id: &age::x25519::Identity) -> Option<Zeroizing<[u8; 32]>> {
     use age::secrecy::ExposeSecret;

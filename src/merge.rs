@@ -985,6 +985,7 @@ fn check_side(
         groups: &verified.groups,
         grants: &verified.grants,
         loader_can_sign: identity.is_signing_capable(),
+        operator_key: crate::crypto::operator_key(identity),
     };
     let changed = !same_covered_content(side, base) || side.meta != base.meta;
     crate::trust::check_merge_side(vault_path, &loaded, Some((base, base_groups)), changed)
@@ -1017,6 +1018,7 @@ fn check_base(
         groups: &verified.groups,
         grants: &verified.grants,
         loader_can_sign: identity.is_signing_capable(),
+        operator_key: crate::crypto::operator_key(identity),
     };
     match crate::trust::assess_revision(vault_path, &loaded)? {
         crate::trust::Verdict::Trusted => Ok(Some(verified.groups)),
