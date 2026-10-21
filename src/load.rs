@@ -332,7 +332,7 @@ fn decrypt_vault_with_signature(
     identity: &crypto::MurkIdentity,
 ) -> Result<(types::Murk, Option<String>), MurkError> {
     let pubkey = identity.pubkey_string()?;
-    if crate::agents::blob_for(vault, &pubkey).is_some() {
+    if crate::agents::loader_blob(vault, identity).is_some() {
         return Err(MurkError::Grant(
             "an agent grant key reads a vault only through `load_vault`, which checks the \
              signature against the trusted signers in the grant's key file"
@@ -633,7 +633,7 @@ pub fn inspect_vault(vault_path: &str) -> Result<InspectedVault, MurkError> {
     })?;
 
     let vault = read_vault(vault_path)?;
-    if let Some(blob) = crate::agents::blob_for(&vault, &identity.pubkey_string()?).cloned() {
+    if let Some(blob) = crate::agents::loader_blob(&vault, &identity) {
         return inspect_as_grant(vault, identity, secret_key.expose_secret(), &blob);
     }
     let (murk, signer_vk) = decrypt_vault_with_signature(&vault, &identity)?;

@@ -753,7 +753,7 @@ fn merge_key_is_grant(sides: &[&Vault]) -> bool {
         return false;
     };
     sides.iter().any(|side| {
-        crate::agents::blob_for(side, &pubkey).is_some()
+        crate::agents::loader_blob(side, &identity).is_some()
             || matches!(
                 crate::decrypt_meta(side, &identity),
                 Ok(Some(meta)) if meta.grants.values().any(|g| g.pubkey == pubkey)

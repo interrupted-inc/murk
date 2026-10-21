@@ -73,6 +73,16 @@ pub(crate) fn blob_for<'a>(vault: &'a types::Vault, pubkey: &str) -> Option<&'a 
         .map(|(_, blob)| blob)
 }
 
+/// The `agents` blob `identity` loads through, if it is an agent grant: it has
+/// a blob, and it cannot open the meta. A key that opens the meta is an
+/// operator whatever the vault says, so a blob a meta writer planted for an
+/// operator's key never routes them into the grant path.
+pub(crate) fn loader_blob(vault: &types::Vault, identity: &crypto::MurkIdentity) -> Option<String> {
+    let blob = blob_for(vault, &identity.pubkey_string().ok()?)?;
+    let opens_meta = !vault.meta.is_empty() && decrypt_value(&vault.meta, identity).is_ok();
+    (!opens_meta).then(|| blob.clone())
+}
+
 /// Decrypt and check the grant record in `blob` for `pubkey`.
 pub(crate) fn open_blob(
     blob: &str,
