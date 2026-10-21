@@ -96,8 +96,10 @@ pub(crate) fn cmd_init(vault_name: &str) {
         };
 
         if status.authorized {
-            let name_display = match status.display_name {
-                Some(ref name) if !name.is_empty() => format!("  {}", name.bold()),
+            let name_display = match &status.display_name {
+                Some(name) if !name.is_empty() => {
+                    format!("  {}", murk_cli::terminal_text(name, false).bold())
+                }
                 _ => String::new(),
             };
             eprintln!(
@@ -123,6 +125,11 @@ pub(crate) fn cmd_init(vault_name: &str) {
     let name = prompt("Enter your name or email", None);
     if name.is_empty() {
         die(&"name is required", 1);
+    }
+    for (what, text) in [("name", name.as_str()), ("vault name", vault_name)] {
+        if let Err(why) = murk_cli::new_text(text, false) {
+            die(&format_args!("{what} {why}"), 1);
+        }
     }
 
     let (_secret_key, pubkey) = generate_and_write_key(vault_name);

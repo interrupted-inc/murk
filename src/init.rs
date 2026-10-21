@@ -160,6 +160,9 @@ pub fn create_vault(
         signers: BTreeMap::new(),
         sig: None,
     };
+    // Every piece of header text here is new.
+    crate::validate::new_header_text(None, &vault, &meta.recipients)
+        .map_err(|e| MurkError::Secret(format!("refusing to write {e}")))?;
     crate::validate::meta(&meta)
         .map_err(|e| MurkError::Secret(format!("refusing to write invalid vault meta: {e}")))?;
     let meta_json =
@@ -361,6 +364,15 @@ mod tests {
         assert!(vault.schema.is_empty());
         assert!(vault.secrets.is_empty());
         assert!(!vault.meta.is_empty(), "meta is empty");
+    }
+
+    #[test]
+    fn create_vault_refuses_text_that_can_forge_output() {
+        let (_, pubkey) = generate_keypair();
+        let err = create_vault(".murk", &pubkey, "Bob\u{202e}").unwrap_err();
+        assert!(err.to_string().contains("meta.recipients"), "{err}");
+        let err = create_vault(".murk\r", &pubkey, "Bob").unwrap_err();
+        assert!(err.to_string().contains("vault_name"), "{err}");
     }
 
     // ── sanitize_remote_url tests ──

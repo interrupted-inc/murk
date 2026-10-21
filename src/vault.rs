@@ -481,6 +481,26 @@ mod tests {
     }
 
     #[test]
+    fn legacy_text_that_can_forge_output_still_loads_and_is_named() {
+        let mut v = full_vault_json();
+        v["schema"]["DATABASE_URL"]["description"] = "prod db\rok  vault verified".into();
+        v["vault_name"] = "x\nwarn: none".into();
+        v["schema"]["DATABASE_URL"]["example"] = "abc\u{202e}fed".into();
+        v["repo"] = "github.com/a\u{200b}b".into();
+        let vault = parse(&v.to_string()).expect("legacy header text must not lock a vault");
+        let no_names: [(&String, &String); 0] = [];
+        assert_eq!(
+            crate::unsafe_text_fields(&vault, no_names),
+            [
+                "vault_name",
+                "repo",
+                "schema.DATABASE_URL.description",
+                "schema.DATABASE_URL.example"
+            ]
+        );
+    }
+
+    #[test]
     fn parse_errors_never_echo_raw_control_characters() {
         const ESC: &str = "\u{1b}]0;pwned\u{7}\u{1b}[2J";
         type Mutate = fn(&mut serde_json::Value);

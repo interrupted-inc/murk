@@ -376,6 +376,81 @@ fn diff_hides_values_unless_asked_and_reports_each_change_kind() {
 }
 
 #[test]
+fn diff_shows_values_without_terminal_controls() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    git(dir.path(), &["init", "-q"]);
+    // An escape sequence (clear screen), a carriage return and a bidi override.
+    add_secret(dir.path(), &key, "HOSTILE", "a\u{1b}[2Jb\rc\u{202e}d");
+
+    let out = murk(&dir, &key)
+        .args(["diff", "--show-values", "--vault", "test.murk"])
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains(r#"+ HOSTILE = "a\u{1b}[2Jb\rc\u{202e}d""#),
+        "{stdout:?}"
+    );
+    assert!(!stdout.contains(['\u{1b}', '\r', '\u{202e}']), "{stdout:?}");
+}
+
+#[test]
+fn header_text_cannot_forge_lines_in_info() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    add_secret(dir.path(), &key, "DB", "v");
+
+    // New text with a carriage return (rewrites the line) or a bidi override
+    // is refused, without echoing it.
+    for (forged, why) in [
+        ("prod db\rok  vault verified", "contains control characters"),
+        (
+            "prod \u{202e}bd dorp",
+            "contains invisible or text-direction",
+        ),
+    ] {
+        murk(&dir, &key)
+            .args(["describe", "DB", forged, "--vault", "test.murk"])
+            .assert()
+            .code(2)
+            .stderr(
+                predicate::str::contains(format!("<DESCRIPTION> {why}"))
+                    .and(predicate::str::contains("prod").not()),
+            );
+    }
+    murk(&dir, &key)
+        .args(["circle", "authorize", "age1x", "--name", "x\ny"])
+        .args(["--vault", "test.murk"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--name <NAME> contains control"));
+
+    // A description may span lines, but `info` shows it on its key's row.
+    murk(&dir, &key)
+        .args([
+            "describe",
+            "DB",
+            "prod db\nwarn: none",
+            "--vault",
+            "test.murk",
+        ])
+        .assert()
+        .success();
+    murk(&dir, &key)
+        .args(["info", "--vault", "test.murk"])
+        .env("NO_COLOR", "1")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains(r"prod db\nwarn: none")
+                .and(predicate::str::contains("\nwarn: none").not()),
+        );
+}
+
+#[test]
 fn diff_warns_when_old_vault_is_not_decryptable() {
     let dir = TempDir::new().unwrap();
     let (key, _) = init_vault(&dir);
@@ -560,4 +635,73 @@ fn recover_refuses_keys_without_a_phrase() {
             "plugin identities (YubiKey, Secure Enclave, FIDO2) do not have recovery phrases",
         ))
         .stdout(predicate::str::is_empty());
+}
+
+/// A vault written by murk 0.13.0, whose `DB` description holds a bidi
+/// override (U+202E), and its throwaway test key.
+const LEGACY_VAULT: &str = include_str!("fixtures/legacy-bidi-description.murk");
+// TEST KEY - not secret; only decrypts tests/fixtures/legacy-bidi-description.murk
+const LEGACY_KEY: &str =
+    "AGE-SECRET-KEY-1T397VF5VLMZZ80SL6LFHM833Y99896EZFDC505PH668UZRNA5UGQCQ7RJE";
+
+#[test]
+fn legacy_bidi_description_loads_shows_escaped_and_can_be_replaced() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("test.murk"), LEGACY_VAULT).unwrap();
+    let murk = || murk(&dir, LEGACY_KEY);
+
+    // It loads, and `info` shows the character escaped.
+    murk()
+        .args(["info", "--vault", "test.murk"])
+        .env("NO_COLOR", "1")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains(r"prod \u{202e}bd dorp")
+                .and(predicate::str::contains('\u{202e}').not()),
+        );
+    murk()
+        .args(["get", "DB", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout("v\n");
+
+    // `verify` names the field.
+    murk()
+        .args(["verify", "--vault", "test.murk"])
+        .assert()
+        .stderr(predicate::str::contains(
+            "schema.DB.description contains control, invisible or text-direction characters",
+        ));
+
+    // Other writes keep working while the old text is there.
+    murk()
+        .args(["add", "OTHER", "--vault", "test.murk"])
+        .write_stdin("o\n")
+        .assert()
+        .success();
+
+    // New text with it is refused, without echoing it; clean text replaces it.
+    murk()
+        .args(["describe", "DB", "again \u{202e}x", "--vault", "test.murk"])
+        .assert()
+        .code(2)
+        .stderr(
+            predicate::str::contains("contains invisible or text-direction characters")
+                .and(predicate::str::contains('\u{202e}').not()),
+        );
+    murk()
+        .args(["describe", "DB", "prod db", "--vault", "test.murk"])
+        .assert()
+        .success();
+    murk()
+        .args(["verify", "--vault", "test.murk"])
+        .assert()
+        .stderr(predicate::str::contains("schema.DB.description").not());
+    murk()
+        .args(["info", "--vault", "test.murk"])
+        .env("NO_COLOR", "1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("prod db"));
 }

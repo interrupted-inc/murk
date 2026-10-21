@@ -25,6 +25,7 @@ pub mod cli;
 pub(crate) mod codename;
 pub mod connect;
 pub mod crypto;
+pub mod dotenv;
 pub(crate) mod env;
 pub mod error;
 pub(crate) mod export;
@@ -62,9 +63,10 @@ mod property_tests;
 
 // Re-exports: keep the flat murk_cli::foo() API for main.rs
 pub use agent::{AgentPlan, AgentPlanKey, agent_plan, format_agent_plan_text};
+pub use dotenv::parse_env;
 pub use env::{
     EnvrcStatus, KeySource, agent_key_file_path, agent_keys_dir, dotenv_has_murk_key,
-    env_permission_warning, home_short, key_file_path, locate_key, parse_env, resolve_key,
+    env_permission_warning, home_short, key_file_path, locate_key, resolve_key,
     resolve_key_for_vault, resolve_key_with_source, secret_file_loose_mode, strip_key_env,
     write_envrc, write_key_ref_to_dotenv, write_key_to_dotenv, write_key_to_file,
 };
@@ -94,6 +96,7 @@ pub use secrets::{
     EXPIRY_WARN_DAYS, RotationIssue, add_grouped_secret, add_secret, describe_key, get_secret,
     import_secrets, list_keys, mark_revoked, remove_secret, rotation_health,
 };
+pub use validate::{is_deceptive, new_text, terminal_text, unsafe_text_fields};
 
 use std::path::Path;
 

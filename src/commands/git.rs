@@ -166,9 +166,18 @@ pub(crate) fn cmd_diff(git_ref: &str, show_values: bool, json: bool, vault_path:
         return;
     }
 
+    // Values are shown in `.env` quoting: one line each, with control and
+    // invisible characters escaped, so a value cannot drive the terminal or
+    // pass for other output. `--json` carries the exact bytes.
+    let shown = |v: Option<&zeroize::Zeroizing<String>>| {
+        let mut out = zeroize::Zeroizing::new(String::new());
+        murk_cli::dotenv::push_value(&mut out, v.map_or("", |v| v.as_str()));
+        out
+    };
     for entry in &entries {
-        let old = entry.old_value.as_ref().map_or("", |v| v.as_str());
-        let new = entry.new_value.as_ref().map_or("", |v| v.as_str());
+        let old = shown(entry.old_value.as_ref());
+        let new = shown(entry.new_value.as_ref());
+        let (old, new) = (old.as_str(), new.as_str());
         match entry.kind {
             DiffKind::Added => {
                 if show_values {

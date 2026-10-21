@@ -276,7 +276,8 @@ pub(crate) fn cmd_revoke(recipient: &str, rotate: bool, vault_path: &str) {
     // user aborts the rotation prompts below.
     save_vault(vault_path, &mut vault, &original, &current);
 
-    let display = result.display_name.as_deref().unwrap_or(recipient);
+    let display =
+        murk_cli::terminal_text(result.display_name.as_deref().unwrap_or(recipient), false);
     eprintln!(
         "{} removed {} from recipients",
         "◆".magenta(),
@@ -573,16 +574,17 @@ pub(crate) fn cmd_recipients(json: bool, vault_path: &str) {
     }
 
     // Compute name column width for alignment.
+    // Names are header text: escaped so they can't drive the terminal.
     let name_width = groups
         .iter()
-        .map(|(name, _)| name.map_or(0, |n| n.len()))
+        .map(|(name, _)| name.map_or(0, |n| murk_cli::terminal_text(n, false).len()))
         .max()
         .unwrap_or(0);
 
     for (name, group) in &groups {
         let is_self = group.iter().any(|e| e.is_self);
         let marker = if is_self { "◆" } else { " " };
-        let label = name.unwrap_or("");
+        let label = murk_cli::terminal_text(name.unwrap_or(""), false);
         let label_padded = format!("{label:<name_width$}");
 
         let key_type = murk_cli::key_type_label(&group[0].pubkey);

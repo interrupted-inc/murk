@@ -158,6 +158,18 @@ pub fn save_vault(
     original: &types::Murk,
     current: &types::Murk,
 ) -> Result<(), MurkError> {
+    // Text a write adds to the header (descriptions, examples, tags, names,
+    // policy tags) must not be able to forge or reorder output. Every writer
+    // goes through here, the bindings included. Text already in the vault on
+    // disk is kept, so a vault holding older text stays writable.
+    let on_disk = vault::read(Path::new(vault_path)).ok();
+    crate::validate::new_header_text(
+        on_disk.as_ref().map(|v| (v, &original.recipients)),
+        vault,
+        &current.recipients,
+    )
+    .map_err(|e| MurkError::Secret(format!("refusing to write {e}")))?;
+
     // The full recipient set encrypts the meta blob, so every recipient —
     // including agent grants — can verify integrity and read group/grant state.
     let recipients = parse_recipients(&vault.recipients)?;
@@ -463,6 +475,94 @@ mod tests {
             },
             "second load is anchored by the pin"
         );
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn save_vault_refuses_new_text_that_can_forge_output_but_keeps_old() {
+        let (_secret, pubkey) = generate_keypair();
+        let dir = std::env::temp_dir().join("murk_test_save_new_text");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.murk");
+        let path = path.to_str().unwrap();
+
+        let mut vault = types::Vault {
+            version: types::VAULT_VERSION.into(),
+            created: "2026-02-28T00:00:00Z".into(),
+            vault_name: ".murk".into(),
+            repo: String::new(),
+            recipients: vec![pubkey.clone()],
+            schema: BTreeMap::new(),
+            policy: None,
+            secrets: BTreeMap::new(),
+            meta: String::new(),
+        };
+        let murk = types::Murk {
+            recipients: HashMap::from([(pubkey.clone(), "alice".into())]),
+            ..Default::default()
+        };
+        let refused = |vault: &mut types::Vault, current: &types::Murk, field: &str| {
+            let err = save_vault(path, vault, &murk, current)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(field), "want {field:?}, got {err:?}");
+        };
+
+        // The same library calls the bindings make.
+        let mut current = murk.clone();
+        add_secret(
+            &mut vault,
+            &mut current,
+            "DB",
+            "v",
+            Some("a\u{202e}b"),
+            None,
+            false,
+            &[],
+            None,
+        );
+        refused(
+            &mut vault,
+            &current,
+            "schema.DB.description: contains invisible",
+        );
+        describe_key(&mut vault, "DB", "db", Some("x\ry"), &[], None, None);
+        refused(&mut vault, &current, "schema.DB.example: contains control");
+        describe_key(
+            &mut vault,
+            "DB",
+            "db",
+            None,
+            &["t\u{200b}".into()],
+            None,
+            None,
+        );
+        refused(&mut vault, &current, "schema.DB.tags[0]");
+        describe_key(
+            &mut vault,
+            "DB",
+            "db\nsecond line",
+            None,
+            &["t".into()],
+            None,
+            None,
+        );
+        let mut renamed = current.clone();
+        renamed
+            .recipients
+            .insert(pubkey.clone(), "alice\nwarn: none".into());
+        refused(&mut vault, &renamed, "meta.recipients");
+        save_vault(path, &mut vault, &murk, &current).unwrap();
+
+        // Text already in the vault on disk (written by an older murk) stays
+        // writable; new text of the kind is still refused.
+        vault.schema.get_mut("DB").unwrap().description = "old\u{202e}text".into();
+        vault::write(Path::new(path), &vault).unwrap();
+        save_vault(path, &mut vault, &murk, &current).unwrap();
+        vault.schema.get_mut("DB").unwrap().description = "new\u{202e}text".into();
+        refused(&mut vault, &current, "schema.DB.description");
 
         fs::remove_dir_all(&dir).unwrap();
     }

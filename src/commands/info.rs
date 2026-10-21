@@ -61,6 +61,7 @@ pub(crate) fn cmd_info(tags: &[String], json: bool, vault_path: &str) {
         return;
     }
 
+    let info = &info.for_terminal();
     // Nameplate: ░▓ vault_name
     println!(
         "{} {}",

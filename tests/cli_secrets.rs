@@ -117,7 +117,59 @@ fn import_skips_murk_and_invalid_keys_but_imports_the_rest() {
     let (key, _) = init_vault(&dir);
     fs::write(
         dir.path().join("in.env"),
-        "MURK_KEY=stolen\n1BAD=nope\nnot a pair\nGOOD=yes\n",
+        "MURK_KEY=stolen\n1BAD=nope\nnot a pair\nMURK_FOO=bar\nGOOD=yes\n",
+    )
+    .unwrap();
+
+    let out = murk(&dir, &key)
+        .args(["import", "in.env", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stderr(
+            predicate::str::contains(
+                "skipping MURK_KEY (line 1): murk variables cannot be imported",
+            )
+            .and(predicate::str::contains(
+                "skipping line 2: invalid key name",
+            ))
+            .and(predicate::str::contains("skipping line 3: not KEY=VALUE"))
+            .and(predicate::str::contains("skipping MURK_FOO (line 4)"))
+            .and(predicate::str::contains("imported 1 secret\n")),
+        );
+    // Skipped lines are named by number; their text is never echoed.
+    let output = out.get_output();
+    let printed = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for text in ["stolen", "1BAD", "nope", "not a pair"] {
+        assert!(!printed.contains(text), "{text} echoed: {printed}");
+    }
+
+    // Every name murk warns about is left out, MURK_FOO included.
+    murk(&dir, &key)
+        .args(["ls", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout("GOOD\n");
+    get_ok(&dir, &key, "GOOD", "yes");
+}
+
+/// A PEM private key, with base64 body lines that look like `IDENT=...`.
+const PEM: &str = "-----BEGIN RSA PRIVATE KEY-----\n\
+MIIEowIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gun\n\
+Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MA==\n\
+JwGmMlqvl6dkjzN4CoQYOI2NNQOegHiz0AwyvIfIMpOTDSYfu7WJLZY=\n\
+-----END RSA PRIVATE KEY-----\n";
+
+#[test]
+fn import_keeps_a_quoted_pem_whole() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    fs::write(
+        dir.path().join("in.env"),
+        format!("API_URL=https://x\nTLS_KEY=\"{PEM}\"\nexport SIGNING_KEY='{PEM}' # pem\n"),
     )
     .unwrap();
 
@@ -125,18 +177,44 @@ fn import_skips_murk_and_invalid_keys_but_imports_the_rest() {
         .args(["import", "in.env", "--vault", "test.murk"])
         .assert()
         .success()
-        .stderr(
-            predicate::str::contains("skipping MURK_KEY: murk variables cannot be imported")
-                .and(predicate::str::contains("skipping invalid key name: 1BAD"))
-                .and(predicate::str::contains("imported 1 secret\n")),
-        );
-
+        .stderr(predicate::str::contains("imported 3 secrets\n"));
     murk(&dir, &key)
         .args(["ls", "--vault", "test.murk"])
         .assert()
         .success()
-        .stdout("GOOD\n");
-    get_ok(&dir, &key, "GOOD", "yes");
+        .stdout("API_URL\nSIGNING_KEY\nTLS_KEY\n");
+    get_ok(&dir, &key, "TLS_KEY", PEM);
+    get_ok(&dir, &key, "SIGNING_KEY", PEM);
+    // No fragment of the key reached the vault's plaintext header.
+    let vault = fs::read_to_string(dir.path().join("test.murk")).unwrap();
+    assert!(!vault.contains("Zm9vYmFy") && !vault.contains("JwGmMlqv"));
+}
+
+#[test]
+fn import_with_an_unclosed_quote_writes_nothing() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    let before = fs::read(dir.path().join("test.murk")).unwrap();
+    let body = &PEM[..PEM.len() - 30]; // cut before the closing quote's line
+    fs::write(
+        dir.path().join("in.env"),
+        format!("API_URL=https://x\nTLS_KEY=\"{body}\nNEXT=1\n"),
+    )
+    .unwrap();
+
+    let out = murk(&dir, &key)
+        .args(["import", "in.env", "--vault", "test.murk"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "line 2: the \" opened here is never closed — nothing imported",
+        ));
+    let stderr = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
+    assert!(
+        !stderr.contains("MIIEow") && !stderr.contains("Zm9vYmFy"),
+        "{stderr}"
+    );
+    assert_eq!(fs::read(dir.path().join("test.murk")).unwrap(), before);
 }
 
 #[test]
@@ -540,35 +618,324 @@ fn bulk_edit_group_lists_and_removes_group_values() {
     get_ok(&dir, &alice, "SHARED", "s");
 }
 
+/// Editor script that replaces the scratch file with exactly `contents`.
+#[cfg(unix)]
+fn writing_editor(dir: &TempDir, name: &str, contents: &str) -> String {
+    let source = dir.path().join(format!("{name}.contents"));
+    fs::write(&source, contents).unwrap();
+    let log = dir.path().join(format!("{name}.seen"));
+    editor(
+        dir,
+        name,
+        &log,
+        &format!("cp '{}' \"$1\"", source.display()),
+    )
+}
+
+#[cfg(unix)]
+fn edit(dir: &TempDir, key: &str, args: &[&str], editor: &str) -> assert_cmd::assert::Assert {
+    murk(dir, key)
+        .arg("edit")
+        .args(args)
+        .args(["--vault", "test.murk"])
+        .env("EDITOR", editor)
+        .assert()
+}
+
+/// Values that are easy to mangle in a text buffer, as (key, value, the value
+/// as typed in a bulk buffer).
+#[cfg(unix)]
+const AWKWARD: &[(&str, &str, &str)] = &[
+    ("MULTI", "line one\nline two\n", r#""line one\nline two\n""#),
+    ("QUOTES", r#"say "hi" and 'bye'"#, r#"say "hi" and 'bye'"#),
+    ("EQUALS", "a=b==c=", "a=b==c="),
+    ("TRAILING", "trailing spaces  ", r#""trailing spaces  ""#),
+    ("NEWLINES", "\n\nx\n\n", r#""\n\nx\n\n""#),
+    ("HASH", "#not a comment", r##""#not a comment""##),
+    ("EMPTY", "", ""),
+];
+
 #[cfg(unix)]
 #[test]
-fn bulk_edit_skips_malformed_and_invalid_lines() {
+fn bulk_edit_saved_untouched_keeps_multi_line_values() {
+    // Saving the bulk buffer as murk wrote it used to cut a multi-line value
+    // to its first line and report "1 updated".
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    add(&dir, &key, "CERT", "old", &[]);
+    let ed = writing_editor(&dir, "ed.sh", "line one\nline two\n");
+    edit(&dir, &key, &["CERT"], &ed).success();
+    get_ok(&dir, &key, "CERT", "line one\nline two");
+
+    edit(&dir, &key, &[], "cat")
+        .success()
+        .stderr(predicate::str::contains("no changes"));
+    get_ok(&dir, &key, "CERT", "line one\nline two");
+}
+
+#[cfg(unix)]
+#[test]
+fn bulk_edit_keeps_a_multi_line_value_whole() {
+    // A quoted multi-line value used to be cut to its first line, its other
+    // lines skipped or (`abc==`) added as keys of their own.
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    add(&dir, &key, "CERT", "old", &[]);
+    let ed = writing_editor(
+        &dir,
+        "ed.sh",
+        "CERT=\"-----BEGIN-----\nabc==\n-----END-----\n\"\n",
+    );
+
+    edit(&dir, &key, &[], &ed)
+        .success()
+        .stderr(predicate::str::contains("1 updated").and(predicate::str::contains("added").not()));
+    get_ok(
+        &dir,
+        &key,
+        "CERT",
+        "-----BEGIN-----\nabc==\n-----END-----\n",
+    );
+    murk(&dir, &key)
+        .args(["ls", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout("CERT\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn edit_round_trips_awkward_values_byte_for_byte() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    let buffer: String = AWKWARD
+        .iter()
+        .map(|(k, _, typed)| format!("{k}={typed}\n"))
+        .collect();
+    let ed = writing_editor(&dir, "ed.sh", &buffer);
+    edit(&dir, &key, &[], &ed)
+        .success()
+        .stderr(predicate::str::contains(format!("{} added", AWKWARD.len())));
+    for (k, v, _) in AWKWARD {
+        get_ok(&dir, &key, k, v);
+    }
+
+    // Saving murk's own buffers untouched, in bulk and per key, changes nothing.
+    edit(&dir, &key, &[], "cat")
+        .success()
+        .stderr(predicate::str::contains("no changes"));
+    for (k, _, _) in AWKWARD {
+        edit(&dir, &key, &[k], "cat")
+            .success()
+            .stderr(predicate::str::contains("no changes"));
+    }
+    for (k, v, _) in AWKWARD {
+        get_ok(&dir, &key, k, v);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn edit_single_key_reads_pasted_and_quoted_values_exactly() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    add(&dir, &key, "TLS", "old", &[]);
+
+    // Pasted as is: every line after the header is the value, `#` lines too.
+    let pasted = "-----BEGIN-----\n# not a comment\n\nabc==\n-----END-----";
+    let ed = writing_editor(&dir, "paste.sh", &format!("{pasted}\n"));
+    edit(&dir, &key, &["TLS"], &ed)
+        .success()
+        .stderr(predicate::str::contains("updated TLS"));
+    get_ok(&dir, &key, "TLS", pasted);
+    edit(&dir, &key, &[], "cat")
+        .success()
+        .stderr(predicate::str::contains("no changes"));
+    get_ok(&dir, &key, "TLS", pasted);
+
+    // Quoted: the trailing newline and spaces are part of the value.
+    let ed = writing_editor(&dir, "quoted.sh", "# comment\n\"ends with  \\n\"\n");
+    edit(&dir, &key, &["TLS"], &ed).success();
+    get_ok(&dir, &key, "TLS", "ends with  \n");
+}
+
+#[cfg(unix)]
+#[test]
+fn bulk_edit_refuses_a_buffer_it_cannot_read() {
     let dir = TempDir::new().unwrap();
     let (key, _) = init_vault(&dir);
     add(&dir, &key, "TOKEN", "v", &[]);
+
+    for (contents, reason) in [
+        ("garbage SECRETISH\n", "line 1: expected KEY=VALUE"),
+        ("TOKEN=v\n1BAD=SECRETISH\n", "line 2: invalid key name"),
+        (
+            "TOKEN=\"SECRETISH\n",
+            "line 1: the \" opened here is never closed",
+        ),
+        (
+            "TOKEN=v\nTOKEN=SECRETISH\n",
+            "line 2: TOKEN is already set on line 1",
+        ),
+    ] {
+        let ed = writing_editor(&dir, "ed.sh", contents);
+        edit(&dir, &key, &[], &ed).code(1).stderr(
+            predicate::str::contains(reason)
+                .and(predicate::str::contains("nothing saved"))
+                .and(predicate::str::contains("SECRETISH").not()),
+        );
+        murk(&dir, &key)
+            .args(["ls", "--vault", "test.murk"])
+            .assert()
+            .success()
+            .stdout("TOKEN\n");
+        get_ok(&dir, &key, "TOKEN", "v");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn edit_refuses_to_save_over_a_vault_changed_meanwhile() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    add(&dir, &key, "K1", "v1", &[]);
+
+    // A teammate's change, as a `git pull` in another terminal brings it in.
+    let vault = dir.path().join("test.murk");
+    let before = fs::read(&vault).unwrap();
+    add(&dir, &key, "TEAMMATE", "theirs", &[]);
+    let theirs = dir.path().join("theirs.murk");
+    fs::copy(&vault, &theirs).unwrap();
+    fs::write(&vault, &before).unwrap();
+
     let log = dir.path().join("seen");
     let ed = editor(
         &dir,
         "ed.sh",
         &log,
-        r#"printf "garbage line\n1BAD=x\n" >> "$1""#,
+        &format!(
+            "cp '{}' '{}'\nprintf 'K1=mine\\n' > \"$1\"",
+            theirs.display(),
+            vault.display()
+        ),
     );
+    edit(&dir, &key, &[], &ed)
+        .code(1)
+        .stderr(predicate::str::contains(
+            "test.murk changed on disk while the editor was open — nothing saved",
+        ));
+
+    // The teammate's vault stands as they wrote it.
+    assert_eq!(fs::read(&vault).unwrap(), fs::read(&theirs).unwrap());
+    get_ok(&dir, &key, "TEAMMATE", "theirs");
+    get_ok(&dir, &key, "K1", "v1");
+}
+
+#[cfg(unix)]
+#[test]
+fn edit_single_key_keeps_value_lines_starting_with_hash() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    add(&dir, &key, "SCRIPT", "placeholder", &[]);
+
+    // Keep murk's header, replace the value below it.
+    let log = dir.path().join("seen");
+    let ed = editor(
+        &dir,
+        "ed.sh",
+        &log,
+        r#"awk '{print} /^# ---- the value starts below this line ----$/{exit}' "$1" > "$1.new"
+printf '#!/bin/sh\n# say hi\necho hi\n' >> "$1.new"
+mv "$1.new" "$1""#,
+    );
+    edit(&dir, &key, &["SCRIPT"], &ed)
+        .success()
+        .stderr(predicate::str::contains("updated SCRIPT"));
+    get_ok(&dir, &key, "SCRIPT", "#!/bin/sh\n# say hi\necho hi");
+
+    // A value that is just `#…` survives an untouched save too.
+    let ed = writing_editor(
+        &dir,
+        "pw.sh",
+        "# Editing PW\n# ---- the value starts below this line ----\n#Passw0rd\n",
+    );
+    edit(&dir, &key, &["SCRIPT"], &ed).success();
+    get_ok(&dir, &key, "SCRIPT", "#Passw0rd");
+    edit(&dir, &key, &["SCRIPT"], "cat")
+        .success()
+        .stderr(predicate::str::contains("no changes"));
+}
+
+#[cfg(unix)]
+#[test]
+fn edit_warns_when_the_scratch_file_is_not_in_ram() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    add(&dir, &key, "K", "v", &[]);
+    // Under the target dir: on disk on every platform murk is tested on.
+    let disk = TempDir::new_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
 
     murk(&dir, &key)
-        .args(["edit", "--vault", "test.murk"])
-        .env("EDITOR", &ed)
+        .args(["edit", "K", "--vault", "test.murk"])
+        .env("XDG_RUNTIME_DIR", disk.path())
+        .env("EDITOR", "cat")
         .assert()
         .success()
         .stderr(
-            predicate::str::contains("skipping malformed line: garbage line")
-                .and(predicate::str::contains("skipping invalid key name: 1BAD"))
-                .and(predicate::str::contains("no changes")),
+            predicate::str::contains("which is not RAM-backed")
+                .and(predicate::str::contains("MURK_STRICT=1 to refuse")),
         );
+    assert_eq!(fs::read_dir(disk.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn import_keeps_a_hash_in_a_bare_value_and_says_so() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    fs::write(
+        dir.path().join("in.env"),
+        "PASS=hunter2 #not-a-comment\nQUOTED=\"a #b\"\n",
+    )
+    .unwrap();
 
     murk(&dir, &key)
-        .args(["ls", "--vault", "test.murk"])
+        .args(["import", "in.env", "--vault", "test.murk"])
         .assert()
         .success()
-        .stdout("TOKEN\n");
-    get_ok(&dir, &key, "TOKEN", "v");
+        .stderr(
+            predicate::str::contains(
+                "line 1: value contains \" #\"; quote the value if the # is part of it, or remove the comment",
+            )
+            .and(predicate::str::contains("line 2:").not())
+            .and(predicate::str::contains("hunter2").not()),
+        );
+    get_ok(&dir, &key, "PASS", "hunter2 #not-a-comment");
+    get_ok(&dir, &key, "QUOTED", "a #b");
+}
+
+#[test]
+fn import_reports_each_duplicate_key_and_keeps_the_last_value() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    fs::write(
+        dir.path().join("in.env"),
+        "TOKEN=first-secret\nOTHER=x\nTOKEN=second-secret\nTOKEN=third-secret\n",
+    )
+    .unwrap();
+
+    murk(&dir, &key)
+        .args(["import", "in.env", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stderr(
+            predicate::str::contains(
+                "line 3: TOKEN is already set on line 1; the later value is kept",
+            )
+            .and(predicate::str::contains(
+                "line 4: TOKEN is already set on line 3; the later value is kept",
+            ))
+            .and(predicate::str::contains("-secret").not())
+            .and(predicate::str::contains("imported 2 secrets\n")),
+        );
+    get_ok(&dir, &key, "TOKEN", "third-secret");
 }

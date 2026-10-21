@@ -11,7 +11,7 @@ use std::path::Path;
 /// `ssh-ed25519 <blob> comment` while the signer is the comment-stripped form.
 pub(crate) fn signer_display_name(murk: &types::Murk, signer: &str) -> String {
     if let Some(name) = murk.recipients.get(signer) {
-        return name.clone();
+        return murk_cli::terminal_text(name, false).into_owned();
     }
     if signer.starts_with("ssh-ed25519 ")
         && let Some((_, name)) = murk
@@ -19,7 +19,7 @@ pub(crate) fn signer_display_name(murk: &types::Murk, signer: &str) -> String {
             .iter()
             .find(|(pk, _)| murk_cli::signing::ssh_ed25519_key_eq(pk, signer))
     {
-        return name.clone();
+        return murk_cli::terminal_text(name, false).into_owned();
     }
     murk_cli::truncate_pubkey(signer)
 }
@@ -36,6 +36,20 @@ pub(crate) fn cmd_verify(vault_path: &str) {
             category: "mac",
             message: "vault uses legacy unkeyed MAC".into(),
             fix: Some("run any write command (e.g. `murk describe`) to upgrade to BLAKE3".into()),
+        });
+    }
+
+    // Header text that new writes would refuse (CR/LF, other control,
+    // bidi or zero-width characters): older or hand-edited vaults can hold
+    // it. Output escapes it, but it is still a sign of spoofing or tampering.
+    for field in murk_cli::unsafe_text_fields(&vault, &murk.recipients) {
+        findings.push(Finding {
+            category: "text",
+            message: format!("{field} contains control, invisible or text-direction characters"),
+            fix: Some(
+                "rewrite it (`murk describe` for schema text); murk shows it escaped meanwhile"
+                    .into(),
+            ),
         });
     }
 
