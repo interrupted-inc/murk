@@ -558,6 +558,50 @@ fn doctor_flags_key_file_inside_working_tree() {
 
 // ── diff ──
 
+/// A grant shows with the sign of what happened to it, in the terminal and in
+/// `--json`: `+` when minted, `-` when revoked.
+#[test]
+fn diff_shows_grants_added_and_removed() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    add_secret(dir.path(), &key, "A", "a");
+    git(dir.path(), &["init", "-q"]);
+    commit_vault(dir.path());
+    let diff = |extra: &[&str]| {
+        let out = murk(&dir, &key)
+            .args(["diff", "--vault", "test.murk"])
+            .args(extra)
+            .env("NO_COLOR", "1")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        String::from_utf8(out.stdout).unwrap()
+    };
+
+    murk(&dir, &key)
+        .args(["agent", "grant", "--name", "bot", "--only", "A"])
+        .args(["--out", "-", "--vault", "test.murk"])
+        .assert()
+        .success();
+    assert!(diff(&[]).contains("+ grant bot ("), "{}", diff(&[]));
+    let json: serde_json::Value = serde_json::from_str(&diff(&["--json"])).unwrap();
+    assert!(
+        json["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["kind"] == "grant" && c["op"] == "added" && c["name"] == "bot"),
+        "{json}"
+    );
+
+    commit_vault(dir.path());
+    murk(&dir, &key)
+        .args(["agent", "revoke", "bot", "--vault", "test.murk"])
+        .assert()
+        .success();
+    assert!(diff(&[]).contains("- grant bot"), "{}", diff(&[]));
+}
+
 #[test]
 fn diff_hides_values_unless_asked_and_reports_each_change_kind() {
     let dir = TempDir::new().unwrap();
