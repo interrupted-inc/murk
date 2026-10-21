@@ -294,6 +294,10 @@ pub struct Murk {
     /// callers only for a loader that cannot sign (hardware/plugin/ssh-rsa key);
     /// integrity then rests on signed git commits and the binary warns.
     pub signature: SignatureState,
+    /// Pubkey of the identity that decrypted this state, or `None` for state
+    /// built by hand. The save path checks it against `grants` to refuse writes
+    /// by an agent grant (see [`crate::ensure_writable`]).
+    pub loaded_by: Option<String>,
 }
 
 /// Manual `Debug`: prints key NAMES (schema-level metadata, not secret) but
@@ -313,6 +317,7 @@ impl std::fmt::Debug for Murk {
             .field("github_pins", &self.github_pins)
             .field("signers", &self.signers)
             .field("signature", &self.signature)
+            .field("loaded_by", &self.loaded_by)
             .finish()
     }
 }

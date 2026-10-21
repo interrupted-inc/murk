@@ -140,7 +140,11 @@ pub(crate) fn meta(m: &Meta) -> Result<(), String> {
             key_name(&format!("meta.grants[{g}].scope"), key)?;
         }
         timestamp(&format!("meta.grants[{g}].issued_at"), &grant.issued_at)?;
-        timestamp(&format!("meta.grants[{g}].expires_at"), &grant.expires_at)?;
+        // Empty is a grant minted before TTLs existed: it loads, and
+        // `check_grant_expiry` treats it as expired, so it never reads.
+        if !grant.expires_at.is_empty() {
+            timestamp(&format!("meta.grants[{g}].expires_at"), &grant.expires_at)?;
+        }
     }
     Ok(())
 }

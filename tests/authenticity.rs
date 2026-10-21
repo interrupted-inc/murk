@@ -534,8 +534,9 @@ fn grant_key_that_drops_its_grant_and_signs_is_refused() {
         .unwrap();
     assert!(
         forge.status.success(),
-        "{}",
-        String::from_utf8_lossy(&forge.stdout)
+        "{}{}",
+        String::from_utf8_lossy(&forge.stdout),
+        String::from_utf8_lossy(&forge.stderr)
     );
 
     assert_refused_everywhere(&alice, &repo, "attacker", "agent grant");
@@ -566,7 +567,10 @@ fn grant_forgery_child() {
     let grant_pk = identity.pubkey_string().unwrap();
 
     let mut vault = murk_cli::read_vault(&vault_path).unwrap();
-    let original = murk_cli::decrypt_vault(&vault, &identity).unwrap();
+    let mut original = murk_cli::decrypt_vault(&vault, &identity).unwrap();
+    // Raw tooling never runs murk's read-only gate for grants; forget who
+    // loaded the state so the library save stands in for it.
+    original.loaded_by = None;
     let mut current = original.clone();
     current.grants.clear();
     current
@@ -578,6 +582,13 @@ fn grant_forgery_child() {
         "DB_URL".into(),
         zeroize::Zeroizing::new("postgres://attacker".into()),
     );
+    // The agent knows its scoped value, so it re-shares it to everyone; murk's
+    // save would refuse to carry an unreadable value to a new recipient.
+    for (k, by_pk) in &original.private {
+        if let Some(v) = by_pk.get(&grant_pk) {
+            current.values.insert(k.clone(), v.clone());
+        }
+    }
     // save_vault signs with MURK_KEY and computes a fresh MAC.
     unsafe { std::env::set_var("MURK_KEY", &key) };
     murk_cli::save_vault(&vault_path, &mut vault, &original, &current).unwrap();

@@ -150,7 +150,7 @@ pub(crate) fn cmd_diff(git_ref: &str, show_values: bool, json: bool, vault_path:
         .output()
         .unwrap_or_else(|e| die(&format_args!("running git: {e}"), 1));
 
-    let old_values: HashMap<String, zeroize::Zeroizing<String>> = if output.status.success() {
+    let mut old_values: HashMap<String, zeroize::Zeroizing<String>> = if output.status.success() {
         let old_contents = String::from_utf8_lossy(&output.stdout);
         match murk_cli::parse_and_decrypt_values(&old_contents, &identity) {
             Ok(values) => {
@@ -174,10 +174,16 @@ pub(crate) fn cmd_diff(git_ref: &str, show_values: bool, json: bool, vault_path:
     };
 
     let pubkey = identity.pubkey_string().unwrap_or_else(|e| die(&e, 1));
-    let current_values: HashMap<String, zeroize::Zeroizing<String>> =
+    let mut current_values: HashMap<String, zeroize::Zeroizing<String>> =
         murk_cli::resolve_secrets(&_vault, &current_murk, &pubkey, &[])
             .into_iter()
             .collect();
+    // `--show-values` prints values, so an agent grant (or self-scope) only
+    // diffs keys the current policy allows.
+    if murk_cli::agent_policy_applies(&current_murk, &pubkey) && _vault.policy.is_some() {
+        old_values.retain(|k, _| murk_cli::is_agent_key_allowed(&_vault, k));
+        current_values.retain(|k, _| murk_cli::is_agent_key_allowed(&_vault, k));
+    }
     let entries = murk_cli::diff_secrets(&old_values, &current_values);
 
     if json {

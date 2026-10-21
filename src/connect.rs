@@ -604,16 +604,82 @@ pub struct ConnectOutcome {
     pub created: bool,
 }
 
-/// Upsert the `murk` server into `adapter`'s config under `project_dir`, writing
-/// only a `MURK_KEY_FILE` path (`key_file`) + `MURK_AGENT=1` and any `extra_args`
-/// after `mcp`. Preserves every other server and comment; atomic (temp+rename).
-pub fn connect_client(
+/// A config change rendered in memory but not yet written.
+///
+/// Planning every target first lets a caller fail on a malformed or unsafe
+/// config *before* it takes an irreversible step (minting a grant), then write
+/// all of them with [`ConfigEdit::apply`].
+pub struct ConfigEdit {
+    /// The config file this edit targets.
+    pub path: PathBuf,
+    /// The file does not exist yet — applying creates it.
+    pub created: bool,
+    project_dir: PathBuf,
+    contents: String,
+    /// The file as it was when planned (`None` if absent), for [`Self::undo`].
+    original: Option<String>,
+}
+
+impl ConfigEdit {
+    /// Write the rendered config atomically. The symlink guard runs again here:
+    /// planning and writing can be separated by a vault write.
+    pub fn apply(&self) -> Result<(), MurkError> {
+        ensure_inside_project(&self.project_dir, &self.path)?;
+        write_config(&self.path, &self.contents)
+    }
+
+    /// Put the file back as it was when planned: restore its old contents, or
+    /// remove it if this edit created it. Used to roll back a partly applied
+    /// connect. Refuses, touching nothing, if the file no longer holds what
+    /// this edit wrote: someone changed it since, and that change wins.
+    pub fn undo(&self) -> Result<(), MurkError> {
+        ensure_inside_project(&self.project_dir, &self.path)?;
+        match std::fs::read_to_string(&self.path) {
+            Ok(now) if now == self.contents => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && self.original.is_none() => {
+                return Ok(());
+            }
+            _ => {
+                return Err(MurkError::Config(format!(
+                    "{} changed after murk wrote it — left as is; remove the murk entry by hand",
+                    self.path.display()
+                )));
+            }
+        }
+        match &self.original {
+            Some(original) => write_config(&self.path, original),
+            None => std::fs::remove_file(&self.path).map_err(MurkError::Io),
+        }
+    }
+}
+
+/// Args `murk mcp` needs to open a non-default vault. The configured server
+/// starts in the project directory — the one holding the config and the vault —
+/// so the vault is named there by file name, exactly as the default `.murk` is
+/// found. Empty for the default vault, which keeps its entry unchanged.
+pub fn vault_args(vault_path: &str) -> Vec<String> {
+    let name = Path::new(vault_path).file_name().map_or_else(
+        || vault_path.to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    if name == crate::types::DEFAULT_VAULT_NAME {
+        return Vec::new();
+    }
+    vec!["--vault".to_string(), name]
+}
+
+/// Render the `murk` server into `adapter`'s config under `project_dir`: only a
+/// `MURK_KEY_FILE` path (`key_file`) + `MURK_AGENT=1` and any `extra_args` after
+/// `mcp`. Preserves every other server and comment. Nothing is written until
+/// [`ConfigEdit::apply`]; a malformed config or a symlinked path fails here.
+pub fn plan_connect(
     adapter: &ClientAdapter,
     project_dir: &Path,
     key_file: &str,
     extra_args: &[String],
-) -> Result<ConnectOutcome, MurkError> {
+) -> Result<ConfigEdit, MurkError> {
     let path = adapter.config_path(project_dir);
+    ensure_inside_project(project_dir, &path)?;
     let existing = match std::fs::read_to_string(&path) {
         Ok(s) => Some(s),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -625,7 +691,7 @@ pub fn connect_client(
         key_file: key_file.to_string(),
         typed_stdio: adapter.typed_stdio,
     };
-    let updated = match adapter.format {
+    let contents = match adapter.format {
         ConfigFormat::Json => {
             upsert_json_server(existing.as_deref(), adapter.root_key, "murk", &spec)?
         }
@@ -633,17 +699,40 @@ pub fn connect_client(
             upsert_toml_server(existing.as_deref(), adapter.root_key, "murk", &spec)?
         }
     };
-    write_config(&path, &updated)?;
-    Ok(ConnectOutcome { path, created })
+    Ok(ConfigEdit {
+        path,
+        created,
+        project_dir: project_dir.to_path_buf(),
+        contents,
+        original: existing,
+    })
 }
 
-/// Remove the `murk` server from `adapter`'s config. Returns the path when a
-/// change was written, `None` when there was nothing to remove.
-pub fn disconnect_client(
+/// Upsert the `murk` server into `adapter`'s config under `project_dir` in one
+/// step ([`plan_connect`] then [`ConfigEdit::apply`]). Atomic (temp+rename).
+pub fn connect_client(
     adapter: &ClientAdapter,
     project_dir: &Path,
-) -> Result<Option<PathBuf>, MurkError> {
+    key_file: &str,
+    extra_args: &[String],
+) -> Result<ConnectOutcome, MurkError> {
+    let edit = plan_connect(adapter, project_dir, key_file, extra_args)?;
+    edit.apply()?;
+    Ok(ConnectOutcome {
+        path: edit.path,
+        created: edit.created,
+    })
+}
+
+/// Render `adapter`'s config with the `murk` server removed. `None` when there
+/// is no config or nothing to remove; nothing is written until
+/// [`ConfigEdit::apply`].
+pub fn plan_disconnect(
+    adapter: &ClientAdapter,
+    project_dir: &Path,
+) -> Result<Option<ConfigEdit>, MurkError> {
     let path = adapter.config_path(project_dir);
+    ensure_inside_project(project_dir, &path)?;
     let existing = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -653,12 +742,87 @@ pub fn disconnect_client(
         ConfigFormat::Json => remove_json_server(&existing, adapter.root_key, "murk")?,
         ConfigFormat::Toml => remove_toml_server(&existing, adapter.root_key, "murk")?,
     };
-    match removed {
-        Some(updated) => {
-            write_config(&path, &updated)?;
-            Ok(Some(path))
+    Ok(removed.map(|contents| ConfigEdit {
+        path,
+        created: false,
+        project_dir: project_dir.to_path_buf(),
+        contents,
+        original: Some(existing),
+    }))
+}
+
+/// Remove the `murk` server from `adapter`'s config. Returns the path when a
+/// change was written, `None` when there was nothing to remove.
+pub fn disconnect_client(
+    adapter: &ClientAdapter,
+    project_dir: &Path,
+) -> Result<Option<PathBuf>, MurkError> {
+    match plan_disconnect(adapter, project_dir)? {
+        Some(edit) => {
+            edit.apply()?;
+            Ok(Some(edit.path))
         }
         None => Ok(None),
+    }
+}
+
+/// Refuse a config path that is, or sits below, a symlink.
+///
+/// A repo can commit `.mcp.json` as a symlink to a file elsewhere on the
+/// operator's machine (read it, merge into it, and the target's JSON lands in
+/// the working tree), or `.cursor` as a link to a directory that makes murk
+/// create config outside the project. So every component below `project_dir`
+/// must be a real file or directory. `project_dir` itself is the operator's own
+/// choice (the vault's directory) and may legitimately be reached via a link
+/// (macOS `/tmp`).
+fn ensure_inside_project(project_dir: &Path, path: &Path) -> Result<(), MurkError> {
+    let rel = path.strip_prefix(project_dir).map_err(|_| {
+        MurkError::Config(format!(
+            "refusing {}: it is outside the project directory {}",
+            path.display(),
+            project_dir.display()
+        ))
+    })?;
+    let parts: Vec<_> = rel.components().collect();
+    let mut cur = project_dir.to_path_buf();
+    // Deepest existing directory above the file: where a write would land.
+    let mut parent = project_dir.to_path_buf();
+    for (i, part) in parts.iter().enumerate() {
+        cur.push(part);
+        match std::fs::symlink_metadata(&cur) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(MurkError::Config(format!(
+                    "refusing to touch {}: {} is a symlink — a client config must be a real file \
+                     inside the project, not a link that redirects where murk reads and writes",
+                    path.display(),
+                    cur.display()
+                )));
+            }
+            Ok(_) => {
+                if i + 1 < parts.len() {
+                    parent.clone_from(&cur);
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(e) => return Err(MurkError::Io(e)),
+        }
+    }
+    ensure_resolves_inside(project_dir, &parent)
+}
+
+/// Fail unless `dir` resolves (symlinks and all) to a place under `root`.
+fn ensure_resolves_inside(root: &Path, dir: &Path) -> Result<(), MurkError> {
+    let root = root.canonicalize().map_err(MurkError::Io)?;
+    let dir_real = dir.canonicalize().map_err(MurkError::Io)?;
+    if dir_real.starts_with(&root) {
+        Ok(())
+    } else {
+        Err(MurkError::Config(format!(
+            "refusing {}: it resolves to {}, outside the project directory {}",
+            dir.display(),
+            dir_real.display(),
+            root.display()
+        )))
     }
 }
 
@@ -1450,5 +1614,219 @@ mod tests {
             result.is_err(),
             "unreadable config must not be treated as absent"
         );
+    }
+
+    // ---- Planning, symlink guard, vault args ----
+
+    #[test]
+    fn undo_restores_what_was_there_before() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = adapter("claude").unwrap();
+        let path = a.config_path(dir.path());
+        std::fs::write(&path, "{}\n").unwrap();
+        let edit = plan_connect(a, dir.path(), "/keys/abc-mcp", &[]).unwrap();
+        edit.apply().unwrap();
+        edit.undo().unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}\n");
+    }
+
+    #[test]
+    fn undo_leaves_a_file_changed_after_the_write_alone() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = adapter("claude").unwrap();
+        let path = a.config_path(dir.path());
+        let edit = plan_connect(a, dir.path(), "/keys/abc-mcp", &[]).unwrap();
+        edit.apply().unwrap();
+        std::fs::write(&path, "{\"edited\":true}\n").unwrap();
+        assert!(edit.undo().is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "{\"edited\":true}\n"
+        );
+    }
+
+    #[test]
+    fn plan_connect_renders_without_writing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = adapter("cursor").unwrap();
+        let edit = plan_connect(a, dir.path(), "/keys/abc-mcp", &[]).unwrap();
+        assert!(edit.created);
+        assert!(
+            !dir.path().join(".cursor").exists(),
+            "planning must not touch the filesystem"
+        );
+        edit.apply().unwrap();
+        let v = parse(&std::fs::read_to_string(&edit.path).unwrap());
+        assert_eq!(
+            v["mcpServers"]["murk"]["env"]["MURK_KEY_FILE"],
+            "/keys/abc-mcp"
+        );
+    }
+
+    #[test]
+    fn plan_connect_rejects_malformed_config_without_writing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = adapter("claude").unwrap();
+        let path = a.config_path(dir.path());
+        std::fs::write(&path, "{not json").unwrap();
+        assert!(plan_connect(a, dir.path(), "/keys/abc-mcp", &[]).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{not json");
+    }
+
+    #[test]
+    fn plan_disconnect_renders_without_writing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = adapter("claude").unwrap();
+        connect_client(a, dir.path(), "/keys/abc-mcp", &[]).unwrap();
+        let path = a.config_path(dir.path());
+        let before = std::fs::read_to_string(&path).unwrap();
+        let edit = plan_disconnect(a, dir.path()).unwrap().unwrap();
+        assert!(!edit.created);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        edit.apply().unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("murk"));
+    }
+
+    #[test]
+    fn vault_args_default_vault_adds_nothing() {
+        let none = Vec::<String>::new();
+        assert_eq!(vault_args(".murk"), none);
+        // The config lives next to the vault, so a default vault in another
+        // directory is still found as `.murk` from there.
+        assert_eq!(vault_args("sub/.murk"), none);
+        assert_eq!(vault_args("/abs/proj/.murk"), none);
+    }
+
+    #[test]
+    fn vault_args_names_a_custom_vault_by_file_name() {
+        assert_eq!(vault_args("prod.murk"), ["--vault", "prod.murk"]);
+        assert_eq!(vault_args("./prod.murk"), ["--vault", "prod.murk"]);
+        assert_eq!(vault_args("sub/prod.murk"), ["--vault", "prod.murk"]);
+        assert_eq!(vault_args("/abs/proj/prod.murk"), ["--vault", "prod.murk"]);
+    }
+
+    #[test]
+    fn vault_args_land_after_mcp_in_the_entry() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = adapter("claude").unwrap();
+        let mut args = vault_args("prod.murk");
+        args.push("--allow-exec".into());
+        let edit = plan_connect(a, dir.path(), "/keys/abc-mcp", &args).unwrap();
+        let v = parse(&edit.contents);
+        assert_eq!(
+            v["mcpServers"]["murk"]["args"],
+            serde_json::json!(["mcp", "--vault", "prod.murk", "--allow-exec"])
+        );
+    }
+
+    #[test]
+    fn ensure_resolves_inside_rejects_a_dir_outside_the_root() {
+        let root = tempfile::TempDir::new().unwrap();
+        let elsewhere = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(root.path().join("in")).unwrap();
+        assert!(ensure_resolves_inside(root.path(), root.path()).is_ok());
+        assert!(ensure_resolves_inside(root.path(), &root.path().join("in")).is_ok());
+        let err = ensure_resolves_inside(root.path(), elsewhere.path()).unwrap_err();
+        assert!(err.to_string().contains("outside the project directory"));
+    }
+
+    #[test]
+    fn ensure_inside_project_rejects_a_path_outside_the_project() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let other = tempfile::TempDir::new().unwrap();
+        let err = ensure_inside_project(dir.path(), &other.path().join(".mcp.json")).unwrap_err();
+        assert!(err.to_string().contains("outside the project directory"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_config_file_is_refused_and_left_alone() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let target = outside.path().join("config.json");
+        let secret = "{\"auths\": {\"registry\": \"TOP-SECRET\"}}\n";
+        std::fs::write(&target, secret).unwrap();
+        let a = adapter("claude").unwrap();
+        let link = a.config_path(dir.path());
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let err = match plan_connect(a, dir.path(), "/keys/abc-mcp", &[]) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("a symlinked config must be refused"),
+        };
+        assert!(err.contains("symlink"), "{err}");
+        assert!(err.contains(".mcp.json"), "error must name the path: {err}");
+        assert!(connect_client(a, dir.path(), "/keys/abc-mcp", &[]).is_err());
+        assert!(disconnect_client(a, dir.path()).is_err());
+        assert!(plan_disconnect(a, dir.path()).is_err());
+
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link must still be a link"
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), secret);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_symlinked_config_file_is_refused() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let target = outside.path().join("not-yet");
+        let a = adapter("claude").unwrap();
+        std::os::unix::fs::symlink(&target, a.config_path(dir.path())).unwrap();
+        assert!(plan_connect(a, dir.path(), "/keys/abc-mcp", &[]).is_err());
+        assert!(!target.exists(), "must not create the link's target");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_client_dir_is_refused_and_nothing_is_created_outside() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let a = adapter("cursor").unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join(".cursor")).unwrap();
+
+        let err = match plan_connect(a, dir.path(), "/keys/abc-mcp", &[]) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("a symlinked client dir must be refused"),
+        };
+        assert!(err.contains("symlink"), "{err}");
+        assert!(err.contains(".cursor"), "error must name the link: {err}");
+        assert!(connect_client(a, dir.path(), "/keys/abc-mcp", &[]).is_err());
+        assert!(
+            std::fs::read_dir(outside.path()).unwrap().next().is_none(),
+            "nothing may be written through the link"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn apply_rechecks_for_a_symlink_swapped_in_after_planning() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let a = adapter("cursor").unwrap();
+        let edit = plan_connect(a, dir.path(), "/keys/abc-mcp", &[]).unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join(".cursor")).unwrap();
+        assert!(edit.apply().is_err());
+        assert!(std::fs::read_dir(outside.path()).unwrap().next().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_dir_reached_through_a_symlink_is_allowed() {
+        // The project directory is the operator's own choice (macOS `/tmp`
+        // is a link); only components below it are guarded.
+        let real = tempfile::TempDir::new().unwrap();
+        let holder = tempfile::TempDir::new().unwrap();
+        let via = holder.path().join("proj");
+        std::os::unix::fs::symlink(real.path(), &via).unwrap();
+        let a = adapter("cursor").unwrap();
+        connect_client(a, &via, "/keys/abc-mcp", &[]).unwrap();
+        assert!(real.path().join(".cursor/mcp.json").is_file());
+        assert!(disconnect_client(a, &via).unwrap().is_some());
     }
 }

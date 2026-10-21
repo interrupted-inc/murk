@@ -52,11 +52,11 @@ export declare class Vault {
    * copied across the napi boundary into a Rust `String`, and is not zeroized on
    * either side. See `get` and THREAT_MODEL.md.
    *
-   * Agent policy is enforced exactly as on the read path: if the loaded
-   * identity is a granted agent (or the operator has opted into self-scope),
-   * the resulting key must satisfy the vault's agent allow-tag policy and the
-   * grant must be unexpired — otherwise the write throws and nothing is saved.
-   * For a plain operator identity this is a no-op.
+   * An agent grant can't write: the call throws "agent grants are read-only"
+   * and nothing is saved. When the operator has opted into self-scope, the
+   * resulting key must satisfy the vault's agent allow-tag policy, otherwise
+   * the write throws and nothing is saved. For a plain operator identity
+   * the policy check is a no-op.
    */
   add(key: string, value: string, options?: AddOptions | undefined | null): void
   /**

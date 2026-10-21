@@ -89,7 +89,10 @@ pub use init::{
     pin_created_vault,
 };
 pub use merge::{MergeDriverOutput, run_merge_driver};
-pub use policy::{check_agent_keys, enforce_agent_policy, is_agent_identity, is_agent_key_allowed};
+pub use policy::{
+    agent_policy_applies, check_agent_keys, enforce_agent_policy, ensure_writable,
+    is_agent_identity, is_agent_key_allowed,
+};
 pub use recipients::{
     RecipientEntry, RevokeResult, authorize_recipient, format_recipient_lines, key_type_label,
     list_recipients, revoke_recipient, truncate_pubkey,
@@ -233,7 +236,9 @@ pub use crypto::{MurkIdentity, MurkRecipient};
 /// `Ok(None)` when there is no meta or `identity` cannot decrypt it (not a
 /// recipient) — callers fall back to showing pubkeys. A meta that decrypts but
 /// is corrupt or fails [`validate::meta`] is an `Err`, never a silent `None`:
-/// treating it as absent would drop groups, grants, and GitHub pins.
+/// treating it as absent would drop groups, grants, and GitHub pins. An expired
+/// agent grant gets an `Err` too, the same TTL gate as a full load, so it can't
+/// read recipient names or group membership after its TTL.
 pub fn decrypt_meta(
     vault: &types::Vault,
     identity: &crypto::MurkIdentity,
@@ -248,6 +253,11 @@ pub fn decrypt_meta(
         .map_err(|_| "vault meta is corrupt — vault may have been tampered with".to_string())?;
     validate::meta(&meta)
         .map_err(|e| format!("vault meta is invalid ({e}) — vault may have been tampered with"))?;
+    let pubkey = identity.pubkey_string().map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now();
+    for (name, grant) in meta.grants.iter().filter(|(_, g)| g.pubkey == pubkey) {
+        policy::check_grant_expiry(name, grant, now).map_err(|e| e.to_string())?;
+    }
     Ok(Some(meta))
 }
 

@@ -60,6 +60,30 @@ pub fn is_agent_identity(murk: &Murk, pubkey: &str) -> bool {
     murk.grants.values().any(|g| g.pubkey == pubkey)
 }
 
+/// Whether the agent allow-tag policy governs what `pubkey` may read: always
+/// for an agent grant (decided from the decrypted meta, so unsetting
+/// `MURK_AGENT` doesn't lift it), and for anyone under self-scope.
+pub fn agent_policy_applies(murk: &Murk, pubkey: &str) -> bool {
+    is_agent_identity(murk, pubkey) || crate::hardening::self_scope()
+}
+
+/// Refuse a vault write when `murk` was decrypted by an agent grant.
+///
+/// Grants are read-only: an agent gets the keys in its scope and nothing else,
+/// so it must not change secrets, recipients, groups, policy or grants. Every
+/// write goes through [`crate::save_vault`], which calls this on the state as
+/// loaded, so the CLI and the bindings are both covered. The check reads the
+/// grant list from the decrypted meta, not the environment, so unsetting
+/// `MURK_AGENT` doesn't get around it.
+pub fn ensure_writable(murk: &Murk) -> Result<(), MurkError> {
+    match &murk.loaded_by {
+        Some(pubkey) if is_agent_identity(murk, pubkey) => Err(MurkError::Grant(
+            "agent grants are read-only; ask the operator to make this change".into(),
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Apply the agent guardrails when the caller is a granted agent, or when the
 /// operator has opted into self-scope ([`crate::hardening::self_scope`]).
 ///
@@ -100,21 +124,24 @@ pub fn enforce_agent_policy(
 
 /// Refuse an expired (or unreadable) grant at read time.
 ///
-/// An empty `expires_at` — a grant written before TTLs existed — is allowed. A
-/// non-empty value must parse as RFC-3339 and lie in the future: a past
-/// timestamp is expired, and an unparseable one fails closed too, because murk
-/// writes grant metadata itself, so a malformed expiry means corruption or
-/// tampering, never a formatting choice. (`agent ls` display stays lenient;
-/// this gate does not.) Like the allow-tag policy this is a binary-level
-/// guardrail, not access control: the key still decrypts old `.murk` revisions
-/// with raw age, so `agent revoke` + rotate remains the real close.
+/// An empty `expires_at` — a grant written before TTLs existed — counts as
+/// expired: it has no bound, so it fails closed until renewed. A non-empty
+/// value must parse as RFC-3339 and lie in the future: a past timestamp is
+/// expired, and an unparseable one fails closed too, because murk writes grant
+/// metadata itself, so a malformed expiry means corruption or tampering, never
+/// a formatting choice. (`agent ls` display stays lenient; this gate does
+/// not.) Like the allow-tag policy this is a binary-level guardrail, not access
+/// control: the key still decrypts old `.murk` revisions with raw age, so
+/// `agent revoke` + rotate remains the real close.
 pub(crate) fn check_grant_expiry(
     name: &str,
     grant: &GrantEntry,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<(), MurkError> {
     if grant.expires_at.is_empty() {
-        return Ok(());
+        return Err(MurkError::Grant(format!(
+            "grant {name} has no expiry (it predates grant TTLs) — renew it with `murk agent grant --renew` or close it with `murk agent revoke {name}`"
+        )));
     }
     let Ok(exp) = chrono::DateTime::parse_from_rfc3339(&grant.expires_at) else {
         return Err(MurkError::Grant(format!(
@@ -158,15 +185,16 @@ mod tests {
     use crate::types::{GrantEntry, Murk, Policy, SchemaEntry, Vault};
     use std::collections::BTreeMap;
 
-    // Note: `..Default::default()` leaves `expires_at` empty — the legacy
-    // no-TTL shape, which the expiry gate deliberately allows. Tests that
-    // exercise expiry use `agent_murk_expiring`.
+    // A grant with a far-future expiry. An empty `expires_at` (the pre-TTL
+    // shape) counts as expired; tests that exercise expiry use
+    // `agent_murk_expiring`.
     fn agent_murk(pubkey: &str) -> Murk {
         let mut grants = BTreeMap::new();
         grants.insert(
             "codex".to_string(),
             GrantEntry {
                 pubkey: pubkey.to_string(),
+                expires_at: "2999-01-01T00:00:00Z".into(),
                 ..Default::default()
             },
         );

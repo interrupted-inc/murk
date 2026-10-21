@@ -192,6 +192,7 @@ fn run() {
             clean_env,
             /* agent_mode */ false,
             allow_reserved,
+            /* operator_key_ok */ true,
             &murk_cli::resolve_vault_path(&vault),
         ),
         Command::Authorize {

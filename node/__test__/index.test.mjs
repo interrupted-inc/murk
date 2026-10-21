@@ -302,23 +302,27 @@ test('agent export returns only its scoped, allowed keys', () => {
   assert.strictEqual(secrets.AGENT_DB, 'postgres://agent')
 })
 
-// Write path enforces the same policy as the read path: an agent writing a key
-// the policy forbids fails closed, and the vault on disk is left untouched.
-test('agent add of a policy-forbidden key throws and does not persist', () => {
+// Write path: a granted agent can't write at all, whatever the key or tier, and
+// the vault on disk is left byte-identical.
+test('agent add and describe are refused and leave the vault unchanged', () => {
+  const before = readFileSync(agentVault)
   process.env.MURK_KEY = agent.agentKey
-  assert.throws(() => add('EXFIL', 'stolen', { tags: ['prod'] }, agentVault), /policy forbids/)
-  // Nothing was written: the operator load never sees the forbidden key.
-  process.env.MURK_KEY = agent.opKey
-  assert.strictEqual(load(agentVault).has('EXFIL'), false)
-})
-
-test('agent add of a policy-allowed scoped key succeeds and round-trips', () => {
-  // A shared ("everyone") write would encrypt to the operator only — grants are
-  // excluded from the shared layer — so the agent couldn't read it back. A `me`
-  // write encrypts to the agent itself, so it round-trips through the policy gate.
-  process.env.MURK_KEY = agent.agentKey
-  add('AGENT_WRITE', 'agent-authored', { tier: 'me', tags: ['agents'] }, agentVault)
-  assert.strictEqual(get('AGENT_WRITE', agentVault), 'agent-authored')
+  const readOnly = /agent grants are read-only/
+  const writes = [
+    ['AGENT_WRITE', { tier: 'me', tags: ['agents'] }],
+    ['AGENT_WRITE', { tier: 'everyone', tags: ['agents'] }],
+    ['EXFIL', { tags: ['prod'] }],
+  ]
+  for (const [key, opts] of writes) {
+    assert.throws(() => add(key, 'agent-authored', opts, agentVault), readOnly)
+  }
+  assert.throws(
+    () => load(agentVault).describe('AGENT_DB', 'changed', { tags: ['agents'] }),
+    readOnly,
+  )
+  assert.deepStrictEqual(readFileSync(agentVault), before)
+  // Reads still work for the agent.
+  assert.strictEqual(get('AGENT_DB', agentVault), 'postgres://agent')
 })
 
 test('tightening the policy retroactively blocks the agent get', () => {

@@ -407,6 +407,7 @@ fn decrypt_vault_with_signature(
             github_pins,
             signers,
             signature,
+            loaded_by: Some(pubkey),
         },
         signer_vk,
     ))

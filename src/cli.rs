@@ -242,7 +242,7 @@ pub enum Command {
 
     /// Export schema-only vault with no secrets or recipients
     Skeleton {
-        /// Output file (prints to stdout if omitted)
+        /// New output file; refuses an existing path (prints to stdout if omitted)
         #[arg(long, short)]
         output: Option<String>,
         /// Vault filename
@@ -462,7 +462,7 @@ pub enum AgentCommand {
         /// Output as JSON
         #[arg(long)]
         json: bool,
-        /// Output file (prints to stdout if omitted)
+        /// New output file; refuses an existing path (prints to stdout if omitted)
         #[arg(long, short)]
         output: Option<String>,
         /// Vault filename
