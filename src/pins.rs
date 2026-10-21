@@ -232,6 +232,48 @@ pub fn write(vault_path: &str, pin: &TrustPin) -> Result<(), String> {
         .map_err(|e| format!("cannot write trust pin {}: {e}", path.display()))
 }
 
+/// Read, change and write the pin for `vault_path` under an exclusive lock
+/// (`<pin>.lock`), so concurrent murk processes — worktrees of one repository
+/// share a pin — never write from a stale read: a lowered rollback mark, or
+/// keys and grants another process just learned, lost. `f` gets the pin as
+/// it is now and returns the pin to write, or `None` to leave it, or an error
+/// to report.
+pub fn update<F>(vault_path: &str, f: F) -> Result<(), String>
+where
+    F: FnOnce(Option<&TrustPin>) -> Result<Option<TrustPin>, String>,
+{
+    use fs2::FileExt;
+
+    let path = pin_path(vault_path).ok_or_else(|| {
+        "no trust pin can be stored (MURK_NO_SIGNER_PIN is set or there is no HOME) — set MURK_TRUSTED_SIGNERS instead".to_string()
+    })?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("invalid trust pin path {}", path.display()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    let lock_path = path.with_extension("lock");
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).truncate(false).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let lock = opts
+        .open(&lock_path)
+        .map_err(|e| format!("cannot open {}: {e}", lock_path.display()))?;
+    lock.lock_exclusive()
+        .map_err(|e| format!("cannot lock {}: {e}", lock_path.display()))?;
+    let current = read(vault_path)?;
+    let result = match f(current.as_ref())? {
+        Some(pin) => write(vault_path, &pin),
+        None => Ok(()),
+    };
+    let _ = FileExt::unlock(&lock);
+    result
+}
+
 /// Write the pin file atomically: a `0600` temp file in the same directory,
 /// fsynced, then renamed over `path`. A symlink at `path` is refused outright —
 /// pins are integrity data, and writing through a planted link would clobber

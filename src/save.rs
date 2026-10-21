@@ -334,13 +334,7 @@ pub fn save_vault(
     vault.sig = sign_vault(vault, &saver);
 
     vault::write(Path::new(vault_path), vault)?;
-    record_own_save(
-        vault_path,
-        vault,
-        current,
-        &meta.signers,
-        prior_pin.as_ref(),
-    );
+    record_own_save(vault_path, vault, current, &meta.signers);
     Ok(())
 }
 
@@ -393,48 +387,52 @@ fn announce_new_group_members(original: &types::Murk, current: &types::Murk) {
 /// Record this machine's own write in the trust pin: a signed save is accepted
 /// like a trusted load (its non-grant recipients become the trusted signers).
 /// An unsigned save — the key cannot sign — clears `was_signed`, since the
-/// next load here would otherwise refuse the operator's own write.
-/// Best-effort: the vault is already written, so a pin failure only warns.
+/// next load here would otherwise refuse the operator's own write. The pin is
+/// re-read under its lock. Best-effort: the vault is already written, so a
+/// pin failure only warns.
 fn record_own_save(
     vault_path: &str,
     vault: &types::Vault,
     current: &types::Murk,
     registry: &BTreeMap<String, String>,
-    prior: Option<&crate::pins::TrustPin>,
 ) {
     if !crate::pins::signer_pin_available() {
         return;
     }
-    let pin = if let Some(sig) = &vault.sig {
-        let signature = types::SignatureState::Signed {
-            signer: sig.signer.clone(),
-            v: sig.v,
+    let result = crate::pins::update(vault_path, |prior| {
+        let pin = if let Some(sig) = &vault.sig {
+            let signature = types::SignatureState::Signed {
+                signer: sig.signer.clone(),
+                v: sig.v,
+            };
+            let loaded = crate::trust::Loaded {
+                vault,
+                signature: &signature,
+                signer_vk: crate::signature::registry_entry(registry, &sig.signer)
+                    .map(String::as_str),
+                registry,
+                names: &current.recipients,
+                groups: &current.groups,
+                grants: &current.grants,
+                loader_can_sign: true,
+                operator_key: None,
+            };
+            crate::trust::accepted_pin(&loaded, prior, false, &crate::trust::head_of(vault_path))
+        } else {
+            let Some(prior) = prior else { return Ok(None) };
+            if prior.was_signed {
+                eprintln!(
+                    "warn {vault_path} was written unsigned (this key cannot sign) — teammates' murk will refuse it until someone with an age or ssh-ed25519 key reviews it and runs `murk trust`"
+                );
+            }
+            let mut pin = prior.clone();
+            pin.was_signed = false;
+            pin.generation = pin.generation.max(vault.generation);
+            pin
         };
-        let loaded = crate::trust::Loaded {
-            vault,
-            signature: &signature,
-            signer_vk: crate::signature::registry_entry(registry, &sig.signer).map(String::as_str),
-            registry,
-            names: &current.recipients,
-            groups: &current.groups,
-            grants: &current.grants,
-            loader_can_sign: true,
-            operator_key: None,
-        };
-        crate::trust::accepted_pin(&loaded, prior, false, &crate::trust::head_of(vault_path))
-    } else {
-        let Some(prior) = prior else { return };
-        if prior.was_signed {
-            eprintln!(
-                "warn {vault_path} was written unsigned (this key cannot sign) — teammates' murk will refuse it until someone with an age or ssh-ed25519 key reviews it and runs `murk trust`"
-            );
-        }
-        let mut pin = prior.clone();
-        pin.was_signed = false;
-        pin.generation = pin.generation.max(vault.generation);
-        pin
-    };
-    if let Err(e) = crate::pins::write(vault_path, &pin) {
+        Ok(Some(pin))
+    });
+    if let Err(e) = result {
         eprintln!("warn {e}");
     }
 }

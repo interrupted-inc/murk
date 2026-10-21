@@ -118,9 +118,11 @@ pub(crate) fn cmd_trust(yes: bool, vault_path: &str) {
     if matches!(refusal, Refusal::Downgraded) {
         // A key that cannot sign accepting an unsigned vault: forget that a
         // signed version was seen, so this machine loads it with a warning.
-        let mut pin = inspected.assessment.pin.clone().unwrap_or_default();
-        pin.was_signed = false;
-        try_or_die(murk_cli::pins::write(vault_path, &pin));
+        try_or_die(murk_cli::pins::update(vault_path, |fresh| {
+            let mut pin = fresh.cloned().unwrap_or_default();
+            pin.was_signed = false;
+            Ok(Some(pin))
+        }));
     } else {
         let reset_counter = matches!(
             refusal,

@@ -151,6 +151,9 @@ pub struct Assessment {
     pub pin: Option<TrustPin>,
     /// Trusted signers from the environment, when set.
     pub env_signers: Option<TrustedSigners>,
+    /// The signer set the verdict used in place of the pin's (environment
+    /// and anchor together), when either was given.
+    pub external: Option<TrustedSigners>,
 }
 
 /// Parse one trusted-signer entry, the format `MURK_TRUSTED_SIGNERS` and a
@@ -345,7 +348,26 @@ pub fn assess(
         verdict,
         pin,
         env_signers,
+        external,
     })
+}
+
+/// The verdict for `loaded` against `pin` as it is now (re-read under the
+/// pin lock), with the external signers `assessment` was computed with. Used
+/// to confirm an acceptance just before it is recorded: another process may
+/// have raised the rollback mark or learned keys since the first read.
+pub fn reassess(
+    vault_path: &str,
+    loaded: &Loaded<'_>,
+    assessment: &Assessment,
+    pin: Option<&TrustPin>,
+) -> Verdict {
+    verdict(
+        loaded,
+        pin,
+        assessment.external.as_ref(),
+        &head_of(vault_path),
+    )
 }
 
 /// The git HEAD state of the checkout holding `vault_path`.
