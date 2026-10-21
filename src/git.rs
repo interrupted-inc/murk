@@ -540,23 +540,37 @@ pub fn head_state(abs_vault: &Path) -> HeadState {
 
 /// Whether the commit checked out in the checkout holding `abs_vault` is in
 /// the history of local branch `branch` (equal to its tip or an ancestor of
-/// it). False when git fails, the branch does not exist, or the name could
-/// be read as an option.
-pub fn head_in_history_of(abs_vault: &Path, branch: &str) -> bool {
-    let Some(root) = abs_vault.parent().and_then(worktree_root) else {
+/// it), and the vault file is exactly the one committed at HEAD — so the vault
+/// being read is that commit's, not an uncommitted copy of another. False when
+/// git fails, the branch does not exist, or the name could be read as an
+/// option.
+pub fn committed_vault_in_history_of(abs_vault: &Path, branch: &str) -> bool {
+    let (Some(dir), Some(name)) = (abs_vault.parent(), abs_vault.file_name()) else {
         return false;
     };
-    if branch.starts_with('-') {
+    if branch.starts_with('-') || worktree_root(dir).is_none() {
         return false;
     }
-    git_command()
-        .current_dir(&root)
-        .args(["merge-base", "--is-ancestor", "HEAD"])
-        .arg(format!("refs/heads/{branch}"))
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    let quiet = |cmd: &mut Command| {
+        cmd.current_dir(dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    quiet(
+        git_command()
+            .args(["merge-base", "--is-ancestor", "HEAD"])
+            .arg(format!("refs/heads/{branch}")),
+    ) && quiet(
+        git_command()
+            .args(["cat-file", "-e"])
+            .arg(format!("HEAD:./{}", name.to_string_lossy())),
+    ) && quiet(
+        git_command()
+            .args(["diff", "--quiet", "HEAD", "--"])
+            .arg(name),
+    )
 }
 
 /// A path naming a vault the same way from every worktree of its repository:

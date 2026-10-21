@@ -382,7 +382,7 @@ impl Checkout {
                     .filter(|r| *r != b)
                     .collect::<BTreeSet<_>>()
                     .into_iter()
-                    .filter(|r| crate::git::head_in_history_of(&abs, r))
+                    .filter(|r| crate::git::committed_vault_in_history_of(&abs, r))
                     .cloned()
                     .collect()
             }
@@ -397,9 +397,9 @@ impl Checkout {
 /// [`TrustPin::removed_on`]), on a detached HEAD, outside git, and on a branch
 /// this machine has no mark for (its history is unknown, so it may be a
 /// replay) unless its commit is already in the history of a branch the
-/// removal was made on — then it is that branch as it was before the
-/// removal. On a branch this machine accepted before the removal reached it,
-/// the key is still a member there.
+/// removal was made on and the vault is the one committed there — then it is
+/// that branch as it was before the removal. On a branch this machine
+/// accepted before the removal reached it, the key is still a member there.
 pub fn removal_applies(pin: &TrustPin, key: &str, checkout: &Checkout) -> bool {
     let on = pin.removed_on.get(key);
     match &checkout.head {
