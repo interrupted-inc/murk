@@ -17,10 +17,10 @@ closed — the other values were never encrypted to your identity.
 2. **Never echo, log, or commit secret values.** That includes values you can
    read from a delivered env file and values a reveal grant returns inline.
    Do not write them into code, config, commit messages, or tool output.
-3. **Never commit the delivered env file** (`.murk-<threadId>.env`, the exact
-   path is in every murk_get result). It is mode 0600 and deleted automatically
-   when this thread goes idle. If it shows up in `git status`, leave it out of
-   the commit (it is ephemeral either way).
+3. **Never commit the delivered env file.** It is `.murk-<threadId>.env`, mode
+   0600, and murk_get returns its path when it delivers to a file. The plugin
+   deletes it when this thread goes idle. If it shows up in `git status`,
+   leave it out of the commit.
 4. **Never run `murk trust`, and never pass `--allow-reserved`.** If murk
    says the vault is not trusted, unsigned, rolled back, or signed by an
    unknown key, stop and tell the user: deciding who may sign the vault is

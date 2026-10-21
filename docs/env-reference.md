@@ -28,7 +28,7 @@ A variable marked "truthy" is on when set to `1`, `true` or `yes` (any case). Ot
 
 | Variable | Description |
 | --- | --- |
-| `CI` | Truthy prints a nudge toward the scoped-agent path when a pipeline decrypts with a personal key. Advisory only. |
+| `CI` | Truthy prints a short hint toward the scoped-agent path when a pipeline decrypts with a personal key. Advisory only. |
 | `EDITOR, VISUAL` | Editor launched by `murk edit`, checking `EDITOR` then `VISUAL`, falling back to `vi`. On Unix it runs through `sh`, as with git, so it may include arguments (`code --wait`). `MURK_KEY` and `MURK_KEY_FILE` are removed from its environment. |
 | `XDG_RUNTIME_DIR` | Scratch location for `murk edit`'s temporary file when it is a directory (typically tmpfs). Otherwise murk uses `/dev/shm` if it is RAM-backed, then the system temp dir (`$TMPDIR`, else `/tmp`), and warns when the file will not be in RAM. |
 | `HOME, then USERPROFILE` | Base directory for murk state: `~/.config/murk/keys`, `agent-keys` and `signer-pins`. murk reads `HOME` and falls back to `USERPROFILE` on any platform. `murk completion install` and `murk circle authorize ssh:` need `HOME`. |

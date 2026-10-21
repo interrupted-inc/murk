@@ -282,7 +282,7 @@ murk restore
 | Command | Description |
 |---------|-------------|
 | `murk agent plan` | Emit schema-only context for AI agent prompts (no key required) |
-| `murk agent exec --only KEY -- CMD...` | Run a command with strict agent-safe defaults (clean env, no `MURK_KEY`, injected values masked in the output; needs a grant key or `--allow-operator-key`) |
+| `murk agent exec --only KEY -- CMD...` | Run a command with strict agent-safe defaults (clean env, no `MURK_KEY`, injected values masked in the output; refuses an auto-discovered personal key unless you pass `--allow-operator-key`, so supply a grant key) |
 | `murk agent grant --name NAME --only KEY [--ttl DUR]` | Mint a short-lived scoped key that reads only the named secrets (`--ttl` defaults to 2h; reads fail closed after the TTL — revoke to close it for good) |
 | `murk agent init --name NAME --only KEY` | Set the agent allow-list, mint a grant and print how to run the agent |
 | `murk agent connect [CLIENT] --only KEY` | Wire `murk mcp` into an AI editor's MCP config with a scoped grant |
