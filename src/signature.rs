@@ -257,7 +257,7 @@ pub(crate) fn verify_vault_signature(
         _ => return None,
     };
     if sig.signer.starts_with("ssh-ed25519 ") {
-        let vk = signing::ed25519_verifying_key_b64_from_ssh_recipient(&sig.signer)?;
+        let vk = signing::ed25519_verifying_key_b64_from_ssh_recipient(&sig.signer).ok()?;
         signing::verify(&vk, &sig.sig, &msg).then_some(VerifiedSignature { vk: None })
     } else {
         let vk = registry_entry(signers, &sig.signer)?;
@@ -496,6 +496,29 @@ mod tests {
         vault.secrets.get_mut("API_KEY").unwrap().shared =
             encrypt_value(b"POISON", std::slice::from_ref(&recipient)).unwrap();
         assert!(verify_vault_signature(&vault, &g, &gr, &pins, &signers, &sig).is_none());
+    }
+
+    /// An ssh-ed25519 signer whose key is a small-order point: anyone can
+    /// forge its signature over any vault without a secret. It never verifies.
+    #[test]
+    fn a_weak_ssh_ed25519_signer_never_verifies() {
+        use base64::Engine;
+        let recipient = make_recipient(SSH_ED25519_PK);
+        let (g, gr, pins, signers) = empty();
+        for (name, point) in WEAK_ED25519_KEYS {
+            let signer = ssh_ed25519_line(&point);
+            let vault = signed_test_vault(&signer, &recipient);
+            let forged = forged_small_order_signature(&point, &signing_message_v2(&vault));
+            let sig = types::VaultSignature {
+                signer: signer.clone(),
+                v: SIGNED_VIEW_VERSION,
+                sig: base64::engine::general_purpose::STANDARD.encode(forged),
+            };
+            assert!(
+                verify_vault_signature(&vault, &g, &gr, &pins, &signers, &sig).is_none(),
+                "{name}"
+            );
+        }
     }
 
     #[test]

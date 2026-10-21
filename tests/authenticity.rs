@@ -1363,3 +1363,255 @@ fn branches_upgraded_separately_from_0_13_history_merge_cleanly() {
             .stdout(v);
     }
 }
+
+// ── Weak signing keys ──
+
+/// Two small-order Ed25519 points, as verifying keys: the identity (y = 1)
+/// and a point of order 4 (y = 0). Under either, signatures can be forged.
+const WEAK_KEYS: [(&str, [u8; 32]); 2] = [
+    ("identity", {
+        let mut b = [0u8; 32];
+        b[0] = 1;
+        b
+    }),
+    ("order 4", [0u8; 32]),
+];
+
+fn b64(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// `ssh-ed25519 <base64>` for a raw point, whatever the point is.
+fn ssh_line(point: &[u8; 32]) -> String {
+    let mut blob = Vec::new();
+    for field in [b"ssh-ed25519".as_slice(), point.as_slice()] {
+        blob.extend(u32::try_from(field.len()).unwrap().to_be_bytes());
+        blob.extend(field);
+    }
+    format!("ssh-ed25519 {}", b64(&blob))
+}
+
+/// A signature the identity key "makes" on every message, with no secret:
+/// `R = B` and `s = 1`, so `[s]B − [k]·O = B = R` whatever `k` is. The lax
+/// Ed25519 check (ed25519-dalek's `verify`) accepts it.
+fn identity_forgery() -> String {
+    let mut sig = [0u8; 64];
+    sig[..32].copy_from_slice(curve25519_dalek::constants::ED25519_BASEPOINT_COMPRESSED.as_bytes());
+    sig[32] = 1;
+    b64(&sig)
+}
+
+/// Where `who`'s machine keeps its trust pins.
+fn pin_dir(who: &Machine) -> PathBuf {
+    who.home.join(".config/murk/signer-pins")
+}
+
+/// The pin files on `who`'s machine.
+fn pin_files(who: &Machine) -> Vec<PathBuf> {
+    fs::read_dir(pin_dir(who))
+        .map(|d| {
+            d.map(|e| e.unwrap().path())
+                .filter(|p| p.extension().is_some_and(|x| x == "json"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Mallory forges a write by Alice: the signer registry gives Alice's key a
+/// weak verifying key, and the signature is a forgery the lax check accepts.
+/// It is refused as tampering before any trust decision, so on a machine with
+/// no pin even `murk trust` records nothing.
+#[test]
+fn a_weak_key_in_the_signer_registry_is_refused_as_tampering() {
+    for (name, point) in WEAK_KEYS {
+        let base = TempDir::new().unwrap();
+        let (alice, repo) = alice_repo(base.path());
+        let forged = mallory_vault(
+            base.path(),
+            &[("alice", alice.pubkey())],
+            &[("DB_URL", "postgres://attacker")],
+        );
+        let mallory = Machine {
+            home: base.path().join("mallory-home"),
+        };
+        let mallory_id = murk_cli::crypto::parse_identity(&mallory.secret_key()).unwrap();
+        let mut vault: murk_cli::types::Vault =
+            serde_json::from_str(&fs::read_to_string(&forged).unwrap()).unwrap();
+        let mut meta = murk_cli::decrypt_meta(&vault, &mallory_id)
+            .unwrap()
+            .unwrap();
+        meta.signers = [(alice.pubkey(), b64(&point))].into();
+        let recipients: Vec<murk_cli::MurkRecipient> = vault
+            .recipients
+            .iter()
+            .map(|r| murk_cli::crypto::parse_recipient(r).unwrap())
+            .collect();
+        vault.meta =
+            murk_cli::encrypt_value(&serde_json::to_vec(&meta).unwrap(), &recipients).unwrap();
+        vault.sig = Some(murk_cli::types::VaultSignature {
+            signer: alice.pubkey(),
+            v: 2,
+            sig: identity_forgery(),
+        });
+        fs::write(
+            repo.join(".murk"),
+            serde_json::to_string_pretty(&vault).unwrap(),
+        )
+        .unwrap();
+        // Alice's machine with no trust decision for the vault yet.
+        fs::remove_dir_all(pin_dir(&alice)).unwrap();
+
+        assert_refused_everywhere(
+            &alice,
+            &repo,
+            "attacker",
+            "weak (small-order) Ed25519 key) — vault may have been tampered with",
+        );
+        alice
+            .murk(&repo)
+            .args(["trust", "--yes"])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("tampered"));
+        assert!(pin_files(&alice).is_empty(), "{name}: nothing is pinned");
+    }
+}
+
+/// A weak key in Alice's trust pin, as her pinned verifying key and as an
+/// ssh-ed25519 signer, is ignored with a warning naming the pin: her own
+/// write then waits for `murk trust`, which re-pins without it.
+#[test]
+fn a_weak_key_in_the_trust_pin_is_ignored_with_a_warning() {
+    for (name, point) in WEAK_KEYS {
+        let base = TempDir::new().unwrap();
+        let (alice, repo) = alice_repo(base.path());
+        let [pin_file] = pin_files(&alice).try_into().unwrap();
+        let mut pin: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&pin_file).unwrap()).unwrap();
+        let weak_ssh = ssh_line(&point);
+        pin["signers"][alice.pubkey()] = b64(&point).into();
+        pin["trusted"]
+            .as_array_mut()
+            .unwrap()
+            .push(weak_ssh.clone().into());
+        fs::write(&pin_file, serde_json::to_string(&pin).unwrap()).unwrap();
+
+        alice
+            .murk(&repo)
+            .args(["get", "DB_URL"])
+            .assert()
+            .failure()
+            .stdout("")
+            .stderr(predicate::str::contains(format!(
+                "trust pin {} holds a weak or invalid signing key",
+                pin_file.display()
+            )))
+            .stderr(predicate::str::contains("has not confirmed yet"));
+        alice
+            .murk(&repo)
+            .args(["trust", "--yes"])
+            .assert()
+            .success();
+        let repinned = fs::read_to_string(&pin_file).unwrap();
+        assert!(
+            !repinned.contains(&b64(&point)) && !repinned.contains(&weak_ssh),
+            "{name}: {repinned}"
+        );
+        alice
+            .murk(&repo)
+            .args(["get", "DB_URL"])
+            .assert()
+            .success()
+            .stdout("prod-db\n")
+            .stderr(predicate::str::contains("trust pin").not());
+    }
+}
+
+/// A weak key in MURK_TRUSTED_SIGNERS, as an age signer's verifying key or as
+/// an ssh-ed25519 signer, is an error naming the variable.
+#[test]
+fn a_weak_key_in_murk_trusted_signers_is_an_error() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo) = alice_repo(base.path());
+    let runner = Machine::new(base.path(), "runner");
+    let (alice_entry, _) = alice.signer_entry(&repo);
+    let ci = |signers: &str| {
+        let mut cmd = runner.murk(&repo);
+        cmd.env("MURK_KEY", alice.secret_key())
+            .env("MURK_TRUSTED_SIGNERS", signers)
+            .args(["get", "DB_URL"]);
+        cmd
+    };
+    ci(&alice_entry).assert().success().stdout("prod-db\n");
+    for (_, point) in WEAK_KEYS {
+        for entry in [
+            format!("{}:{}", alice.pubkey(), b64(&point)),
+            ssh_line(&point),
+        ] {
+            ci(&format!("{entry},{alice_entry}"))
+                .assert()
+                .failure()
+                .stdout("")
+                .stderr(predicate::str::contains("MURK_TRUSTED_SIGNERS: "))
+                .stderr(predicate::str::contains("weak (small-order) Ed25519 key"));
+        }
+    }
+}
+
+/// A weak key in an anchor line of a grant's key file, as an age signer's
+/// verifying key or as an ssh-ed25519 signer, is an error naming the key
+/// file, not a smaller or different anchor.
+#[test]
+fn a_weak_key_in_a_grant_key_file_anchor_is_an_error() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo) = alice_repo(base.path());
+    alice.add(&repo, "SENTRY_DSN", "sentry");
+    let grant_key = base.path().join("bot.key");
+    alice
+        .murk(&repo)
+        .args([
+            "agent",
+            "grant",
+            "--name",
+            "bot",
+            "--only",
+            "SENTRY_DSN",
+            "--out",
+        ])
+        .arg(&grant_key)
+        .assert()
+        .success();
+    let bot = Machine::new(base.path(), "bot");
+    let read = |key_file: &Path| {
+        let mut cmd = bot.murk(&repo);
+        cmd.env("MURK_KEY_FILE", key_file)
+            .args(["get", "SENTRY_DSN"]);
+        cmd
+    };
+    read(&grant_key).assert().success().stdout("sentry\n");
+    let key_text = fs::read_to_string(&grant_key).unwrap();
+    for (i, (_, point)) in WEAK_KEYS.into_iter().enumerate() {
+        for (j, entry) in [
+            format!("{}:{}", alice.pubkey(), b64(&point)),
+            ssh_line(&point),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let tampered = base.path().join(format!("bot-{i}-{j}.key"));
+            fs::copy(&grant_key, &tampered).unwrap();
+            fs::write(
+                &tampered,
+                format!("{key_text}# murk-trusted-signer: {entry}\n"),
+            )
+            .unwrap();
+            read(&tampered)
+                .assert()
+                .failure()
+                .stdout("")
+                .stderr(predicate::str::contains("grant key file: "))
+                .stderr(predicate::str::contains("weak (small-order) Ed25519 key"));
+        }
+    }
+}

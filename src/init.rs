@@ -235,7 +235,12 @@ pub fn create_vault(
 }
 
 /// Record a vault this machine just created as trusted, with its creator (and
-/// the creator's verifying key) as the only trusted signer.
+/// the creator's verifying key) as the only trusted signer. The pin is updated
+/// under its lock from a fresh read, like every other pin write, so what it
+/// already holds — the rollback marks of other branches, confirmed signing
+/// keys, grants seen — is kept. The new vault replaces the vault id and the
+/// trusted set, and resets the mark of the branch it is created on (it starts
+/// at generation 1).
 pub fn pin_created_vault(
     vault_path: &str,
     vault: &types::Vault,
@@ -263,10 +268,11 @@ pub fn pin_created_vault(
         operator_key: None,
     };
     let head = crate::trust::head_of(vault_path);
-    crate::pins::write(
-        vault_path,
-        &crate::trust::accepted_pin(&loaded, None, true, &head),
-    )
+    crate::pins::update(vault_path, |fresh| {
+        Ok(Some(crate::trust::accepted_pin(
+            &loaded, fresh, true, &head,
+        )))
+    })
 }
 
 #[cfg(test)]
@@ -274,6 +280,95 @@ mod tests {
     use super::*;
     use crate::testutil::*;
     use crate::testutil::{CWD_LOCK, ENV_LOCK};
+
+    // ── pin_created_vault ──
+
+    /// Run `f` with a sandboxed HOME. Caller holds ENV_LOCK.
+    fn in_home<T>(f: impl FnOnce() -> T) -> T {
+        let home = tempfile::tempdir().unwrap();
+        let prev = std::env::var_os("HOME");
+        unsafe {
+            std::env::set_var("HOME", home.path());
+            std::env::remove_var("MURK_NO_SIGNER_PIN");
+        }
+        let out = f();
+        match prev {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        out
+    }
+
+    #[test]
+    fn pin_created_vault_keeps_the_history_an_existing_pin_recorded() {
+        // The pin already holds another vault's history (a deleted vault, or
+        // a sibling worktree sharing the pin). Creating a vault here must not
+        // discard it: marks of other branches and confirmed keys stay.
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        in_home(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(".murk");
+            let path = path.to_str().unwrap();
+            let existing = crate::pins::TrustPin {
+                v: crate::pins::PIN_VERSION,
+                vault_id: "00112233445566778899aabbccddeeff".into(),
+                generation: 9,
+                branches: BTreeMap::from([("main".into(), 9)]),
+                trusted: ["age1someone".into()].into(),
+                ever_trusted: ["age1someone".into()].into(),
+                signers: BTreeMap::from([("age1someone".into(), "vk".into())]),
+                was_signed: true,
+                ..Default::default()
+            };
+            crate::pins::write(path, &existing).unwrap();
+            let (secret, pubkey) = generate_keypair();
+            let id = make_identity(&secret);
+            let v = create_vault(".murk", &id, "alice").unwrap();
+            pin_created_vault(path, &v, &id).unwrap();
+            let pin = crate::pins::read(path).unwrap().unwrap();
+            assert_eq!(pin.vault_id, v.vault_id);
+            assert_eq!(pin.trusted, [pubkey].into());
+            assert_eq!(pin.branches.get("main"), Some(&9), "other marks kept");
+            assert_eq!(
+                pin.signers.get("age1someone").map(String::as_str),
+                Some("vk")
+            );
+            assert!(pin.ever_trusted.contains("age1someone"));
+            // Outside a checkout the single mark restarts with the new vault,
+            // so it is not refused as a rollback.
+            assert_eq!(pin.generation, 1);
+        });
+    }
+
+    #[test]
+    fn pin_created_vault_keeps_what_an_empty_pin_recorded() {
+        // A pin with no trust decision yet (only the downgrade bit, as left by
+        // a murk 0.13 pin) is merged into, not overwritten.
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        in_home(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(".murk");
+            let path = path.to_str().unwrap();
+            let empty = crate::pins::TrustPin {
+                v: crate::pins::PIN_VERSION,
+                was_signed: true,
+                ..Default::default()
+            };
+            crate::pins::write(path, &empty).unwrap();
+            let (secret, pubkey) = generate_keypair();
+            let id = make_identity(&secret);
+            let v = create_vault(".murk", &id, "alice").unwrap();
+            pin_created_vault(path, &v, &id).unwrap();
+            let pin = crate::pins::read(path).unwrap().unwrap();
+            assert_eq!(pin.vault_id, v.vault_id);
+            assert!(pin.trusted.contains(&pubkey));
+            assert!(pin.was_signed);
+        });
+    }
 
     // ── discover_existing_key tests ──
 
