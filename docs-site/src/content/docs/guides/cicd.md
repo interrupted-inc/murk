@@ -163,15 +163,35 @@ git commit -am "grant ci-deploy" && git push
 `--out -` writes the grant key file to stdout and stores no copy, so it goes
 straight into the Actions secret. Above the key, the file has
 `# murk-trusted-signer:` lines and the grant's `# murk-grant-id:` and
-`# murk-grant-expires:` lines. `murk-action` takes only the bare key line, so
-the `grep` keeps just that line. A bare key names no signer, so also give the
-job `MURK_TRUSTED_SIGNERS`, as described above. It carries no expiry either, so
-only the grant record in the vault bounds it, and murk warns once per run that
-the key file should be re-minted. If you run `murk` yourself, drop the `grep`
-and keep the whole file in `MURK_KEY`. The grant then needs no
-`MURK_TRUSTED_SIGNERS`, and the key stops working at the expiry it was minted
-with, whatever a later vault says. It's the same mechanism murk uses to scope AI agent
-access. See [AI agents & MCP](/guides/ai-agents-mcp/) for the full grant/revoke
+`# murk-grant-expires:` lines.
+
+`murk-action` takes only the bare key line, so the `grep` keeps just that
+line. A bare key names no signer, so also give the job `MURK_TRUSTED_SIGNERS`,
+as described above. It carries no expiry either, so only the grant record in
+the vault bounds it, and each `murk` command in the job prints a warning:
+
+```
+warn this grant key file carries no expiry, so only the vault's grant record bounds it — ask the operator to re-mint it (`murk agent grant --renew`)
+```
+
+If the job runs `murk` itself, with no `murk-action`, store the whole key file
+instead. Drop the `grep`:
+
+```bash
+murk agent grant --name ci-deploy --only DEPLOY_TOKEN --ttl 30d --out - | gh secret set MURK_KEY
+```
+
+and pass the secret to the job as `MURK_KEY`. The trusted-signer lines then
+name who may sign the vault, so the job needs no `MURK_TRUSTED_SIGNERS`, and no
+warning prints. The key stops working at the expiry it was minted with,
+whatever a later vault says. When the vault's record would allow more, the
+refusal names the key file's expiry:
+
+```
+✕ grant ci-deploy expired 2026-11-20T19:56:49Z (its key file's expiry) — renew with `murk agent grant --renew` or close it with `murk agent revoke ci-deploy`
+```
+
+It's the same mechanism murk uses to scope AI agent access. See [AI agents & MCP](/guides/ai-agents-mcp/) for the full grant/revoke
 lifecycle and the [CLI reference](/reference/cli/#murk-agent-grant) for the flag
 surface.
 
@@ -182,7 +202,8 @@ grant yields only the granted keys; a `murk get` of anything else fails with
 
 ### Renewing the grant
 
-Before the grant expires, run the same two lines with `--renew`:
+Before the grant expires, run the same two lines with `--renew` (drop the
+`grep` if you store the whole key file):
 
 ```bash
 murk agent grant --name ci-deploy --only DEPLOY_TOKEN --ttl 30d --renew --out - | grep AGE-SECRET-KEY | gh secret set MURK_KEY
