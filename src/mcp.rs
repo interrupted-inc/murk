@@ -205,6 +205,13 @@ impl MurkMcp {
                     "{key}: not a valid environment variable name"
                 )));
             }
+            // An agent must never be handed a vault-chosen PATH, LD_PRELOAD,
+            // GIT_SSH_COMMAND or MURK_STRICT; there is no override here.
+            if murk_cli::is_reserved_env_name(key) {
+                return Ok(tool_err(&format!(
+                    "{key}: reserved environment name (it changes how programs, shells or murk run) — murk_exec never injects it"
+                )));
+            }
             if value.contains('\0') {
                 return Ok(tool_err(&format!(
                     "{key}: value contains a NUL byte and cannot be injected as an environment variable"

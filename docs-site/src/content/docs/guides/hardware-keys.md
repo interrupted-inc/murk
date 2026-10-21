@@ -89,10 +89,40 @@ you need it, not after you've lost the primary.
 age keys and `ssh-ed25519` keys can produce a vault signature on write.
 Hardware/plugin identities and `ssh-rsa` keys cannot (age exposes no signing
 scalar for them). Writes from a hardware-only identity leave the vault
-unsigned: a warning on next load, not a hard failure. A team entirely on
-hardware keys relies on git as the integrity anchor. A mixed team is signed
-whenever a signing-capable holder last wrote. See the [threat
+unsigned.
+
+What happens next depends on the key that loads it. A hardware or `ssh-rsa`
+key loads an unsigned vault with a warning, since it has nothing to check
+against: a team entirely on hardware keys relies on signed git commits as
+the integrity anchor. A machine whose own key can sign (age or
+`ssh-ed25519`) refuses an unsigned vault, because an unsigned file could
+come from anyone with write access to the repo. So does any machine that sets
+`MURK_TRUSTED_SIGNERS`, whatever its key: once you name the signers you
+require, an unsigned vault is refused. A team entirely on hardware keys never
+produces a signature, so don't set that variable there. See the [threat
 model](/security/threat-model/) for the full signing story.
+
+### Mixed teams
+
+If some teammates sign and some don't, their writes arrive unsigned, and
+the signing teammates' machines refuse them. To bring a hardware-key
+teammate's change in, a signing teammate reviews it (`git log -p -- .murk`,
+`murk diff`) and runs:
+
+```bash
+murk trust
+```
+
+`murk trust` re-signs the vault with their key. That is a save, so they
+commit and push the result. After that, the signing teammates' machines
+load the vault again. Keep the review honest: the re-signature vouches for
+the whole file, including recipient changes.
+
+A hardware or `ssh-rsa` machine that last accepted this vault signed gets
+one refusal when it turns unsigned ("signed when this machine last accepted
+it"). Review it the same way. `murk trust` on that machine can't sign, so it
+accepts the vault and forgets that a signed version was seen, and later
+unsigned loads give only the warning.
 
 ## Choosing `MURK_KEY` vs `MURK_KEY_FILE`
 

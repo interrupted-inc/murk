@@ -60,8 +60,9 @@ with good judgment, today.
 - Values encrypted with age; key names stay readable.
 - Per-recipient encryption, so revoking a teammate does not hand them future
   secrets.
-- Tamper evidence: the vault is signed with a key derived from the writer's age
-  key, and git is the integrity anchor. See the [threat model](/security/threat-model/).
+- Tamper evidence: the vault is signed with the writer's age or ssh-ed25519
+  key, each machine checks the signer against a trust it recorded locally, and
+  git is the integrity anchor. See the [threat model](/security/threat-model/).
 - A documented, tested vault format.
 - Reproducible, attested releases (SLSA Build L2) that you can
   [verify](/security/verifying/).

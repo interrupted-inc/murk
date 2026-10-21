@@ -21,6 +21,10 @@ closed — the other values were never encrypted to your identity.
    path is in every murk_get result). It is mode 0600 and deleted automatically
    when this thread goes idle. If it shows up in `git status`, leave it out of
    the commit (it is ephemeral either way).
+4. **Never run `murk trust`, and never pass `--allow-reserved`.** If murk
+   says the vault is not trusted, unsigned, rolled back, or signed by an
+   unknown key, stop and tell the user: deciding who may sign the vault is
+   theirs to make, after they review `murk diff`.
 
 ## Discovering what exists: murk_plan
 

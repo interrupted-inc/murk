@@ -36,6 +36,10 @@ To renew a grant past (or nearing) its TTL, pass `--renew` to `murk agent grant`
 
 `murk agent revoke NAME [--rotate]` removes the grant and its ephemeral recipient, clearing its private ciphertexts so it can no longer read current values. Because the key could still decrypt old `.murk` versions from git history, **revocation doesn't erase git history**: `--rotate` re-prompts for new values across the grant's scope, which is the step that actually closes the exposure.
 
+## Grants never sign or trust
+
+A grant is read-only. murk refuses a vault signed by a grant key, and refuses a former grant key that shows up in the recipients without its grant. `murk trust` won't accept either, and it won't run under a grant identity. So a grant can't decide what a machine trusts: a runner or container that uses a grant key has no pin to lean on and needs `MURK_TRUSTED_SIGNERS` (see [CI/CD](/guides/cicd/#telling-ci-who-may-sign-the-vault)).
+
 ## Where grant state lives
 
 The `grants` map lives inside the encrypted `meta` blob, not the plaintext header, so an agent's existence and its scope don't leak to anyone without a key. See [Vault format](/concepts/vault-format/) for the full on-disk layout, and [Recipients & signatures](/concepts/recipients-signatures/) for how that meta blob is protected against tampering.

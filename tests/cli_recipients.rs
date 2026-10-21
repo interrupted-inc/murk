@@ -32,11 +32,6 @@ fn stdout_json(cmd: &mut assert_cmd::Command) -> serde_json::Value {
     serde_json::from_slice(&out.get_output().stdout).unwrap()
 }
 
-fn stderr_of(cmd: &mut assert_cmd::Command) -> String {
-    let out = cmd.output().unwrap();
-    String::from_utf8(out.stderr).unwrap()
-}
-
 // ── circle ──
 
 /// `ssh:` alone reads `~/.ssh/id_ed25519.pub`, and a `~` in an explicit path
@@ -415,10 +410,9 @@ fn ci_hint_fires_only_for_the_auto_discovered_personal_key() {
     assert!(!explicit.contains("CI is decrypting"), "{explicit}");
 }
 
-/// Sets up a vault whose merge left it unsigned: two branches each add a
-/// secret, and the merge driver (which never signs) combines them into
-/// `test.murk`. Returns `(dir, key)`.
-fn merged_unsigned_vault() -> (TempDir, String) {
+/// Sets up a vault produced by a keyed merge: two branches each add a secret,
+/// and the merge driver combines them into `test.murk`. Returns `(dir, key)`.
+fn merged_vault() -> (TempDir, String) {
     let dir = TempDir::new().unwrap();
     let (key, _) = init_vault(&dir);
     let vault = dir.path().join("test.murk");
@@ -438,7 +432,14 @@ fn merged_unsigned_vault() -> (TempDir, String) {
     let theirs = dir.path().join("theirs.murk");
     fs::copy(&vault, &theirs).unwrap();
 
+    // Ours forks from base, so the next save must outrank the pinned counter
+    // (theirs was saved here last): load it via `murk trust` like a branch
+    // switch, then write.
     fs::copy(&base, &vault).unwrap();
+    murk(&dir, &key)
+        .args(["trust", "--yes", "--vault", "test.murk"])
+        .assert()
+        .success();
     murk(&dir, &key)
         .args(["add", "OURS", "--vault", "test.murk"])
         .write_stdin("o\n")
@@ -448,69 +449,61 @@ fn merged_unsigned_vault() -> (TempDir, String) {
     murk(&dir, &key)
         .args(["merge-driver"])
         .args([&base, &vault, &theirs].map(|p| p.to_str().unwrap()))
+        .arg("test.murk")
         .assert()
         .success();
     (dir, key)
 }
 
-/// After a merge strips the signature, every read warns that a vault seen
-/// signed is now unsigned, until any write re-signs it.
+/// A keyed merge of two genuine sides is signed by the merging key, so it
+/// loads (and verifies) with no re-signing step.
 #[test]
-fn signature_downgrade_warns_until_the_next_write() {
-    let (dir, key) = merged_unsigned_vault();
-    let read = || stderr_of(murk(&dir, &key).args(["get", "OURS", "--vault", "test.murk"]));
-
-    let warned = read();
-    assert!(
-        warned.contains("was signed before and is now unsigned"),
-        "{warned}"
-    );
+fn keyed_merge_of_genuine_sides_signs_and_loads() {
+    let (dir, key) = merged_vault();
+    for (name, value) in [("OURS", "o\n"), ("THEIRS", "t\n"), ("BASE", "b\n")] {
+        murk(&dir, &key)
+            .args(["get", name, "--vault", "test.murk"])
+            .assert()
+            .success()
+            .stdout(value);
+    }
     murk(&dir, &key)
-        .args(["get", "THEIRS", "--vault", "test.murk"])
+        .args(["verify", "--vault", "test.murk"])
         .assert()
-        .success()
-        .stdout("t\n");
-
-    murk(&dir, &key)
-        .args(["add", "AFTER", "--vault", "test.murk"])
-        .write_stdin("a\n")
-        .assert()
-        .success();
-    let clean = read();
-    assert!(!clean.contains("unsigned"), "{clean}");
+        .stderr(predicate::str::contains("signed by trusted signer"));
 }
 
-/// With signer pinning off, murk cannot tell a downgrade or anchor a
-/// signature, and says so: an unsigned vault gets the plain "sign it" nudge,
-/// and a signed one is flagged as trust-only.
+/// With the pin store off, nothing on this machine records trust, so a
+/// secret-emitting load is refused until MURK_TRUSTED_SIGNERS names the signer.
 #[test]
-fn signer_pinning_off_reports_what_it_cannot_check() {
-    let (dir, key) = merged_unsigned_vault();
-    let read = || {
-        stderr_of(murk(&dir, &key).env("MURK_NO_SIGNER_PIN", "1").args([
-            "get",
-            "OURS",
-            "--vault",
-            "test.murk",
-        ]))
-    };
-
-    let unsigned = read();
-    assert!(
-        unsigned.contains("vault is unsigned — run any write command to sign it"),
-        "{unsigned}"
-    );
-    assert!(!unsigned.contains("signed before"), "{unsigned}");
+fn pinning_off_fails_closed_until_trusted_signers_are_given() {
+    let dir = TempDir::new().unwrap();
+    let (key, pubkey) = init_vault(&dir);
+    murk(&dir, &key)
+        .args(["add", "A", "--vault", "test.murk"])
+        .write_stdin("v\n")
+        .assert()
+        .success();
 
     murk(&dir, &key)
         .env("MURK_NO_SIGNER_PIN", "1")
-        .args(["add", "AFTER", "--vault", "test.murk"])
-        .write_stdin("a\n")
+        .args(["get", "A", "--vault", "test.murk"])
         .assert()
-        .success();
-    let signed = read();
-    assert!(signed.contains("signer pinning is off"), "{signed}");
-    assert!(!signed.contains("unsigned"), "{signed}");
+        .failure()
+        .stderr(predicate::str::contains("not trusted on this machine"));
+    let out = murk(&dir, &key)
+        .args(["trust", "--print-key", "--vault", "test.murk"])
+        .output()
+        .unwrap();
+    let entry = String::from_utf8(out.stdout).unwrap().trim().to_string();
+    assert!(entry.starts_with(&format!("{pubkey}:")), "{entry}");
+    murk(&dir, &key)
+        .env("MURK_NO_SIGNER_PIN", "1")
+        .env("MURK_TRUSTED_SIGNERS", &entry)
+        .args(["get", "A", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout("v\n");
 }
 
 // ── rotate --list ──

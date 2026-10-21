@@ -41,6 +41,10 @@ That layering is what lets a team share most config while keeping per-developer 
 
 Recipients and groups are for people. AI agents and automation get a separate mechanism: a **grant** is an ephemeral, time-boxed identity scoped to a fixed set of keys, excluded from the shared layer entirely. It's never your own key. See [Grants](/concepts/grants/) for how that works.
 
+## Each machine decides who it trusts
+
+The vault lists its own recipients, so a file in the repo can't vouch for itself. Every time murk loads a vault it checks the signature against a **trust pin** that lives on your machine, outside the repo: who may sign and with which key, which vault this is, and how far its save counter has got. A vault signed by someone this machine hasn't accepted, an unsigned one, a different vault, or an older revision is refused until you review it and run `murk trust`. So is a teammate's first write when it carries a signing key this machine hasn't confirmed. CI has no pin and sets `MURK_TRUSTED_SIGNERS` instead. See [Recipients & signatures](/concepts/recipients-signatures/#trusting-a-signer).
+
 ## What this model does and doesn't buy you
 
 Because any recipient can decrypt every shared secret by design, murk's access control is a convenience and audit boundary, not a hard security perimeter against an insider: a malicious recipient, or an old murk binary, can always read what their key is authorized for. Git is the audit trail: every recipient change, rotation, and grant is a commit. The [threat model](/security/threat-model/) spells out exactly what murk protects against and what it doesn't.

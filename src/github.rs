@@ -55,6 +55,19 @@ pub fn fetch_keys(username: &str) -> Result<Vec<(MurkRecipient, String)>, GitHub
         )));
     }
 
+    // Debug builds only (never a release binary): the integration tests serve
+    // `<dir>/<username>.keys` instead of the network.
+    #[cfg(debug_assertions)]
+    if let Some(dir) = std::env::var_os("MURK_TEST_GITHUB_KEYS_DIR") {
+        let path = std::path::Path::new(&dir).join(format!("{username}.keys"));
+        let body = std::fs::read_to_string(&path)
+            .map_err(|e| GitHubError::Fetch(format!("{}: {e}", path.display())))?;
+        if body.trim().is_empty() {
+            return Err(GitHubError::NoKeys(username.into()));
+        }
+        return parse_github_keys(&body, username);
+    }
+
     let url = format!("https://github.com/{username}.keys");
 
     // Defense-in-depth against a compromised or MITM'd upstream:

@@ -180,6 +180,24 @@ murk exec ./deploy.sh   # works immediately — nothing to provision
 
 Only real worktrees of the repo count, verified against git's own metadata; a copy of the vault elsewhere on disk still gets nothing. Key discovery stays disabled under `MURK_STRICT` and in agent context, so an agent in a worktree still needs its own scoped grant.
 
+## Trusting a vault
+
+A `.murk` file lists its own recipients, so a valid signature alone doesn't say the signer is someone you trust. murk checks every vault against a trust pin on your machine (`~/.config/murk/signer-pins/`, outside the repo, shared by every git worktree of the repo). The first load on each machine is refused until you review the vault and accept it:
+
+```bash
+git log -p -- .murk   # who changed the vault
+murk diff             # what changed, and who signed it
+murk trust            # shows the signer, its signing-key fingerprint and every recipient, then asks (--yes for scripts)
+```
+
+murk refuses a vault that is unsigned (when your key can sign, or when `MURK_TRUSTED_SIGNERS` is set), was signed when you last accepted it and now isn't, is signed by a key this machine doesn't trust or by an agent grant, is another vault's file, is older than one already accepted on that branch, or changes a group without a member's signature. The message says what it saw. After a refusal you've reviewed, `murk trust` accepts it again. To revert a branch on purpose, restore the old file, run `murk trust`, then make any write. If murk can't write its pin (a read-only home), it warns and carries on.
+
+Hardware, plugin and `ssh-rsa` keys can't sign, so their writes are unsigned. A signing teammate reviews them and runs `murk trust`, which re-signs the vault.
+
+**A new teammate with an age key** is confirmed once on every other machine. Their first signed write carries a signing key your machine has never seen, so murk refuses it once ("a trusted recipient whose signing key this machine has not confirmed yet") and shows the key's fingerprint. They run `murk trust --print-key` to see their own fingerprint (`murk init` prints it too, before they're authorized), you compare the two over a channel other than the repo, and you run `murk trust`. That is trust on first use: the key comes from the vault, so the fingerprint check is what makes it trustworthy. Once a machine that confirmed the key writes, its signed vault carries the key, and machines that load that vault learn it without another prompt. A different key for a signer whose key is already pinned is refused as a forgery, and `murk trust` won't accept it. `ssh-ed25519` teammates (for example `murk circle authorize github:user`) need no confirmation: their recipient string is their verifying key.
+
+**Upgrading to 0.14.** Every teammate and CI runner needs 0.14: a 0.14 save is written in a signature format 0.13 refuses. The first load of an existing vault on each machine is refused once. Review it and run `murk trust`, then make the first 0.14 save. Once a machine has seen a vault saved by 0.14, a vault signed by 0.13 is refused as rolled back. A vault written by 0.13 gets an id derived from its creation time and name, so teammates who upgrade on different days agree on it. CI sets `MURK_TRUSTED_SIGNERS` (below). Re-run `murk setup-merge-driver` in each clone so the merge driver gets the vault path.
+
 ## CI/CD
 
 [![GitHub Marketplace](https://img.shields.io/badge/GitHub%20Marketplace-murk--action-2ea44f?logo=github&logoColor=white)](https://github.com/marketplace/actions/murk-action)
@@ -192,8 +210,12 @@ steps:
   - uses: interrupted-sh/murk-action@v1
     with:
       murk-key: ${{ secrets.MURK_KEY }}
+    env:
+      MURK_TRUSTED_SIGNERS: ${{ secrets.MURK_TRUSTED_SIGNERS }}
   - run: ./deploy.sh  # all vault secrets are now in the environment
 ```
+
+A CI runner has no trust pin and nobody to run `murk trust`. `MURK_TRUSTED_SIGNERS` lists the people who write the vault, separated by commas or newlines. An age signer is `age1...:<verifying key>` and an `ssh-ed25519` signer is its public key line; each signer runs `murk trust --print-key` to get their entry (it goes to stdout, the fingerprint to stderr). A bare `age1...` key without its verifying key is an error. Store it as a secret next to `MURK_KEY`. With it set, an unsigned vault is refused even for a key that can't sign, and the variable never adds to what the machine's own pin trusts. The action has to pass the variable through to `murk`; if yours doesn't, run `murk exec` yourself with both variables in the step's `env:`.
 
 Workflows that still reference `interrupted-inc/murk-action` must switch to `interrupted-sh/murk-action`: GitHub does not redirect action references after an organization rename.
 
@@ -247,7 +269,7 @@ murk restore
 
 | Command | Description |
 |---------|-------------|
-| `murk exec CMD...` | Run a command with secrets in the environment (`--only`, `--clean-env`) |
+| `murk exec CMD...` | Run a command with secrets in the environment (`--only`, `--clean-env`). Refuses keys named like loader, shell, proxy or murk variables (`PATH`, `LD_*`, `GIT_*`, `*_PROXY`, `MURK_*`, ...) unless `--allow-reserved` |
 
 **Agents**
 
@@ -268,13 +290,14 @@ murk restore
 | `murk circle` | List recipients |
 | `murk circle authorize PUBKEY [--name NAME] [--allow-ssh-rsa]` | Add a recipient (age key, `ssh:path`, or `github:user`) |
 | `murk circle revoke RECIPIENT` | Remove a recipient |
-| `murk group create\|ls\|add\|rm NAME` | Manage named recipient groups (encrypt a secret to a subset) |
+| `murk group create\|ls\|add\|rm NAME` | Manage named recipient groups (encrypt a secret to a subset); changing a group needs you to be a member of it |
 
 **Checks**
 
 | Command | Description |
 |---------|-------------|
-| `murk verify` | Check MAC, recipients, and key access without decrypting secrets |
+| `murk verify` | Check MAC, signature, trust, recipients, and key access without decrypting secrets |
+| `murk trust [--yes]` | Show who signed the vault and what changed, then trust it on this machine (re-signs an unsigned vault with your key). `murk trust --print-key` prints your own signing-key fingerprint and your `MURK_TRUSTED_SIGNERS` entry |
 | `murk doctor` | Scan the surrounding repo for hygiene issues |
 | `murk scan [PATHS...]` | Scan files for leaked secret values |
 
@@ -282,8 +305,8 @@ murk restore
 
 | Command | Description |
 |---------|-------------|
-| `murk diff [REF]` | Show secret changes since a git ref |
-| `murk setup-merge-driver` | Configure git to merge `.murk` vaults without decrypting |
+| `murk diff [REF]` | Show secret changes, recipient changes and signer changes since a git ref |
+| `murk setup-merge-driver` | Configure git to merge `.murk` vaults: the driver verifies both sides and signs the result |
 
 **Shell**
 
@@ -331,7 +354,7 @@ pre-commit run murk-scan --all-files
 
 ## Design
 
-- **age for encryption, Ed25519 signatures for integrity** — no custom cryptographic primitives; a BLAKE3 MAC binds ciphertexts and an Ed25519 signature (derived from your age key, or your ssh-ed25519 key directly) authenticates the writer, so tampering with a *signed* vault is detectable. An attacker with repo write access can still strip the signature — that loads as an unsigned warning, not a hard failure — so git commit signing is the anchor. See [THREAT_MODEL.md](THREAT_MODEL.md)
+- **age for encryption, Ed25519 signatures for integrity** — no custom cryptographic primitives; a BLAKE3 MAC binds ciphertexts and an Ed25519 signature authenticates the writer (age keys sign with an Ed25519 key derived from the age secret, its verifying key published in the vault's signer registry; ssh-ed25519 keys sign directly). Each machine accepts a vault only from signers it trusts and pins each signer's verifying key, recorded locally by `murk trust` or given in `MURK_TRUSTED_SIGNERS`, so a vault an attacker wrote or replayed is refused. A trusted signer can still change values and recipients — that is authorized by design — and a vault written by a key that cannot sign (hardware, ssh-rsa) is unsigned, so git commit signing remains the anchor for those teams. See [THREAT_MODEL.md](THREAT_MODEL.md)
 - **Git is the audit trail** — murk doesn't replicate what git does
 - **Header is public, values are private** — key names are visible, values are not
 - **Explicit over magic** — never silently overwrites or destroys data
@@ -369,6 +392,8 @@ See [SPEC.md](SPEC.md) for the full specification.
 **Hardware-backed keys** — for stronger protection, point `MURK_KEY_FILE` at an age plugin identity file (YubiKey, Apple Secure Enclave, FIDO2, etc.) so the private key lives in hardware and never exists as bytes on disk. See [hardware identities](#hardware-identities) below.
 
 **Access control is advisory** — any authorized recipient can decrypt all shared secrets. Per-key access metadata in the schema is cosmetic and not enforced cryptographically. If a recipient has `MURK_KEY` and is in the recipient list, they can read everything in the shared layer. Use scoped secrets (motes) for values that should stay private to one recipient.
+
+**Reserved variable names** — whoever last wrote the vault chooses its key names, so `murk export`, `murk exec` and `murk agent exec` refuse to set variables that change how programs, shells or murk itself run: `PATH`, `HOME`, `NODE_OPTIONS`, `BASH_ENV`, `EDITOR`, `RUSTFLAGS`, anything ending in `_PROXY`, and anything starting with `LD_`, `DYLD_`, `GIT_`, `BASH_FUNC_`, `PYTHON`, `PERL`, `RUBY`, `JAVA_`, `DOTNET_`, `CARGO_`, `SSL_`, `PIP_`, `GEM_`, `BUNDLE_`, `NPM_CONFIG_` or `MURK_` (case-insensitive; `NODE_ENV` is not reserved; the full list is in [Environment variables](https://murk.interrupted.sh/concepts/env-vars/#variable-names-a-vault-may-not-set)). Review who added the key, then pass `--allow-reserved` if you mean it. The MCP `murk_exec` tool never allows them.
 
 See [THREAT_MODEL.md](THREAT_MODEL.md) for the full threat model.
 

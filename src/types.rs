@@ -26,10 +26,17 @@ pub struct Vault {
     /// Repository URL, auto-detected from git remote during init.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub repo: String,
-    /// Random vault identity (32 lowercase hex chars = 16 bytes), minted at init or on the first 0.14 save of an older vault. Binds a signature to one vault, so another vault's file (staging.murk over .murk) is refused.
+    /// Random vault identity (32 lowercase hex characters), minted at init or on
+    /// the first save of an older vault. Covered by the signature, and recorded
+    /// in the local trust pin, so another vault's file (say `staging.murk`
+    /// copied over `.murk`) is refused rather than accepted as this vault.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub vault_id: String,
-    /// Monotonic save counter. Every save writes max(loaded, highest seen on this machine) + 1; merges write max(ours, theirs) + 1. Loaders refuse a value below the highest they accepted ("rolled back").
+    /// Monotonic save counter, covered by the signature. Every save writes
+    /// `max(loaded, highest seen on this machine) + 1`, and a merge writes
+    /// `max(ours, theirs) + 1`. A loader refuses a vault whose counter is below
+    /// the highest it accepted: an older signed revision replayed over the
+    /// current one ("vault rolled back").
     #[serde(default, skip_serializing_if = "is_zero")]
     pub generation: u64,
     /// Public keys only — no names. Name mappings live in the encrypted meta blob.
@@ -241,20 +248,14 @@ impl std::fmt::Debug for Meta {
 /// Outcome of verifying the vault's Ed25519 signature at load time.
 ///
 /// An *invalid* signature never reaches here — it fails the load as tampering.
-/// So the working state distinguishes "signed" from "unsigned" (integrity then
-/// rests on git). The binary warns on `Unsigned`, and on a `Signed` that is not
-/// yet `anchored`.
+/// Whether the signer is *trusted* on this machine is decided by the trust pin
+/// ([`crate::pins`]); `load_vault` refuses an untrusted signer, so a `Signed`
+/// state handed out by it is always a trusted signer.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum SignatureState {
-    /// A valid signature produced by `signer` (a current recipient).
-    ///
-    /// `anchored` is whether the signer's verifying key is trusted independently
-    /// of the (attacker-mutable) meta registry: always true for ssh-ed25519
-    /// signers (the key is in the recipient string), and true for age signers
-    /// whose key matched a prior local pin. When false — an age signer's key seen
-    /// for the first time on this machine — the signature is trust-on-first-use,
-    /// not yet authenticated authorship; git commit signing is the anchor.
-    Signed { signer: String, anchored: bool },
+    /// A valid signature produced by `signer` (a current recipient), over
+    /// signed view `v`.
+    Signed { signer: String, v: u32 },
     /// No signature present — the last writer had no signing-capable identity.
     #[default]
     Unsigned,
@@ -289,14 +290,10 @@ pub struct Murk {
     /// base64 verifying key. `save_vault` carries these forward so every signer's
     /// key persists, then adds/refreshes the current signer's entry.
     pub signers: BTreeMap<String, String>,
-    /// Whether the loaded vault carried a valid signature. `Unsigned` means
-    /// integrity rests on git; the binary surfaces a warning.
+    /// Whether the loaded vault carried a valid signature. `Unsigned` reaches
+    /// callers only for a loader that cannot sign (hardware/plugin/ssh-rsa key);
+    /// integrity then rests on signed git commits and the binary warns.
     pub signature: SignatureState,
-    /// True when this vault loaded signed on this machine before but is now
-    /// unsigned — a stripped signature, or a merge result not yet re-signed. Set
-    /// from the signer-pin continuity check; the CLI warns distinctly, `verify`
-    /// fails, and `MURK_STRICT` refuses the load.
-    pub signature_downgraded: bool,
 }
 
 /// Manual `Debug`: prints key NAMES (schema-level metadata, not secret) but
@@ -316,7 +313,6 @@ impl std::fmt::Debug for Murk {
             .field("github_pins", &self.github_pins)
             .field("signers", &self.signers)
             .field("signature", &self.signature)
-            .field("signature_downgraded", &self.signature_downgraded)
             .finish()
     }
 }

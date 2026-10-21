@@ -34,8 +34,26 @@ pub(crate) fn vault(v: &Vault) -> Result<(), String> {
     timestamp("created", &v.created)?;
     free_text("vault_name", &v.vault_name)?;
     free_text("repo", &v.repo)?;
+    let mut seen = std::collections::BTreeSet::new();
     for (i, r) in v.recipients.iter().enumerate() {
         recipient(&format!("recipients[{i}]"), r)?;
+        // Two spellings of one key (bech32 case, ssh comment) would let an
+        // alias survive `circle revoke`.
+        if !seen.insert(crate::crypto::canonical_recipient(r)) {
+            return Err(format!(
+                "recipients[{i}]: duplicate of an earlier recipient {}",
+                show(r)
+            ));
+        }
+    }
+    let hex_id = |id: &str| {
+        id.len() == 32
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    };
+    if !v.vault_id.is_empty() && !hex_id(&v.vault_id) {
+        return Err("vault_id: not 32 lowercase hex characters".into());
     }
     for (key, entry) in &v.schema {
         key_name("schema", key)?;
@@ -270,7 +288,7 @@ fn is_base64_char(b: u8) -> bool {
 
 /// Escape and truncate an untrusted value for an error message. The one place
 /// untrusted text is rendered into errors; use it for every repeated value.
-pub(crate) fn show(s: &str) -> String {
+pub fn show(s: &str) -> String {
     const MAX: usize = 80;
     let mut out: String = s.chars().take(MAX).flat_map(char::escape_debug).collect();
     if s.chars().nth(MAX).is_some() {

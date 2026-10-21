@@ -48,6 +48,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             [CompletionResult]::new('revoke', 'revoke', [CompletionResultType]::ParameterValue, 'Remove a recipient from the vault')
             [CompletionResult]::new('group', 'group', [CompletionResultType]::ParameterValue, 'Manage recipient groups')
             [CompletionResult]::new('verify', 'verify', [CompletionResultType]::ParameterValue, 'Verify vault integrity without exporting secrets')
+            [CompletionResult]::new('trust', 'trust', [CompletionResultType]::ParameterValue, 'Review who signed the vault and what changed, then trust it on this machine')
             [CompletionResult]::new('doctor', 'doctor', [CompletionResultType]::ParameterValue, 'Check the surrounding repo for hygiene issues')
             [CompletionResult]::new('scan', 'scan', [CompletionResultType]::ParameterValue, 'Scan files for leaked secret values')
             [CompletionResult]::new('diff', 'diff', [CompletionResultType]::ParameterValue, 'Show secret changes vs a git ref')
@@ -147,6 +148,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             [CompletionResult]::new('--tag', '--tag', [CompletionResultType]::ParameterName, 'Filter by tag (repeatable)')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Output as JSON')
+            [CompletionResult]::new('--allow-reserved', '--allow-reserved', [CompletionResultType]::ParameterName, 'Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -191,6 +193,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             [CompletionResult]::new('--tag', '--tag', [CompletionResultType]::ParameterName, 'Filter by tag (repeatable)')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('--clean-env', '--clean-env', [CompletionResultType]::ParameterName, 'Strip inherited environment (only murk secrets + PATH)')
+            [CompletionResult]::new('--allow-reserved', '--allow-reserved', [CompletionResultType]::ParameterName, 'Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -223,6 +226,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             [CompletionResult]::new('--only', '--only', [CompletionResultType]::ParameterName, 'Inject these specific keys (required — agent mode fails closed)')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('--allow-operator-key', '--allow-operator-key', [CompletionResultType]::ParameterName, 'Decrypt with your own stored key from ~/.config/murk/keys. Without this, agent exec needs an explicit MURK_KEY or MURK_KEY_FILE')
+            [CompletionResult]::new('--allow-reserved', '--allow-reserved', [CompletionResultType]::ParameterName, 'Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -500,6 +504,14 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
+        'murk;trust' {
+            [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
+            [CompletionResult]::new('--yes', '--yes', [CompletionResultType]::ParameterName, 'Accept without asking (for scripts; review first)')
+            [CompletionResult]::new('--print-key', '--print-key', [CompletionResultType]::ParameterName, 'Print your own trusted-signer entry (for MURK_TRUSTED_SIGNERS) and signing-key fingerprint (for teammates to confirm), then exit')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            break
+        }
         'murk;doctor' {
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
@@ -589,6 +601,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             [CompletionResult]::new('revoke', 'revoke', [CompletionResultType]::ParameterValue, 'Remove a recipient from the vault')
             [CompletionResult]::new('group', 'group', [CompletionResultType]::ParameterValue, 'Manage recipient groups')
             [CompletionResult]::new('verify', 'verify', [CompletionResultType]::ParameterValue, 'Verify vault integrity without exporting secrets')
+            [CompletionResult]::new('trust', 'trust', [CompletionResultType]::ParameterValue, 'Review who signed the vault and what changed, then trust it on this machine')
             [CompletionResult]::new('doctor', 'doctor', [CompletionResultType]::ParameterValue, 'Check the surrounding repo for hygiene issues')
             [CompletionResult]::new('scan', 'scan', [CompletionResultType]::ParameterValue, 'Scan files for leaked secret values')
             [CompletionResult]::new('diff', 'diff', [CompletionResultType]::ParameterValue, 'Show secret changes vs a git ref')
@@ -739,6 +752,9 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             break
         }
         'murk;help;verify' {
+            break
+        }
+        'murk;help;trust' {
             break
         }
         'murk;help;doctor' {

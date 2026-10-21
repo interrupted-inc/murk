@@ -77,7 +77,7 @@ pub fn setup_merge_driver() -> Result<Vec<MergeDriverSetupStep>, String> {
     // 2. Configure git merge driver.
     let configs = [
         (GIT_CONFIG_MERGE_NAME, "murk vault merge"),
-        (GIT_CONFIG_MERGE_DRIVER, "murk merge-driver %O %A %B"),
+        (GIT_CONFIG_MERGE_DRIVER, "murk merge-driver %O %A %B %P"),
     ];
     for (key, value) in &configs {
         let status = git_command()
@@ -200,6 +200,59 @@ pub fn sibling_worktrees(root: &Path) -> Vec<PathBuf> {
             checkout != root && common_dir(checkout).as_deref() == Some(common.as_path())
         })
         .collect()
+}
+
+/// What the checkout containing a vault has checked out, read from its HEAD
+/// file (no `git` process). The rollback check is per branch: switching to an
+/// older branch is normal, a branch going backwards is not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeadState {
+    /// The vault is not in a git checkout.
+    NotARepo,
+    /// A branch is checked out (`refs/heads/<name>`).
+    Branch(String),
+    /// A detached HEAD (a rebase, bisect, or CI checkout of a commit).
+    Detached,
+}
+
+/// The HEAD state of the checkout holding `abs_vault`.
+pub fn head_state(abs_vault: &Path) -> HeadState {
+    let Some(root) = abs_vault.parent().and_then(worktree_root) else {
+        return HeadState::NotARepo;
+    };
+    let dotgit = root.join(".git");
+    let gitdir = if dotgit.is_dir() {
+        dotgit
+    } else {
+        match fs::read_to_string(&dotgit)
+            .ok()
+            .and_then(|p| Some(root.join(p.trim().strip_prefix("gitdir:")?.trim())))
+        {
+            Some(dir) => dir,
+            None => return HeadState::Detached,
+        }
+    };
+    match fs::read_to_string(gitdir.join("HEAD")) {
+        Ok(head) => match head.trim().strip_prefix("ref: refs/heads/") {
+            Some(branch) => HeadState::Branch(branch.to_string()),
+            None => HeadState::Detached,
+        },
+        Err(_) => HeadState::Detached,
+    }
+}
+
+/// A path naming a vault the same way from every worktree of its repository:
+/// the repository's common git directory joined with the vault's path inside
+/// the checkout. `None` when the vault is not inside a git checkout.
+///
+/// The trust pin is keyed on this, so trusting a vault once covers every
+/// worktree of the repository (an agent's throwaway checkout included).
+pub(crate) fn repository_vault_identity(abs_vault: &Path) -> Option<PathBuf> {
+    let root = worktree_root(abs_vault.parent()?)?;
+    let relative = abs_vault.strip_prefix(&root).ok()?;
+    let common = common_dir(&root)?;
+    let common = fs::canonicalize(&common).unwrap_or(common);
+    Some(common.join("murk-vault").join(relative))
 }
 
 /// The repository's common directory (the shared `.git` holding `objects/` and

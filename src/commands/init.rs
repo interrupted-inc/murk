@@ -139,6 +139,17 @@ pub(crate) fn cmd_init(vault_name: &str) {
                 status.pubkey.dimmed(),
                 name_display
             );
+            let trusted = murk_cli::pins::read(vault_name)
+                .ok()
+                .flatten()
+                .is_some_and(|p| p.has_trust());
+            if !trusted {
+                eprintln!(
+                    "  {}",
+                    "next: review who signed the vault and run `murk trust` (once per machine)"
+                        .dimmed()
+                );
+            }
         } else {
             eprintln!(
                 "{} {}",
@@ -146,6 +157,7 @@ pub(crate) fn cmd_init(vault_name: &str) {
                 "not authorized \u{2014} share your public key to get added:".yellow()
             );
             eprintln!("  {}", status.pubkey.bold());
+            print_signing_fingerprint(secret_key.expose_secret());
         }
         return;
     }
@@ -164,15 +176,16 @@ pub(crate) fn cmd_init(vault_name: &str) {
         die(&"name is required", 1);
     }
 
-    let pubkey = match existing {
+    let secret_key = match existing {
         Some(dk) => {
             reuse_key(&dk.source);
-            dk.pubkey
+            dk.secret_key
         }
-        None => generate_and_write_key(vault_name).1,
+        None => SecretString::from(generate_and_write_key(vault_name).0.as_str()),
     };
+    let identity = try_or_die(murk_cli::crypto::parse_identity(secret_key.expose_secret()));
 
-    let v = try_or_die(murk_cli::create_vault(vault_name, &pubkey, &name));
+    let v = try_or_die(murk_cli::create_vault(vault_name, &identity, &name));
     // Create exclusively: a vault that appeared while init waited at the
     // prompt (a `git pull` in another terminal) must not be replaced.
     match vault::create(vault_path, &v) {
@@ -186,6 +199,7 @@ pub(crate) fn cmd_init(vault_name: &str) {
         ),
         Err(e) => die(&e, 1),
     }
+    try_or_die(murk_cli::pin_created_vault(vault_name, &v, &identity));
 
     eprintln!();
     eprintln!(
@@ -194,4 +208,21 @@ pub(crate) fn cmd_init(vault_name: &str) {
         name.bold()
     );
     eprintln!("  {}", "run: murk add KEY".dimmed());
+}
+
+/// The fingerprint teammates' `murk trust` shows for this key's first signed
+/// write, so the person who authorizes it can confirm it.
+fn print_signing_fingerprint(secret_key: &str) {
+    let Some(sk) = murk_cli::crypto::parse_identity(secret_key)
+        .ok()
+        .and_then(|id| id.signing_key())
+    else {
+        return;
+    };
+    if let Some(fp) = murk_cli::signing::fingerprint(&sk.verifying_key()) {
+        eprintln!(
+            "  {}",
+            format!("signing key {fp} — teammates confirm this on your first write").dimmed()
+        );
+    }
 }

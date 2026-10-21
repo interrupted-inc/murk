@@ -61,6 +61,8 @@ pub(crate) fn cmd_skeleton(output: Option<&str>, vault_path: &str) {
         created: vault.created,
         vault_name: vault.vault_name,
         repo: vault.repo,
+        // A skeleton is a new vault's starting shape, not this vault: no
+        // identity, no counter.
         vault_id: String::new(),
         generation: 0,
         agents: BTreeMap::new(),
@@ -96,6 +98,7 @@ pub(crate) fn cmd_agent_exec(
     command: &[String],
     only: &[String],
     allow_operator_key: bool,
+    allow_reserved: bool,
     vault_path: &str,
 ) {
     // A resolution error falls through: `load_vault` reports it with its hints.
@@ -138,6 +141,7 @@ pub(crate) fn cmd_agent_exec(
         &[],
         /* clean_env */ true,
         /* agent_mode */ true,
+        allow_reserved,
         vault_path,
     );
 }

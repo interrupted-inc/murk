@@ -142,7 +142,7 @@ add("NEW_TOKEN", "value");
 ### Writing secrets (Node)
 
 `vault.add(key, value, options?)` mirrors `murk add`: it encrypts the value,
-re-signs the vault, and writes it back to disk under an exclusive lock, so it
+signs the vault when your key can, and writes it back to disk under an exclusive lock, so it
 is safe against concurrent writers. An existing key is overwritten in place,
 and the loaded `Vault` refreshes so later reads on the same handle see the
 write. Key names must start with a letter or underscore and contain only
@@ -173,6 +173,23 @@ Both bindings resolve a key the way the CLI does: a personal
 [scoped](/guides/shared-vs-scoped/) override first, then a group value you can
 read, then the shared value. `export()` merges the same way. You only ever see
 keys your identity is a recipient of.
+
+## The vault has to be trusted on this machine
+
+Both bindings load a vault through the same check as the CLI, so they hold
+the same line: a vault murk doesn't trust on this machine never decrypts.
+`load()` fails (Python raises `RuntimeError`, Node throws) with the CLI's
+message when the vault is unsigned and your key could have signed it, is
+signed by a key this machine hasn't accepted, has been rolled back, or is
+another vault's file. A bare "not trusted on this machine yet" means nobody
+has run [`murk trust`](/concepts/recipients-signatures/#murk-trust) for this
+vault here.
+
+A binding can't ask you. Run `murk trust` once from a shell, or, in CI and
+other environments with no pin, set [`MURK_TRUSTED_SIGNERS`](/concepts/env-vars/)
+to the entries of the signers you allow (`murk trust --print-key` prints one
+per key). `vault.add()` in Node loads through the same
+check first, so it never re-signs content the machine doesn't trust.
 
 ## Agent policy is enforced on read and write
 

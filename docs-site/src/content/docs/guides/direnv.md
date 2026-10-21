@@ -28,6 +28,18 @@ From then on, every secret in the vault (shared and any scoped overrides
 you've added) is exported into your shell automatically when you're inside
 the project directory, and unset again when you leave it.
 
+Before the first load on a machine, murk may stop with "not trusted on this
+machine yet". Review the vault and run `murk trust` once, as described in
+[working in teams](/guides/teams/#trusting-the-vault-on-a-new-machine), then
+`direnv allow` as usual.
+
+murk won't export a variable that changes how programs, your shell or murk
+itself run (`PATH`, `LD_PRELOAD`, `GIT_*`, `HTTPS_PROXY`, `MURK_*` and
+similar). The `.envrc` would otherwise hand that choice to whoever last wrote
+the vault, so it stops and names the key. See [Variable names a vault may not
+set](/concepts/env-vars/#variable-names-a-vault-may-not-set) for the list and
+`--allow-reserved`.
+
 ## Where the key lives
 
 Your private key is stored in `~/.config/murk/keys/` with restricted

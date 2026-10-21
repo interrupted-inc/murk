@@ -75,6 +75,64 @@ pub fn verify(verifying_key_b64: &str, signature_b64: &str, message: &[u8]) -> b
     vk.verify(message, &sig).is_ok()
 }
 
+// -- the seam --
+//
+// Trust logic, save, merge and init sign only through `VaultSigningKey` and
+// verify only through `verify`, with verifying keys as the base64 strings
+// `VaultSigningKey::verifying_key` returns. A different scheme replaces this
+// block, not the callers.
+
+/// A key that can sign a vault: an age identity's derived Ed25519 key or an
+/// ssh-ed25519 key.
+pub struct VaultSigningKey(SigningKey);
+
+impl VaultSigningKey {
+    /// Sign `message`, returning the base64-encoded 64-byte signature.
+    pub fn sign(&self, message: &[u8]) -> String {
+        sign(&self.0, message)
+    }
+
+    /// The base64 verifying key loaders check this key's signatures with.
+    pub fn verifying_key(&self) -> String {
+        verifying_key_b64(&self.0)
+    }
+}
+
+/// The signing key of an age identity, from its raw X25519 secret bytes.
+pub fn age_signing_key(age_key_bytes: &[u8]) -> VaultSigningKey {
+    VaultSigningKey(signing_key_from_age_bytes(age_key_bytes))
+}
+
+/// The signing key of an unencrypted ssh-ed25519 private key (OpenSSH PEM).
+pub fn ssh_signing_key(pem: &str) -> Option<VaultSigningKey> {
+    ed25519_signing_key_from_openssh(pem).map(VaultSigningKey)
+}
+
+/// A short, comparable form of a verifying key for people to check out of
+/// band: `SHA256:` and the unpadded base64 SHA-256 of the key bytes, the
+/// format `ssh-keygen -l` uses. `None` for a string that is not a key.
+pub fn fingerprint(verifying_key_b64: &str) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let bytes = BASE64.decode(verifying_key_b64).ok()?;
+    if bytes.len() != 32 {
+        return None;
+    }
+    let digest = Sha256::digest(&bytes);
+    Some(format!(
+        "SHA256:{}",
+        base64::engine::general_purpose::STANDARD_NO_PAD.encode(digest)
+    ))
+}
+
+/// Whether `verifying_key_b64` is a well-formed verifying key.
+pub fn is_verifying_key(verifying_key_b64: &str) -> bool {
+    BASE64
+        .decode(verifying_key_b64)
+        .ok()
+        .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok())
+        .is_some_and(|b| VerifyingKey::from_bytes(&b).is_ok())
+}
+
 // -- ssh-ed25519 signing --
 //
 // Unlike age keys, an ssh-ed25519 key IS an Ed25519 signing key, so we sign with

@@ -176,6 +176,9 @@ pub enum Command {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)
+        #[arg(long)]
+        allow_reserved: bool,
         /// Vault filename
         #[arg(long, env = "MURK_VAULT", default_value = ".murk")]
         vault: String,
@@ -260,6 +263,9 @@ pub enum Command {
         /// Strip inherited environment (only murk secrets + PATH)
         #[arg(long)]
         clean_env: bool,
+        /// Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)
+        #[arg(long)]
+        allow_reserved: bool,
         /// Vault filename
         #[arg(long, env = "MURK_VAULT", default_value = ".murk")]
         vault: String,
@@ -353,6 +359,27 @@ pub enum Command {
         vault: String,
     },
 
+    /// Review who signed the vault and what changed, then trust it on this machine
+    ///
+    /// Needed once per vault on a new clone, whenever a teammate's first
+    /// signed write arrives, and whenever murk refuses a vault (an unfamiliar
+    /// signer, an unsigned or rolled-back vault). Shows the signer's key and
+    /// signing-key fingerprint, the recipient changes since this machine last
+    /// trusted the vault, and asks before recording it. An unsigned vault is
+    /// signed with your key.
+    Trust {
+        /// Accept without asking (for scripts; review first)
+        #[arg(long)]
+        yes: bool,
+        /// Print your own trusted-signer entry (for MURK_TRUSTED_SIGNERS) and
+        /// signing-key fingerprint (for teammates to confirm), then exit
+        #[arg(long, conflicts_with = "yes")]
+        print_key: bool,
+        /// Vault filename
+        #[arg(long, env = "MURK_VAULT", default_value = ".murk")]
+        vault: String,
+    },
+
     /// Check the surrounding repo for hygiene issues
     Doctor {
         /// Vault filename
@@ -399,6 +426,8 @@ pub enum Command {
         ours: String,
         /// Path to theirs version (%B)
         theirs: String,
+        /// The vault's path in the work tree (%P), whose trust pin both sides are checked against
+        path: Option<String>,
     },
 
     // Shell
@@ -453,6 +482,9 @@ pub enum AgentCommand {
         /// this, agent exec needs an explicit MURK_KEY or MURK_KEY_FILE
         #[arg(long)]
         allow_operator_key: bool,
+        /// Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)
+        #[arg(long)]
+        allow_reserved: bool,
         /// Vault filename
         #[arg(long, env = "MURK_VAULT", default_value = ".murk")]
         vault: String,

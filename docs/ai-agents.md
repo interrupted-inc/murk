@@ -92,6 +92,14 @@ Three things to keep in mind:
 - **The key is a bearer credential.** Whoever holds the key file has the access. Treat it like the secret it unlocks.
 - **Real isolation is the OS's job.** An agent running as you, with read access to your home directory, can read `~/.config/murk/keys` directly and bypass murk. `MURK_STRICT` stops murk from _handing over_ your key, but for true containment run the agent in a sandbox, container, or under a separate user that can't read your key directory.
 
+## Vault trust and reserved names
+
+**Agents never sign, and never decide what to trust.** An agent grant key is read-only: a vault signed by a grant key is refused, and `murk trust` refuses to run under a grant identity. `murk trust` is the human review step. Don't hand an agent `murk trust --yes`.
+
+**A fresh environment needs `MURK_TRUSTED_SIGNERS`.** murk checks every vault against the trust pin of the machine it runs on. An agent in a container, a CI job or any other place with no pin gets "not trusted on this machine yet", and a grant can't run `murk trust` to fix that. Set `MURK_TRUSTED_SIGNERS` to the entries of the people who write the vault (`murk trust --print-key` prints one, as `age1...:<verifying key>` or an `ssh-ed25519` public key line), from outside the repo. See [CI/CD](https://murk.interrupted.sh/guides/cicd/#telling-ci-who-may-sign-the-vault).
+
+**The vault can't pick the agent's environment.** Whoever last wrote the vault chose its key names, so `murk agent exec` refuses to inject a key named like `PATH`, `HOME`, `NODE_OPTIONS`, `BASH_ENV`, `RUSTFLAGS`, anything ending in `_PROXY`, or anything starting with `LD_`, `DYLD_`, `GIT_`, `BASH_FUNC_`, `PYTHON`, `PERL`, `RUBY`, `JAVA_`, `DOTNET_`, `CARGO_`, `SSL_`, `PIP_`, `GEM_`, `BUNDLE_`, `NPM_CONFIG_` or `MURK_`, unless you pass `--allow-reserved`. The MCP `murk_exec` tool always refuses them, with no override.
+
 ## Output masking
 
 `murk agent exec` and the MCP `murk_exec` tool replace every injected value in the command's stdout and stderr with a `***KEY***` placeholder, so an `env` dump or a debug line doesn't drop a secret into an agent's transcript. It is on by default, with no flag to turn it off.
@@ -184,6 +192,7 @@ An agent harness — Claude Code, Cursor, and the like — can auto-approve some
 | `murk scan`                                           | Decrypts every secret to search the working tree for leaked values.                                      |
 | `murk env`                                            | Writes an `.envrc` that runs `murk export` — sets up ambient decryption of your full scope in the shell. |
 | `murk authorize`, `murk revoke`                       | Change who can decrypt the vault.                                                                        |
+| `murk trust`                                          | Records a vault as trusted on this machine and can re-sign it. That decision is yours, never `--yes`.   |
 | `murk init`, `murk recover`, `murk restore`           | Create or rewrite vault or key material.                                                                 |
 | `murk exec -- CMD`                                    | Decrypts your full scope into a subprocess; use `murk agent exec` instead.                               |
 

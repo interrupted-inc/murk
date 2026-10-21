@@ -150,19 +150,12 @@ fn resync_grant_private(
     Ok(())
 }
 
-/// Save the vault: compare against original state and only re-encrypt changed values.
-/// Unchanged values keep their original ciphertext for minimal git diffs.
-///
-/// Refuses unless the saving identity (the key resolved for `vault_path`) is in
-/// `vault.recipients`: writing as a non-recipient would encrypt values to a
-/// recipient set the saver can't read back, and possibly one an attacker chose.
-/// Flows that onboard a key add it to the recipients before saving.
-pub fn save_vault(
+/// The key this save is made with: it must exist and be one of the vault's
+/// recipients, or the write would encrypt secrets the saver can't read back.
+fn saving_identity(
     vault_path: &str,
-    vault: &mut types::Vault,
-    original: &types::Murk,
-    current: &types::Murk,
-) -> Result<(), MurkError> {
+    vault: &types::Vault,
+) -> Result<crypto::MurkIdentity, MurkError> {
     let saver = signing_identity(vault_path).ok_or_else(|| {
         MurkError::Key(
             "refusing to save: no usable key to save with. Set MURK_KEY or MURK_KEY_FILE".into(),
@@ -177,12 +170,55 @@ pub fn save_vault(
             crate::validate::show(&saver_pubkey)
         )));
     }
+    Ok(saver)
+}
+
+/// Set the vault's identity and rollback counter for this save, both covered
+/// by the signature. The counter moves past the highest this machine
+/// accepted, so a deliberate revert (an older file restored, then saved)
+/// reads as newer to everyone.
+fn advance_identity(vault: &mut types::Vault, prior_pin: Option<&crate::pins::TrustPin>) {
+    if vault.vault_id.is_empty() {
+        // A vault written by murk 0.13 gets its id on the first 0.14 save. Use
+        // the one this machine already pinned, else derive it from the
+        // vault's own creation stamp and name, so teammates upgrading
+        // separately (or on different branches) arrive at the same id.
+        vault.vault_id = prior_pin
+            .map(|p| p.vault_id.clone())
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| derived_vault_id(vault));
+    }
+    vault.generation = vault
+        .generation
+        .max(prior_pin.map_or(0, |p| p.generation))
+        .saturating_add(1);
+}
+
+/// Save the vault: compare against original state and only re-encrypt changed values.
+/// Unchanged values keep their original ciphertext for minimal git diffs.
+///
+/// Refuses unless the saving identity (the key resolved for `vault_path`) is in
+/// `vault.recipients`: writing as a non-recipient would encrypt values to a
+/// recipient set the saver can't read back, and possibly one an attacker chose.
+/// Flows that onboard a key add it to the recipients before saving.
+pub fn save_vault(
+    vault_path: &str,
+    vault: &mut types::Vault,
+    original: &types::Murk,
+    current: &types::Murk,
+) -> Result<(), MurkError> {
+    let saver = saving_identity(vault_path, vault)?;
     // This build MACs and signs in the 3.x format, so the header says so.
     types::VAULT_VERSION.clone_into(&mut vault.version);
 
     // The full recipient set encrypts the meta blob, so every recipient —
     // including agent grants — can verify integrity and read group/grant state.
     let recipients = parse_recipients(&vault.recipients)?;
+
+    let prior_pin = crate::pins::read(vault_path).map_err(MurkError::Trust)?;
+    advance_identity(vault, prior_pin.as_ref());
+
+    announce_new_group_members(original, current);
 
     // Agent grant pubkeys are deliberately excluded from the shared "everyone"
     // layer: a granted agent must read only the scoped values granted to it, not
@@ -284,7 +320,7 @@ pub fn save_vault(
 
     vault.secrets = new_secrets;
 
-    let meta = build_meta(vault, current, &saver);
+    let meta = build_meta(vault, current, &saver, prior_pin.as_ref());
     crate::validate::meta(&meta)
         .map_err(|e| MurkError::Secret(format!("refusing to write invalid vault meta: {e}")))?;
     let meta_json =
@@ -292,35 +328,129 @@ pub fn save_vault(
     vault.meta = encrypt_value(&meta_json, &recipients)?;
 
     // Sign last: signed view v2 covers the finished file, meta ciphertext
-    // included. SSH/hardware identities can't sign, so the vault is then
-    // written unsigned (a warning surfaced on next load).
+    // included. SSH-RSA/hardware identities can't sign, so the vault is then
+    // written unsigned.
     vault.sig = None;
     vault.sig = sign_vault(vault, &saver);
 
-    Ok(vault::write(Path::new(vault_path), vault)?)
+    vault::write(Path::new(vault_path), vault)?;
+    record_own_save(
+        vault_path,
+        vault,
+        current,
+        &meta.signers,
+        prior_pin.as_ref(),
+    );
+    Ok(())
+}
+
+/// A fresh random vault identity: 16 bytes as 32 lowercase hex characters.
+pub(crate) fn new_vault_id() -> String {
+    let id: [u8; 16] = rand::random();
+    id.iter().fold(String::new(), |mut s, b| {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
+
+/// The vault id for a vault written by murk 0.13, derived from fields every
+/// copy shares (`created`, `vault_name`), so independent first saves agree.
+/// New vaults get a random id from [`new_vault_id`] at `murk init`.
+pub(crate) fn derived_vault_id(vault: &types::Vault) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"murk.vault_id.v1\0");
+    h.update(vault.created.as_bytes());
+    h.update(b"\0");
+    h.update(vault.vault_name.as_bytes());
+    h.finalize()
+        .iter()
+        .take(16)
+        .fold(String::new(), |mut s, b| {
+            use std::fmt::Write;
+            let _ = write!(s, "{b:02x}");
+            s
+        })
+}
+
+/// Say which recipients a group gains in this save, before their ciphertexts
+/// are written: a membership change should never be silent.
+fn announce_new_group_members(original: &types::Murk, current: &types::Murk) {
+    for (group, members) in &current.groups {
+        let before = original.groups.get(group);
+        for member in members {
+            if !before.is_some_and(|b| b.contains(member)) {
+                eprintln!(
+                    "◆ group {group} gained {}",
+                    crate::trust::label(&current.recipients, member)
+                );
+            }
+        }
+    }
+}
+
+/// Record this machine's own write in the trust pin: a signed save is accepted
+/// like a trusted load (its non-grant recipients become the trusted signers).
+/// An unsigned save — the key cannot sign — clears `was_signed`, since the
+/// next load here would otherwise refuse the operator's own write.
+/// Best-effort: the vault is already written, so a pin failure only warns.
+fn record_own_save(
+    vault_path: &str,
+    vault: &types::Vault,
+    current: &types::Murk,
+    registry: &BTreeMap<String, String>,
+    prior: Option<&crate::pins::TrustPin>,
+) {
+    if !crate::pins::signer_pin_available() {
+        return;
+    }
+    let pin = if let Some(sig) = &vault.sig {
+        let signature = types::SignatureState::Signed {
+            signer: sig.signer.clone(),
+            v: sig.v,
+        };
+        let loaded = crate::trust::Loaded {
+            vault,
+            signature: &signature,
+            signer_vk: crate::signature::registry_entry(registry, &sig.signer).map(String::as_str),
+            registry,
+            names: &current.recipients,
+            groups: &current.groups,
+            grants: &current.grants,
+            loader_can_sign: true,
+        };
+        crate::trust::accepted_pin(&loaded, prior, false, &crate::trust::head_of(vault_path))
+    } else {
+        let Some(prior) = prior else { return };
+        if prior.was_signed {
+            eprintln!(
+                "warn {vault_path} was written unsigned (this key cannot sign) — teammates' murk will refuse it until someone with an age or ssh-ed25519 key reviews it and runs `murk trust`"
+            );
+        }
+        let mut pin = prior.clone();
+        pin.was_signed = false;
+        pin.generation = pin.generation.max(vault.generation);
+        pin
+    };
+    if let Err(e) = crate::pins::write(vault_path, &pin) {
+        eprintln!("warn {e}");
+    }
 }
 
 /// Build the meta blob for a save: a fresh MAC key + MAC, and the signer
-/// registry carried forward from `current` so every recipient's verifying key
-/// persists across saves, plus the saver's own (see [`register_signer`]). The
-/// signature itself lives outside the meta, in `Vault::sig`.
+/// registry (see [`vouched_registry`]). The signature itself lives outside
+/// the meta, in `Vault::sig`.
 fn build_meta(
     vault: &types::Vault,
     current: &types::Murk,
     saver: &crypto::MurkIdentity,
+    pin: Option<&crate::pins::TrustPin>,
 ) -> types::Meta {
     // Always generate a fresh BLAKE3 key on save.
     let mac_key_hex = generate_mac_key();
     let mac_key = decode_mac_key(&mac_key_hex).unwrap();
     let mac = compute_mac(vault, &current.groups, &current.grants, Some(&mac_key));
-
-    let mut signers = current.signers.clone();
-    // Drop registry entries for pubkeys no longer in the recipient set — a
-    // revoked recipient's verifying key is inert (verify requires the signer to
-    // be a current recipient) but shouldn't linger. (ssh-ed25519 signers are
-    // never registered, so only age entries are affected.)
-    signers.retain(|pk, _| vault.recipients.iter().any(|r| r == pk));
-    register_signer(vault, &mut signers, saver);
 
     types::Meta {
         recipients: current.recipients.clone(),
@@ -329,9 +459,41 @@ fn build_meta(
         github_pins: current.github_pins.clone(),
         groups: current.groups.clone(),
         grants: current.grants.clone(),
-        signers,
+        signers: vouched_registry(vault, &current.signers, pin, saver),
         sig: None,
     }
+}
+
+/// The signer registry (age pubkey → verifying key) a writer signs for
+/// `vault`'s current recipients: the loaded entries, overridden by the keys
+/// this machine pinned, plus the writer's own (see [`register_signer`]).
+/// Signing vouches for every entry, so a pinned key wins over whatever the
+/// loaded file claimed.
+pub(crate) fn vouched_registry(
+    vault: &types::Vault,
+    loaded: &BTreeMap<String, String>,
+    pin: Option<&crate::pins::TrustPin>,
+    writer: &crypto::MurkIdentity,
+) -> BTreeMap<String, String> {
+    let recipients: BTreeSet<String> = vault
+        .recipients
+        .iter()
+        .map(|r| crypto::canonical_recipient(r))
+        .collect();
+    let mut signers: BTreeMap<String, String> = loaded
+        .iter()
+        .map(|(pk, vk)| (crypto::canonical_recipient(pk), vk.clone()))
+        .filter(|(pk, _)| recipients.contains(pk))
+        .collect();
+    if let Some(pin) = pin {
+        for (pk, vk) in &pin.signers {
+            if recipients.contains(pk) {
+                signers.insert(pk.clone(), vk.clone());
+            }
+        }
+    }
+    register_signer(vault, &mut signers, writer);
+    signers
 }
 
 #[cfg(test)]
@@ -368,12 +530,11 @@ mod tests {
 
         let murk = load_vault(path.to_str().unwrap()).unwrap().1;
         unsafe { std::env::remove_var("MURK_KEY") };
-        // ssh-ed25519 signers are self-authenticating, so anchored even on first load.
         assert_eq!(
             murk.signature,
             types::SignatureState::Signed {
                 signer: SSH_ED25519_PK.to_string(),
-                anchored: true,
+                v: crate::signature::SIGNED_VIEW_VERSION,
             }
         );
 
@@ -381,29 +542,31 @@ mod tests {
     }
 
     #[test]
-    fn save_prunes_stale_signer_registry_entries() {
-        // A signer entry for a pubkey no longer in the recipient set is dropped on
-        // the next write, and the vault still verifies (prune happens before sign).
+    fn save_registers_the_savers_key_and_prunes_revoked_entries() {
+        // The registry the saver signs holds their real verifying key (a stale
+        // entry for them is replaced) and nothing for keys no longer in the
+        // vault.
         let _lock = ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let home = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", home.path()) };
         let (secret, pubkey) = generate_keypair();
+        let (_, gone) = generate_keypair();
         let recipient = make_recipient(&pubkey);
 
-        let dir = std::env::temp_dir().join("murk_test_prune_signers");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test.murk");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.murk");
 
         let mut vault = signed_test_vault(&pubkey, &recipient);
         let current = types::Murk {
             values: HashMap::from([("API_KEY".into(), crate::testutil::secret("REAL"))]),
             recipients: HashMap::from([(pubkey.clone(), "alice".to_string())]),
-            // A stale registry entry for a pubkey that is NOT a recipient.
-            signers: BTreeMap::from([(
-                "age1stalerevokedrecipient".to_string(),
-                BASE64.encode([9u8; 32]),
-            )]),
+            signers: BTreeMap::from([
+                (pubkey.clone(), BASE64.encode([9u8; 32])),
+                (gone, BASE64.encode([8u8; 32])),
+            ]),
             ..Default::default()
         };
         unsafe { std::env::set_var("MURK_KEY", &secret) };
@@ -412,27 +575,25 @@ mod tests {
 
         let murk = load_vault(path.to_str().unwrap()).unwrap().1;
         unsafe { std::env::remove_var("MURK_KEY") };
-        assert!(
-            !murk.signers.contains_key("age1stalerevokedrecipient"),
-            "stale non-recipient signer entry must be pruned"
-        );
-        assert!(
-            murk.signers.contains_key(&pubkey),
-            "live signer must remain"
-        );
+        match prev_home {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        let own = make_identity(&secret)
+            .signing_key()
+            .unwrap()
+            .verifying_key();
+        assert_eq!(murk.signers, BTreeMap::from([(pubkey.clone(), own)]));
         assert!(matches!(
             murk.signature,
             types::SignatureState::Signed { signer, .. } if signer == pubkey
         ));
-
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn age_signature_first_use_then_anchored() {
-        // An age signature is trust-on-first-use until its key is pinned: the
-        // first load reports it unanchored, a later load (key matches the pin)
-        // reports it anchored.
+    fn saves_move_the_counter_past_the_highest_accepted() {
+        // Each save writes max(loaded, pinned) + 1, so a revert to an older
+        // file followed by a save is newer than anything teammates accepted.
         let _lock = ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -443,48 +604,43 @@ mod tests {
 
         let (secret, pubkey) = generate_keypair();
         let recipient = make_recipient(&pubkey);
-        let dir = std::env::temp_dir().join("murk_test_anchor_transition");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test.murk");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.murk");
         let ps = path.to_str().unwrap();
 
         let mut vault = signed_test_vault(&pubkey, &recipient);
-        let original = types::Murk {
+        let state = types::Murk {
             values: HashMap::from([("API_KEY".into(), crate::testutil::secret("REAL"))]),
             recipients: HashMap::from([(pubkey.clone(), "alice".to_string())]),
             ..Default::default()
         };
         unsafe { std::env::set_var("MURK_KEY", &secret) };
         unsafe { std::env::remove_var("MURK_KEY_FILE") };
-        save_vault(ps, &mut vault, &original, &original).unwrap();
+        save_vault(ps, &mut vault, &state, &state).unwrap();
+        let first = vault.clone();
+        save_vault(ps, &mut vault, &state, &state).unwrap();
+        assert_eq!((first.generation, vault.generation), (1, 2));
+        assert_eq!(first.vault_id, vault.vault_id);
 
-        let first = load_vault(ps).unwrap().1;
-        let second = load_vault(ps).unwrap().1;
+        // Revert to the first revision: refused as a rollback...
+        vault::write(&path, &first).unwrap();
+        assert!(
+            load_vault(ps)
+                .unwrap_err()
+                .to_string()
+                .contains("rolled back")
+        );
+        // ...and saving it deliberately produces generation 3.
+        let mut reverted = first.clone();
+        save_vault(ps, &mut reverted, &state, &state).unwrap();
+        assert_eq!(reverted.generation, 3);
+        assert!(load_vault(ps).is_ok());
+
         unsafe { std::env::remove_var("MURK_KEY") };
         match prev_home {
             Some(v) => unsafe { std::env::set_var("HOME", v) },
             None => unsafe { std::env::remove_var("HOME") },
         }
-
-        assert_eq!(
-            first.signature,
-            types::SignatureState::Signed {
-                signer: pubkey.clone(),
-                anchored: false,
-            },
-            "first load of an age key is trust-on-first-use"
-        );
-        assert_eq!(
-            second.signature,
-            types::SignatureState::Signed {
-                signer: pubkey,
-                anchored: true,
-            },
-            "second load is anchored by the pin"
-        );
-
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
