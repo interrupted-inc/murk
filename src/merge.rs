@@ -2754,6 +2754,70 @@ mod tests {
     }
 
     #[test]
+    fn merge_refuses_two_verifying_keys_for_one_signer() {
+        // Both sides are genuine and signed by trusted alice, yet they register
+        // different verifying keys for bob: one of them lies, so the merge must
+        // stop rather than pick a key.
+        use crate::testutil::{ENV_LOCK, generate_keypair, make_identity};
+
+        let _env = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (alice_secret, alice) = generate_keypair();
+        let alice_identity = make_identity(&alice_secret);
+        let (_, bob) = generate_keypair();
+        let vk = || {
+            make_identity(&generate_keypair().0)
+                .signing_key()
+                .unwrap()
+                .verifying_key()
+        };
+        let registry = |vk: String| crate::types::Meta {
+            signers: BTreeMap::from([(bob.clone(), vk)]),
+            ..Default::default()
+        };
+
+        let mut base = base_vault();
+        base.recipients = vec![alice.clone(), bob.clone()];
+        base.generation = 1;
+        let mut ours = base.clone();
+        let mut theirs = base.clone();
+        seal(&mut base, &crate::types::Meta::default(), &alice_identity);
+        ours.generation = 2;
+        seal(&mut ours, &registry(vk()), &alice_identity);
+        theirs.generation = 2;
+        seal(&mut theirs, &registry(vk()), &alice_identity);
+
+        let mut result = merge_vaults(&base, &ours, &theirs);
+        let regenerated = trusting(&alice_secret, &alice, || {
+            regenerate_meta(
+                &mut result.vault,
+                &base,
+                &ours,
+                &theirs,
+                ".murk",
+                &mut result.conflicts,
+            )
+        })
+        .unwrap();
+
+        assert!(
+            result
+                .conflicts
+                .iter()
+                .any(|c| c.field.starts_with("signers.")
+                    && c.reason.contains("different verifying keys")),
+            "{:?}",
+            result.conflicts
+        );
+        assert!(
+            regenerated.is_none(),
+            "a conflicted merge must not get a fresh MAC"
+        );
+        assert_eq!(result.vault.meta, ours.meta);
+    }
+
+    #[test]
     fn regenerate_meta_refuses_invalid_meta_instead_of_dropping_it() {
         use crate::testutil::{ENV_LOCK, generate_keypair, make_recipient};
 
