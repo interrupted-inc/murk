@@ -2683,12 +2683,14 @@ fn both_branches_revoke_the_same_member_on_one_machine() {
 }
 
 /// Rule: a removal on a feature branch never deadlocks main. Alice revokes
-/// Bob on `feature`; before that is merged, Bob signs a new vault on main.
-/// Alice's machine refuses it (Bob signed it after his removal), and the
-/// refusal says how to recover: merge the removal. The merge stops on the
-/// vault, naming Bob's side; Alice keeps the side that removed him (`git
-/// checkout --theirs`), commits, and main carries the removal and loads,
-/// without Bob ever being trusted again.
+/// Bob on `feature`. Before that is merged, Carol (a trusted teammate) and
+/// then Bob change the vault on main. Alice's machine refuses Bob's vault,
+/// and the refusal says how to recover: merge the removal. The merge stops
+/// on the vault, naming Bob's side. Alice keeps the side that removed him
+/// (`git checkout --theirs`), which drops Carol's change too, as the hint
+/// says; she runs `murk trust` (the kept vault is numbered below main's
+/// newest), finds Carol's change with `murk diff`, makes it again, and
+/// commits. Main carries the removal and loads, Bob is never trusted again.
 #[test]
 fn merging_the_removal_into_a_branch_the_removed_member_wrote_to() {
     let base = TempDir::new().unwrap();
@@ -2713,7 +2715,24 @@ fn merging_the_removal_into_a_branch_the_removed_member_wrote_to() {
         .assert()
         .success();
     alice.add(&repo, "A0", "a0");
-    commit(&repo, "bob is a member");
+    let carol = Machine::new(base.path(), "carol");
+    let carol_key = ssh_key_file(base.path(), "carol_ed25519");
+    alice
+        .murk(&repo)
+        .args(["circle", "authorize", SSH_ED25519_PK, "--name", "carol"])
+        .assert()
+        .success();
+    commit(&repo, "bob and carol are members");
+    carol
+        .with_key(&repo, &carol_key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    // Bob's machine sees Carol added, so it trusts her writes.
+    bob.with_key(&repo, &bob_key)
+        .args(["get", "A0"])
+        .assert()
+        .success();
 
     git_ok(&repo, &["checkout", "-q", "-b", "feature"]);
     alice
@@ -2724,6 +2743,21 @@ fn merging_the_removal_into_a_branch_the_removed_member_wrote_to() {
     commit(&repo, "revoke bob");
 
     git_ok(&repo, &["checkout", "-q", "main"]);
+    carol
+        .with_key(&repo, &carol_key)
+        .args(["add", "CAROL_MAIN"])
+        .write_stdin("carol-main\n")
+        .assert()
+        .success();
+    commit(&repo, "carol writes on main");
+    let carol_commit = String::from_utf8(git(&repo, &["rev-parse", "HEAD"]).stdout).unwrap();
+    let carol_commit = carol_commit.trim().to_string();
+    alice
+        .murk(&repo)
+        .args(["get", "CAROL_MAIN"])
+        .assert()
+        .success()
+        .stdout("carol-main\n");
     bob.with_key(&repo, &bob_key)
         .args(["add", "BOB_AFTER"])
         .write_stdin("after\n")
@@ -2741,23 +2775,56 @@ fn merging_the_removal_into_a_branch_the_removed_member_wrote_to() {
         .stderr(predicate::str::contains("signed by bob"))
         .stderr(predicate::str::contains(
             "merge it with the murk merge driver",
-        ));
+        ))
+        .stderr(predicate::str::contains("drops every vault change"));
 
     // The merge stops on the vault, naming Bob's side.
     let (merged, stderr) = git_merge(&alice, &repo, "feature");
     assert!(!merged, "the merge must stop: {stderr}");
     assert!(
-        stderr.contains("ours failed its authenticity check") && stderr.contains("signed by bob"),
+        stderr.contains("ours failed its authenticity check")
+            && stderr.contains("signed by bob")
+            && stderr.contains("drops every vault change"),
         "{stderr}"
     );
 
-    // Alice keeps the side that removed Bob and commits.
+    // Alice keeps the side that removed Bob, accepts its lower counter, finds
+    // what Carol changed, makes it again, and commits.
     git_ok(&repo, &["checkout", "--theirs", "--", ".murk"]);
+    git_ok(&repo, &["add", ".murk"]);
+    // Alice accepted Carol's newer vault on main, so the kept vault reads as
+    // a fork or rollback of main until she accepts it; Bob is not involved.
+    alice
+        .murk(&repo)
+        .args(["get", "DB_URL"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("murk trust"))
+        .stderr(predicate::str::contains("bob").not());
+    alice
+        .murk(&repo)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    alice
+        .murk(&repo)
+        .args(["diff", &carol_commit, "--show-values"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("CAROL_MAIN"))
+        .stdout(predicate::str::contains("carol-main"));
+    alice.add(&repo, "CAROL_MAIN", "carol-main");
     git_ok(&repo, &["add", ".murk"]);
     git_ok(
         &repo,
         &["-c", "commit.gpgsign=false", "commit", "-q", "--no-edit"],
     );
+    alice
+        .murk(&repo)
+        .args(["get", "CAROL_MAIN"])
+        .assert()
+        .success()
+        .stdout("carol-main\n");
 
     alice
         .murk(&repo)
