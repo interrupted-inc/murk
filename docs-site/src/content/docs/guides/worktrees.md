@@ -45,6 +45,10 @@ for a worktree created by an agent harness, a `git worktree add` in a
 post-checkout hook, or a bare-repo layout where *every* checkout is a linked
 worktree and there is no "main" one.
 
+You do not need `murk init` in a worktree. If you run it, it finds the key
+stored for the vault in a sibling checkout and reuses it. It never replaces
+a stored key.
+
 ## Which checkouts count
 
 murk stores your key under a hash of the vault's absolute path, which is what
@@ -63,13 +67,16 @@ and murk fails closed.
 The practical version: real worktrees of your repo work, copies of the vault
 elsewhere on disk don't.
 
-## Agents get no free ride
+## Agents need their own key
 
-Discovery of a stored key is disabled entirely in strict mode
-(`MURK_STRICT=1`) and in agent context (`MURK_AGENT=1`), worktree or not. An
-agent working in a fresh worktree still has to present its own key — normally
-a scoped grant — or fail closed. That is deliberate: the convenience here is
-for you, not for a process running as you.
+Discovery of a stored key is disabled entirely in strict mode and in agent
+context, worktree or not. Either is on when `MURK_STRICT` or `MURK_AGENT` is
+set to a truthy value (`1`, `true` or `yes`). An agent working in a fresh
+worktree has to present its own key, normally a scoped grant, or fail closed.
+
+This is a default, not a sandbox. A process running as you can still read
+`~/.config/murk/keys/` directly. To contain an agent, run it where it cannot
+read that directory.
 
 See [AI agents & MCP](/guides/ai-agents-mcp/) for issuing an agent a scoped
 grant to use in its worktree.

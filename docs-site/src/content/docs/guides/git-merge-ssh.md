@@ -26,42 +26,98 @@ the driver definition to `.git/config` and pointing `.murk` at it via
 something that travels with the repo automatically — everyone who works on
 the vault needs to run it in their own checkout).
 
-Once configured, git invokes `murk merge-driver ANCESTOR OURS THEIRS`
-automatically during a merge or rebase that touches `.murk`, instead of
-falling back to a text-based three-way merge on the raw file. It merges
-non-conflicting secret changes (different keys added or changed on each
-side) automatically. It does not decide to vouch for the merged content:
-it leaves the result **unsigned** (`sig: null`), carrying the existing signer
-registry forward. Re-sign it by running any write command (e.g. `murk add`,
-`murk rotate`) with a signing-capable key after reviewing what actually
-changed:
+Once configured, git runs `murk merge-driver ANCESTOR OURS THEIRS` during a
+merge or rebase that touches `.murk`, instead of falling back to a text-based
+three-way merge on the raw file. It merges non-conflicting secret changes
+(different keys added or changed on each side) automatically.
+
+The driver needs your key at merge time. It decrypts the metadata of both
+sides to rebuild it, so run merges with a key available (`MURK_KEY`,
+`MURK_KEY_FILE`, or your stored key). The driver takes no `--vault` flag and
+looks up the stored key for a vault named `.murk`. If your vault has another
+name, set `MURK_KEY_FILE`.
+
+Without a key, the driver keeps our side's metadata, MAC and signature. That
+is safe only when the merged secrets, recipients, schema and policy equal
+ours, and then the merge completes with a warning. Otherwise the driver exits
+with an error and git reports a conflict on `.murk`. Run `git merge --abort`,
+make your key available, and merge again.
+
+Merge `.murk` locally, with your key. Server-side merges (the GitHub merge
+button, merge queues, bot merges) run a plain text merge and never invoke
+the murk merge driver. Do not let them merge branches that change `.murk`,
+and do not resolve `.murk` conflicts in the GitHub web editor. A plain text
+merge of `.murk` either conflicts or produces a vault that murk 0.14.0 and
+later refuse to load.
+
+When the driver rebuilds the metadata with your key, it does not sign the
+result. It runs without a human and must not vouch for content nobody has
+reviewed. The merged vault has no signature, and it carries the signer
+registry forward. If the vault was signed before, each command then warns
+`vault was signed before and is now unsigned`, and `murk verify` fails until
+someone re-signs it. To re-sign, review what changed, then run any write
+command (for example `murk add` or `murk describe`) with an age or
+`ssh-ed25519` key:
 
 ```bash
-murk diff HEAD@{1}   # or whatever ref makes sense for your merge
+git diff HEAD@{1} -- .murk   # recipients, schema, policy and ciphertext entries
+murk diff HEAD@{1}           # secret values
 ```
 
-`murk diff [REF]` shows which secrets changed relative to a git ref
-(defaults to `HEAD`) without printing values, unless you pass
-`--show-values`. Use it to sanity-check a merge before you trust it.
+Use whatever ref makes sense for your merge. `murk diff [REF]` shows which
+secrets changed relative to a git ref (defaults to `HEAD`). It prints no
+values unless you pass `--show-values` or `--json`. It decrypts the old
+revision without verifying its MAC or signature, so it does not prove the old
+side is authentic.
+
+## Conflicts
+
+The driver reports a conflict, and git stops the merge, when:
+
+- both sides added or changed the same key,
+- one side removed a key that the other side kept or changed,
+- only one side added or removed a recipient (authorize and revoke teammates
+  on the main branch, not on a side branch that also changes secrets),
+- one side changed a secret while the other side changed recipients,
+- both sides changed the agent policy differently.
+
+The driver lists each conflicting field. `.murk` is left unmerged and keeps
+our side's value for each conflicting field. A recipient that only one side
+added or removed stays in the list. Set the value you want with
+`murk add KEY`, or fix recipients with `murk circle authorize` or
+`murk circle revoke` (check the result with `murk circle`). Then
+`git add .murk` and commit.
 
 ## SSH keys as recipients
 
-You don't need a separate age keypair if you already have an SSH key. murk
-accepts SSH public keys directly as recipients, right alongside `age1...`
-keys in the same recipient list:
+You can use an SSH key instead of a separate age keypair. murk accepts SSH
+public keys directly as recipients, right alongside `age1...` keys in the same
+recipient list:
 
 ```bash
 murk circle authorize ssh:~/.ssh/id_ed25519.pub --name you@example.com
 ```
+
+To decrypt with the matching private key, point `MURK_KEY_FILE` at it:
+
+```bash
+export MURK_KEY_FILE=~/.ssh/id_ed25519
+```
+
+murk does not search `~/.ssh` on its own. It needs an unencrypted, supported
+SSH private key that only you can read (mode `600`). It cannot read a
+passphrase-protected key (`encrypted SSH keys are not yet supported`). Use an
+unencrypted key, for example one kept only for murk, or use an age key.
 
 `circle authorize` also accepts bare `ssh:` (defaulting to
 `~/.ssh/id_ed25519.pub`), or `github:username` to pull SSH keys straight
 from a GitHub account. See [working in teams](/guides/teams/) for the
 GitHub-based flow and its pinning behavior.
 
-murk accepts `ssh-ed25519` keys by default. murk rejects `ssh-rsa` keys
-unless you pass `--allow-ssh-rsa`: ed25519 is recommended, and this default
-nudges teams away from the weaker key type.
+murk accepts `ssh-ed25519` keys by default. It refuses to authorize an
+`ssh-rsa` key unless you pass `--allow-ssh-rsa`, because ed25519 is strongly
+recommended (see RUSTSEC-2023-0071). With `github:username`, murk skips RSA
+keys with a warning instead, and fails only if every key is RSA.
 
 ### Signing behavior differs by key type
 
@@ -70,10 +126,11 @@ nudges teams away from the weaker key type.
   itself, so the signature is self-authenticating: no separate registry
   entry needed.
 - **`ssh-rsa`** keys cannot sign (age exposes no signing scalar for RSA).
-  Writes made with an `ssh-rsa` identity leave the vault unsigned: a
-  warning on next load, not a hard failure. This is the same "sign when
-  capable" behavior hardware-backed identities have. See [hardware
-  keys](/guides/hardware-keys/) and the [threat
+  Writes made with an `ssh-rsa` identity leave the vault unsigned. Ordinary
+  commands warn about this only when the vault was signed before, or when the
+  person loading it has a key that can sign. `murk verify` reports an
+  unsigned vault with secrets as a failure. Hardware-backed identities behave
+  the same way. See [hardware keys](/guides/hardware-keys/) and the [threat
   model](/security/threat-model/) for the full signing story.
 
 ## Related
