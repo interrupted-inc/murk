@@ -408,17 +408,27 @@ pub fn removal_applies(pin: &TrustPin, key: &str, checkout: &Checkout) -> bool {
     }
 }
 
-/// Whether a vault signed by removed key `key` (canonical) is that key's own
-/// history from before its removal at `checkout`: the commit checked out is
-/// the one this machine made or accepted the removal at, or an ancestor of
-/// it, with the vault file as committed there, and the removal has not
-/// reached this branch. A vault the key signs after its removal is never in
-/// that history. Everywhere else a vault signed by a removed key is refused.
-pub fn signed_before_removal(pin: &TrustPin, key: &str, checkout: &Checkout) -> bool {
+/// Whether a vault signed by removed key `key` (canonical), at `generation`,
+/// is that key's own history from before its removal at `checkout`: the
+/// commit checked out is the one this machine made or accepted the removal
+/// at, or an ancestor of it, with the vault file as committed there; the
+/// removal has not reached this branch; and the vault's generation is at or
+/// below the one the key was removed at. Everywhere else, and above that
+/// generation on every branch, a vault signed by a removed key is refused.
+/// A vault passing this is at or below the removal, so a save over it that
+/// keeps the key is refused where the listing rule applies.
+pub fn signed_before_removal(
+    pin: &TrustPin,
+    key: &str,
+    generation: u64,
+    checkout: &Checkout,
+) -> bool {
     let HeadState::Branch(b) = &checkout.head else {
         return false;
     };
-    checkout.before.contains(key) && pin.removed_on.get(key).is_none_or(|on| !on.contains(b))
+    pin.removed.get(key).is_some_and(|&at| generation <= at)
+        && checkout.before.contains(key)
+        && pin.removed_on.get(key).is_none_or(|on| !on.contains(b))
 }
 
 /// The removed keys (canonical, with the generation each was removed at)
@@ -437,9 +447,8 @@ pub fn removed_keys_in(
     };
     let canonical = |k: &String| canonical_recipient(k).into_owned();
     let signer = match loaded.signature {
-        types::SignatureState::Signed { signer, .. } => {
-            Some(canonical(signer)).filter(|k| !signed_before_removal(pin, k, checkout))
-        }
+        types::SignatureState::Signed { signer, .. } => Some(canonical(signer))
+            .filter(|k| !signed_before_removal(pin, k, loaded.vault.generation, checkout)),
         types::SignatureState::Unsigned => None,
     };
     let listed = loaded
@@ -471,7 +480,7 @@ fn removal_refusal(
     if let types::SignatureState::Signed { signer, .. } = loaded.signature
         && let key = canonical_recipient(signer)
         && let Some(&removed_at) = pin.removed.get(key.as_ref())
-        && !signed_before_removal(pin, &key, checkout)
+        && !signed_before_removal(pin, &key, found, checkout)
     {
         return Some(Refusal::RemovedKey {
             key: signer.clone(),
@@ -537,7 +546,9 @@ fn load_verdict(
     let before = pin.and_then(|p| match loaded.signature {
         types::SignatureState::Signed { signer, .. } => {
             let key = canonical_recipient(signer).into_owned();
-            (p.removed.contains_key(&key) && signed_before_removal(p, &key, checkout)).then(|| {
+            (p.removed.contains_key(&key)
+                && signed_before_removal(p, &key, loaded.vault.generation, checkout))
+            .then(|| {
                 let mut view = p.clone();
                 view.trusted.insert(key);
                 view

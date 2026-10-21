@@ -2959,3 +2959,134 @@ fn an_abandoned_removal_is_undone_with_re_add() {
         .success()
         .stdout("bob-db\n");
 }
+
+/// The late-learner setup: Carol, a member, is removed by Alice on
+/// `offboard`; before that is merged, Carol makes `writes` saves on main from
+/// her pre-removal copy (commit M). Alice merges main into `offboard`
+/// keeping her side, and main moves to that merge (commit T, whose history
+/// contains M). Bob, who never saw the removal, learns of it by loading T.
+/// Returns (Bob, Bob's key, repo, M); `base` must outlive them.
+fn late_learner(base: &Path, writes: usize) -> (Machine, PathBuf, PathBuf, String) {
+    let (alice, repo) = alice_repo(base);
+    let bob = Machine::new(base, "bob");
+    bob.init(&base.join("bob-scratch"), "bob");
+    let bob_key = bob.key_file();
+    let carol = Machine::new(base, "carol");
+    carol.init(&base.join("carol-scratch"), "carol");
+    let carol_key = carol.key_file();
+    authorize(&alice, &repo, &bob, "bob");
+    authorize(&alice, &repo, &carol, "carol");
+    commit(&repo, "base");
+    carol
+        .with_key(&repo, &carol_key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    carol
+        .with_key(&repo, &carol_key)
+        .args(["add", "CAROL_NOTE"])
+        .write_stdin("note\n")
+        .assert()
+        .success();
+    commit(&repo, "carol writes");
+    alice
+        .murk(&repo)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    bob.with_key(&repo, &bob_key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+
+    git_ok(&repo, &["checkout", "-q", "-b", "offboard"]);
+    alice
+        .murk(&repo)
+        .args(["circle", "revoke", "carol"])
+        .assert()
+        .success();
+    commit(&repo, "offboard carol");
+
+    git_ok(&repo, &["checkout", "-q", "main"]);
+    for i in 0..writes {
+        carol
+            .with_key(&repo, &carol_key)
+            .args(["add", &format!("EVIL{i}")])
+            .write_stdin("attacker\n")
+            .assert()
+            .success();
+    }
+    commit(&repo, "carol: update secrets");
+    let m = head_commit(&repo);
+
+    git_ok(&repo, &["checkout", "-q", "offboard"]);
+    git_ok(
+        &repo,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "merge",
+            "-q",
+            "-s",
+            "ours",
+            "main",
+            "-m",
+            "merge main, keep ours",
+        ],
+    );
+    git_ok(&repo, &["checkout", "-q", "main"]);
+    git_ok(&repo, &["merge", "-q", "--ff-only", "offboard"]);
+    bob.with_key(&repo, &bob_key)
+        .args(["get", "DB_URL"])
+        .assert()
+        .success()
+        .stdout("prod-db\n");
+    (bob, bob_key, repo, m)
+}
+
+/// Rule: a machine that learns of a removal late never takes the removed
+/// member's later writes for history. Carol signed M after her removal, at a
+/// generation above it; Bob learned of the removal at a commit whose history
+/// contains M. On a branch Bob puts at M, Carol's vault is refused.
+#[test]
+fn a_late_learner_refuses_the_removed_members_later_vault_in_its_history() {
+    let base = TempDir::new().unwrap();
+    let (bob, bob_key, repo, m) = late_learner(base.path(), 3);
+    git_ok(&repo, &["checkout", "-q", "-b", "hist", &m]);
+    bob.with_key(&repo, &bob_key)
+        .args(["get", "EVIL0"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("signed by carol"));
+}
+
+/// Rule: what passes as history from before a removal is read-only. Carol's
+/// one write after her removal is numbered at the removal's generation, so
+/// it cannot be told from her history: on a branch at M it loads, but a save
+/// there, which would keep her as a recipient and re-sign her values, is
+/// refused, and nothing is written.
+#[test]
+fn a_late_learner_reads_a_vault_at_the_removal_generation_but_never_saves_over_it() {
+    let base = TempDir::new().unwrap();
+    let (bob, bob_key, repo, m) = late_learner(base.path(), 1);
+    git_ok(&repo, &["checkout", "-q", "-b", "hist", &m]);
+    bob.with_key(&repo, &bob_key)
+        .args(["get", "EVIL0"])
+        .assert()
+        .success()
+        .stdout("attacker\n");
+    let before = fs::read(repo.join(".murk")).unwrap();
+    bob.with_key(&repo, &bob_key)
+        .args(["add", "NEWKEY"])
+        .write_stdin("v\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("refusing to save"))
+        .stderr(predicate::str::contains("still lists carol"));
+    assert_eq!(
+        fs::read(repo.join(".murk")).unwrap(),
+        before,
+        "nothing was written"
+    );
+}
