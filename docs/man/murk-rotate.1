@@ -28,7 +28,7 @@ Read new values from a dotenv file of KEY=value lines (`\-` for stdin), matched 
 List keys needing rotation instead of rotating (exits 1 if any)
 .TP
 \fB\-\-json\fR
-Output the listing as JSON (with \-\-list, always exits 0)
+Output the listing as JSON, an object with `verified` and `issues` (with \-\-list, exits 0 even when keys need rotating)
 .TP
 \fB\-\-vault\fR \fI<VAULT>\fR [default: .murk]
 Vault filename

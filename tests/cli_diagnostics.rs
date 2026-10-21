@@ -74,6 +74,111 @@ fn commit_vault(dir: &Path) {
     );
 }
 
+/// Commit `test.murk` as it stands in `dir`, signed with the ssh key file
+/// `signing_key`. Sets no `gpg.ssh.allowedSignersFile`: whatever the user's
+/// git config does or does not know must not decide what `verify` reports.
+#[cfg(unix)]
+fn commit_vault_signed(dir: &Path, signing_key: &Path) {
+    git(dir, &["add", "test.murk"]);
+    git(
+        dir,
+        &[
+            "-c",
+            "gpg.format=ssh",
+            "-c",
+            &format!("user.signingkey={}", signing_key.display()),
+            "commit",
+            "-q",
+            "-S",
+            "-m",
+            "vault",
+        ],
+    );
+}
+
+/// Generate an unencrypted ssh-ed25519 key pair `dir/name` with `ssh-keygen`.
+/// Returns the private key path and the public key line.
+#[cfg(unix)]
+fn ssh_keygen(dir: &Path, name: &str) -> (std::path::PathBuf, String) {
+    let private = dir.join(name);
+    let status = std::process::Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-C", name, "-f"])
+        .arg(&private)
+        .status()
+        .expect("ssh-keygen");
+    assert!(status.success());
+    let public = fs::read_to_string(dir.join(format!("{name}.pub"))).unwrap();
+    (private, public.trim().to_string())
+}
+
+/// The `ssh-keygen -l` fingerprint of a public key line.
+#[cfg(unix)]
+fn ssh_fingerprint(dir: &Path, pubkey: &str) -> String {
+    let file = dir.join("fingerprint.pub");
+    fs::write(&file, format!("{pubkey}\n")).unwrap();
+    let output = std::process::Command::new("ssh-keygen")
+        .arg("-lf")
+        .arg(&file)
+        .output()
+        .expect("ssh-keygen");
+    assert!(output.status.success());
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .expect("fingerprint field")
+        .to_string()
+}
+
+/// `murk` rooted at `dir`, unlocked with the ssh key file `key_file`.
+#[cfg(unix)]
+fn murk_with_key_file(dir: &Path, key_file: &Path) -> assert_cmd::Command {
+    let mut cmd = murk_bin(dir);
+    cmd.current_dir(dir).env("MURK_KEY_FILE", key_file);
+    cmd
+}
+
+/// A git repository holding a vault that alice (age key) created and bob (the
+/// fixed ssh-ed25519 test key) wrote last, so bob is its signer and a trusted
+/// signer of it on this machine. Nothing is committed yet. Returns bob's key
+/// file.
+#[cfg(unix)]
+fn ssh_signed_vault(dir: &TempDir) -> std::path::PathBuf {
+    let (alice_key, _) = init_vault(dir);
+    murk(dir, &alice_key)
+        .args([
+            "circle",
+            "authorize",
+            SSH_ED25519_PK,
+            "--name",
+            "bob",
+            "--vault",
+            "test.murk",
+        ])
+        .assert()
+        .success();
+    let bob_key_file = dir.path().join("bob_ed25519");
+    // ssh-keygen (git's signer) refuses a private key file with no trailing newline.
+    write_key_file(&bob_key_file, &format!("{SSH_ED25519_SK}\n"));
+    // `git commit -S` with an ssh key reads the public half next to it.
+    fs::write(
+        dir.path().join("bob_ed25519.pub"),
+        format!("{SSH_ED25519_PK}\n"),
+    )
+    .unwrap();
+    murk_with_key_file(dir.path(), &bob_key_file)
+        .args(["add", "TOKEN", "--vault", "test.murk"])
+        .write_stdin("v\n")
+        .assert()
+        .success();
+    git(dir.path(), &["init", "-q"]);
+    bob_key_file
+}
+
+/// `ssh-keygen -lf` of the fixed test key's public half.
+#[cfg(unix)]
+const SSH_ED25519_FINGERPRINT: &str = "SHA256:PYX4o9UfGwCwG76hFcLAEkmMS0PtIBtV9MNmVgW16Oc";
+
 // ── verify ──
 
 #[test]
@@ -146,58 +251,40 @@ fn verify_names_ssh_signer_authorized_with_commented_pubkey() {
         .stderr(predicate::str::contains("signed by trusted signer bob"));
 }
 
-/// The last commit touching the vault is the authorship anchor: unsigned and
-/// bad (revoked-key) signatures fail verify, a good one is reported ok.
+/// The last commit touching the vault is the authorship anchor: an unsigned
+/// commit and one signed with a revoked key fail verify.
 #[cfg(unix)]
 #[test]
 fn verify_checks_last_vault_commit_signature() {
     let dir = TempDir::new().unwrap();
-    let (key, _) = init_vault(&dir);
-    add_secret(dir.path(), &key, "A", "one");
-    git(dir.path(), &["init", "-q"]);
+    let bob_key_file = ssh_signed_vault(&dir);
     commit_vault(dir.path());
 
-    murk(&dir, &key)
-        .args(["verify", "--vault", "test.murk"])
+    let verify = || {
+        let mut cmd = murk_with_key_file(dir.path(), &bob_key_file);
+        cmd.args(["verify", "--vault", "test.murk"]);
+        cmd
+    };
+    verify()
         .assert()
         .code(1)
         .stderr(predicate::str::contains("last .murk commit is unsigned"));
 
-    // Sign the next vault commit with a throwaway ssh key git trusts. The
-    // verification settings go in the user's global config (HOME is `dir`):
-    // murk ignores signature checks the repository configures for itself.
-    let keys = TempDir::new().unwrap();
-    let signing_key = keys.path().join("id");
-    let status = std::process::Command::new("ssh-keygen")
-        .args(["-q", "-t", "ed25519", "-N", "", "-C", "t", "-f"])
-        .arg(&signing_key)
-        .status()
-        .expect("ssh-keygen");
-    assert!(status.success());
-    let pubkey = fs::read_to_string(keys.path().join("id.pub")).unwrap();
-    let allowed = keys.path().join("allowed");
-    fs::write(&allowed, format!("test@test.com {pubkey}")).unwrap();
-    let signing_key = signing_key.to_str().unwrap();
-    let allowed = allowed.to_str().unwrap();
-    git(dir.path(), &["config", "--global", "gpg.format", "ssh"]);
-    git(dir.path(), &["config", "user.signingkey", signing_key]);
-    git(
-        dir.path(),
-        &["config", "--global", "gpg.ssh.allowedSignersFile", allowed],
-    );
-    add_secret(dir.path(), &key, "B", "two");
-    git(dir.path(), &["add", "test.murk"]);
-    git(dir.path(), &["commit", "-q", "-S", "-m", "signed"]);
-
-    murk(&dir, &key)
-        .args(["verify", "--vault", "test.murk"])
+    // The next vault commit is signed by a trusted signer: fine.
+    murk_with_key_file(dir.path(), &bob_key_file)
+        .args(["add", "B", "--vault", "test.murk"])
+        .write_stdin("two\n")
         .assert()
-        .success()
-        .stderr(predicate::str::contains("last .murk commit is signed"));
+        .success();
+    commit_vault_signed(dir.path(), &bob_key_file);
+    verify().assert().success().stderr(predicate::str::contains(
+        "commit  last .murk commit signed by bob",
+    ));
 
     // Revoking the signing key turns the same commit into a bad signature.
+    let keys = TempDir::new().unwrap();
     let revoked = keys.path().join("revoked");
-    fs::write(&revoked, &pubkey).unwrap();
+    fs::write(&revoked, format!("{SSH_ED25519_PK}\n")).unwrap();
     git(
         dir.path(),
         &[
@@ -207,12 +294,103 @@ fn verify_checks_last_vault_commit_signature() {
             revoked.to_str().unwrap(),
         ],
     );
-    murk(&dir, &key)
+    verify().assert().code(1).stderr(predicate::str::contains(
+        "last .murk commit has a bad signature",
+    ));
+}
+
+/// A commit signed by a trusted signer of the vault is reported ok, naming
+/// the signer. Nothing in git's own config vouches for the key: the check
+/// must not depend on it.
+#[cfg(unix)]
+#[test]
+fn verify_names_the_trusted_signer_of_the_last_vault_commit() {
+    let dir = TempDir::new().unwrap();
+    let bob_key_file = ssh_signed_vault(&dir);
+    commit_vault_signed(dir.path(), &bob_key_file);
+
+    murk_with_key_file(dir.path(), &bob_key_file)
+        .args(["verify", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "commit  last .murk commit signed by bob",
+        ))
+        .stderr(predicate::str::contains(format!(
+            "with key {SSH_ED25519_FINGERPRINT}, a trusted signer of this vault"
+        )));
+}
+
+/// A valid signature by a key the vault does not trust is not an anchor, even
+/// when git itself calls it good (the key is in the user's allowed signers).
+#[cfg(unix)]
+#[test]
+fn verify_flags_a_vault_commit_signed_by_a_stranger_key() {
+    let dir = TempDir::new().unwrap();
+    let bob_key_file = ssh_signed_vault(&dir);
+
+    let keys = TempDir::new().unwrap();
+    let (stranger_key, stranger_pub) = ssh_keygen(keys.path(), "stranger");
+    let stranger_fp = ssh_fingerprint(keys.path(), &stranger_pub);
+    let allowed = keys.path().join("allowed_signers");
+    fs::write(&allowed, format!("mallory@example.com {stranger_pub}\n")).unwrap();
+    // The user's own git config vouches for the stranger (a repository's own
+    // gpg.* config is never consulted); that still does not make them a signer.
+    git(
+        dir.path(),
+        &[
+            "config",
+            "--global",
+            "gpg.ssh.allowedSignersFile",
+            allowed.to_str().unwrap(),
+        ],
+    );
+    commit_vault_signed(dir.path(), &stranger_key);
+
+    murk_with_key_file(dir.path(), &bob_key_file)
         .args(["verify", "--vault", "test.murk"])
         .assert()
         .code(1)
+        .stderr(predicate::str::contains(format!(
+            "last .murk commit is signed by key {stranger_fp}, which is not a trusted signer of this vault"
+        )))
+        .stderr(predicate::str::contains("commit  last .murk commit signed by").not());
+}
+
+/// Whose signature counts follows the trust assessment: with
+/// `MURK_TRUSTED_SIGNERS` set, a recipient it does not name is not a trusted
+/// signer, and is named as the recipient it is.
+#[cfg(unix)]
+#[test]
+fn verify_judges_the_commit_signer_against_the_environments_trusted_signers() {
+    let dir = TempDir::new().unwrap();
+    let bob_key_file = ssh_signed_vault(&dir);
+    commit_vault_signed(dir.path(), &bob_key_file);
+
+    let keys = TempDir::new().unwrap();
+    let (_, stranger_pub) = ssh_keygen(keys.path(), "stranger");
+    murk_with_key_file(dir.path(), &bob_key_file)
+        .env("MURK_TRUSTED_SIGNERS", &stranger_pub)
+        .args(["verify", "--vault", "test.murk"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(format!(
+            "last .murk commit is signed by key {SSH_ED25519_FINGERPRINT}, recipient bob"
+        )))
         .stderr(predicate::str::contains(
-            "last .murk commit has a bad signature",
+            "which is not a trusted signer of this vault",
+        ));
+
+    murk_with_key_file(dir.path(), &bob_key_file)
+        .env(
+            "MURK_TRUSTED_SIGNERS",
+            format!("{SSH_ED25519_PK} bob@laptop"),
+        )
+        .args(["verify", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "commit  last .murk commit signed by bob",
         ));
 }
 

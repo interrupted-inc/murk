@@ -494,27 +494,50 @@ fn rotation_targets(tiers: &murk_cli::KeyTiers) -> Result<Vec<SecretTier>, Strin
 }
 
 /// List keys needing rotation — the same signals doctor reports, but scoped to
-/// rotation and machine-readable. Reads only the plaintext schema, so it works
-/// without a key. JSON mode always exits 0 (empty array when clean); human mode
-/// exits 1 when anything needs rotating, so it can gate scripts.
+/// rotation and machine-readable. Human mode exits 1 when anything needs
+/// rotating, so it can gate scripts; JSON mode exits 0 either way.
+///
+/// A gate must not be passable by editing the plaintext header, so with a key
+/// the vault is loaded and verified first ([`read_header`]); a tampered or
+/// untrusted vault fails the command. With no key it reads the schema as
+/// written and says so (`verified: false`, the `warn` line), and `MURK_STRICT`
+/// refuses to hand back such a result.
 pub(crate) fn cmd_rotate_list(json: bool, vault_path: &str) {
-    let path = Path::new(vault_path);
-    let vault = try_or_die(vault::read(path));
-
+    let (vault, verified) = read_header(vault_path);
     let issues = murk_cli::rotation_health(&vault, chrono::Utc::now());
 
+    if !verified {
+        warn_unverified();
+    }
+    let refuse = !verified && murk_cli::hardening::strict_mode();
+
     if json {
-        println!("{}", serde_json::to_string_pretty(&issues).unwrap());
+        let out = serde_json::json!({ "verified": verified, "issues": &issues });
+        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+        if refuse {
+            refuse_unverified();
+        }
         return;
     }
 
     if issues.is_empty() {
+        if refuse {
+            refuse_unverified();
+        }
         eprintln!("{} no keys need rotation", "ok".green().bold());
         return;
     }
 
     let findings: Vec<Finding> = issues.iter().map(rotation_finding).collect();
     report_findings(&findings, "rotation");
+}
+
+/// `MURK_STRICT` does not accept a result no key checked.
+fn refuse_unverified() -> ! {
+    die(
+        &"MURK_STRICT refuses an unverified result\nset MURK_KEY or MURK_KEY_FILE so the vault can be checked",
+        1,
+    )
 }
 
 pub(crate) fn cmd_rm(key: &str, vault_path: &str) {
@@ -616,6 +639,7 @@ pub(crate) fn cmd_get(key: &str, vault_path: &str) {
 pub(crate) fn cmd_ls(tags: &[String], json: bool, vault_path: &str) {
     let path = Path::new(vault_path);
     let vault = try_or_die(vault::read(path));
+    warn_if_keyless(vault_path);
 
     let keys = murk_cli::list_keys(&vault, tags);
     if json {

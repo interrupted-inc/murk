@@ -318,6 +318,11 @@ pub struct Murk {
     /// never makes that operator a grant. The save path refuses writes by a
     /// grant (see [`crate::ensure_writable`]).
     pub loaded_as_grant: bool,
+    /// Warnings about a vault the trust rules accepted, set by
+    /// [`crate::load_vault`]: a legacy MAC, an unsigned vault loaded by a key
+    /// that cannot sign, a trust pin that could not be written. The CLI
+    /// prints them; the bindings expose them as `warnings`.
+    pub warnings: Vec<String>,
 }
 
 /// Manual `Debug`: prints key NAMES (schema-level metadata, not secret) but
@@ -339,6 +344,7 @@ impl std::fmt::Debug for Murk {
             .field("signature", &self.signature)
             .field("loaded_by", &self.loaded_by)
             .field("loaded_as_grant", &self.loaded_as_grant)
+            .field("warnings", &self.warnings)
             .finish()
     }
 }

@@ -111,18 +111,45 @@ pub fn setup_merge_driver() -> Result<Vec<MergeDriverSetupStep>, String> {
     Ok(steps)
 }
 
+/// Who signed a commit, as git reports it for the signature it checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitSigner {
+    /// git's `%GK`: the signing key's id for gpg, its `SHA256:` fingerprint
+    /// for an ssh key. Empty when git reports none.
+    pub key: String,
+    /// git's `%GF`: the signing key's fingerprint. For an ssh key this is the
+    /// `ssh-keygen -l` form ([`crate::signing::ssh_ed25519_fingerprint`]).
+    /// Empty when git reports none.
+    pub fingerprint: String,
+}
+
+impl CommitSigner {
+    /// What names the key: its fingerprint, else its key id. `None` when git
+    /// reported neither.
+    pub fn id(&self) -> Option<&str> {
+        [self.fingerprint.as_str(), self.key.as_str()]
+            .into_iter()
+            .find(|s| !s.is_empty())
+    }
+}
+
 /// Signature status of the most recent commit that modified `path`.
 ///
 /// The vault signature authenticates *content*; a signed commit authenticates
 /// *who landed it* — together they anchor integrity in git (see `THREAT_MODEL`).
 /// `murk verify` surfaces this so a team can confirm the vault's history is
-/// signed, not just its bytes.
+/// signed, not just its bytes. A signature by *some* key proves nothing about
+/// whether that key belongs to a person the vault trusts, so the signer is
+/// carried along for the caller to compare with the vault's signers.
 #[derive(Debug, PartialEq, Eq)]
 pub enum CommitSignature {
-    /// A good, verified signature.
-    Good,
-    /// A signature is present but git could not validate it (unknown/expired key).
-    Unverified,
+    /// git checked the signature and it is valid (`G`, or `U`: valid, but git
+    /// has no standing for the key). It says nothing about who the key is.
+    Verified(CommitSigner),
+    /// A signature is present but git does not vouch for it: `status` is `E`
+    /// (it could not be checked, e.g. the key is unknown or the verifier is
+    /// missing), `X` (the signature has expired) or `Y` (the key has expired).
+    Unverified { status: char, signer: CommitSigner },
     /// A bad signature — the commit was altered or the signature doesn't match.
     Bad,
     /// The commit carries no signature.
@@ -133,26 +160,107 @@ pub enum CommitSignature {
     RepoConfigured,
 }
 
+/// The principal name in the allowed-signers file handed to git. git only
+/// needs *a* principal to report a key as listed; the name is never shown.
+const ALLOWED_SIGNERS_PRINCIPAL: &str = "murk-trusted-signer";
+
+/// Write `keys` (ssh-ed25519 public key lines) as an allowed-signers file in a
+/// fresh temporary directory, for `gpg.ssh.allowedSignersFile`. The directory
+/// goes away when the returned handle is dropped. `None` when it cannot be
+/// written. Keys that are not ssh-ed25519 are left out.
+fn write_allowed_signers(keys: &[String]) -> Option<(tempfile::TempDir, PathBuf)> {
+    let dir = tempfile::Builder::new()
+        .prefix("murk-allowed-signers-")
+        .tempdir()
+        .ok()?;
+    let path = dir.path().join("allowed_signers");
+    let mut contents = String::new();
+    for key in keys
+        .iter()
+        .filter_map(|k| crate::signing::ssh_ed25519_key_line(k))
+    {
+        contents.push_str(ALLOWED_SIGNERS_PRINCIPAL);
+        contents.push_str(" namespaces=\"git\" ");
+        contents.push_str(&key);
+        contents.push('\n');
+    }
+    fs::write(&path, contents).ok()?;
+    Some((dir, path))
+}
+
 /// Return the signature status of the last commit touching `path`, or `None`
 /// when git is unavailable, the repo has no such commit, or the path is
 /// untracked — i.e. there is no git anchor to check.
 ///
+/// `trusted_ssh_signers` are the ssh-ed25519 keys the caller trusts to sign
+/// commits. They go to git as the allowed-signers list for this one call
+/// (`-c gpg.ssh.allowedSignersFile`), which makes the check independent of
+/// the user's git config: without such a file git cannot check an ssh
+/// signature at all and reports a signed commit as unsigned, and a user's own
+/// list would decide what `G` means. With it, a valid ssh signature by one of
+/// these keys is `G` and a valid one by any other key is `U`. A
+/// `gpg.ssh.revocationFile` the user configured still applies.
+///
 /// Signature verification is governed entirely by `gpg.*` config, so only the
 /// user's global and system config may set it; see
 /// [`CommitSignature::RepoConfigured`].
-pub fn last_commit_signature(path: &str) -> Option<CommitSignature> {
+pub fn last_commit_signature(
+    path: &str,
+    trusted_ssh_signers: &[String],
+) -> Option<CommitSignature> {
     // No commit for this path (untracked / no history): no anchor to check.
     last_commit_field(path, "%H")?;
     if repo_sets_gpg_config()? {
         return Some(CommitSignature::RepoConfigured);
     }
-    match last_commit_field(path, "%G?")?.as_str() {
-        "G" => Some(CommitSignature::Good),
-        // U (good, unknown validity), X (expired), Y (expired key), E (cannot
-        // check) all mean "a signature exists but we can't fully vouch for it".
-        "U" | "X" | "Y" | "E" => Some(CommitSignature::Unverified),
-        "B" | "R" => Some(CommitSignature::Bad),
-        "N" => Some(CommitSignature::Unsigned),
+    let allowed = write_allowed_signers(trusted_ssh_signers);
+    let mut cmd = git_command();
+    if let Some((_, file)) = &allowed {
+        let mut setting = std::ffi::OsString::from("gpg.ssh.allowedSignersFile=");
+        setting.push(file);
+        cmd.arg("-c").arg(setting);
+    }
+    let output = cmd
+        .args([
+            "log",
+            "-1",
+            // `log.showSignature` would print the verifier's output into ours.
+            "--no-show-signature",
+            "--format=%G?%x00%GK%x00%GF",
+            "--",
+        ])
+        .arg(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_commit_signature(String::from_utf8(output.stdout).ok()?.trim_end())
+}
+
+/// Parse `%G?%x00%GK%x00%GF` output: `None` for no commit (an empty line) or a
+/// status git does not define.
+fn parse_commit_signature(line: &str) -> Option<CommitSignature> {
+    let mut fields = line.split('\0');
+    let status = fields.next()?;
+    let mut signer = move || CommitSigner {
+        key: fields.next().unwrap_or_default().to_string(),
+        fingerprint: fields.next().unwrap_or_default().to_string(),
+    };
+    let mut chars = status.chars();
+    let (Some(code), None) = (chars.next(), chars.next()) else {
+        return None;
+    };
+    match code {
+        'G' | 'U' => Some(CommitSignature::Verified(signer())),
+        // X (expired signature), Y (expired key), E (cannot check) all mean "a
+        // signature exists but we can't vouch for it".
+        'X' | 'Y' | 'E' => Some(CommitSignature::Unverified {
+            status: code,
+            signer: signer(),
+        }),
+        'B' | 'R' => Some(CommitSignature::Bad),
+        'N' => Some(CommitSignature::Unsigned),
         _ => None,
     }
 }
@@ -622,7 +730,7 @@ mod tests {
 
         let original_dir = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir).unwrap();
-        let sig = last_commit_signature("vault.murk");
+        let sig = last_commit_signature("vault.murk", &[]);
         std::env::set_current_dir(original_dir).unwrap();
 
         assert_eq!(sig, Some(CommitSignature::Unsigned));
@@ -674,10 +782,91 @@ mod tests {
 
         let original_dir = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir).unwrap();
-        let sig = last_commit_signature("never-committed.murk");
+        let sig = last_commit_signature("never-committed.murk", &[]);
         std::env::set_current_dir(original_dir).unwrap();
 
         assert_eq!(sig, None);
+    }
+
+    #[test]
+    fn commit_signature_status_maps_to_what_git_vouches_for() {
+        let signer = |key: &str, fp: &str| CommitSigner {
+            key: key.into(),
+            fingerprint: fp.into(),
+        };
+        let fp = "SHA256:abc";
+        let line = |status: &str| format!("{status}\0{fp}\0{fp}");
+        // G and U both mean the signature checked out; neither says whose key it is.
+        for status in ["G", "U"] {
+            assert_eq!(
+                parse_commit_signature(&line(status)),
+                Some(CommitSignature::Verified(signer(fp, fp))),
+                "{status}"
+            );
+        }
+        // X, Y and E are signatures git cannot vouch for, and keep their status.
+        for status in ['X', 'Y', 'E'] {
+            assert_eq!(
+                parse_commit_signature(&line(&status.to_string())),
+                Some(CommitSignature::Unverified {
+                    status,
+                    signer: signer(fp, fp)
+                }),
+                "{status}"
+            );
+        }
+        assert_eq!(
+            parse_commit_signature(&line("B")),
+            Some(CommitSignature::Bad)
+        );
+        assert_eq!(
+            parse_commit_signature(&line("R")),
+            Some(CommitSignature::Bad)
+        );
+        assert_eq!(
+            parse_commit_signature("N\0\0"),
+            Some(CommitSignature::Unsigned)
+        );
+        // No commit touches the path, or a status git does not define.
+        assert_eq!(parse_commit_signature(""), None);
+        assert_eq!(parse_commit_signature(&line("Z")), None);
+        assert_eq!(parse_commit_signature(&line("GG")), None);
+    }
+
+    #[test]
+    fn commit_signer_id_prefers_the_fingerprint() {
+        let both = CommitSigner {
+            key: "KEYID".into(),
+            fingerprint: "FINGERPRINT".into(),
+        };
+        assert_eq!(both.id(), Some("FINGERPRINT"));
+        let key_only = CommitSigner {
+            key: "KEYID".into(),
+            fingerprint: String::new(),
+        };
+        assert_eq!(key_only.id(), Some("KEYID"));
+        let neither = CommitSigner {
+            key: String::new(),
+            fingerprint: String::new(),
+        };
+        assert_eq!(neither.id(), None);
+    }
+
+    #[test]
+    fn allowed_signers_file_lists_only_ssh_ed25519_keys_without_comments() {
+        let key = crate::testutil::SSH_ED25519_PK;
+        let keys = vec![
+            format!("{key} someone@host"),
+            "ssh-rsa AAAAB3xyz".to_string(),
+            "age1abc".to_string(),
+        ];
+        let (dir, path) = write_allowed_signers(&keys).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            format!("murk-trusted-signer namespaces=\"git\" {key}\n")
+        );
+        drop(dir);
+        assert!(!path.exists(), "the temporary directory is removed");
     }
 
     #[test]

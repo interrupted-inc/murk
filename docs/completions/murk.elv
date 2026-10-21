@@ -102,7 +102,7 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand --generate 'Generate random values instead of prompting'
             cand --hex 'Output generated values as hex instead of base64'
             cand --list 'List keys needing rotation instead of rotating (exits 1 if any)'
-            cand --json 'Output the listing as JSON (with --list, always exits 0)'
+            cand --json 'Output the listing as JSON, an object with `verified` and `issues` (with --list, exits 0 even when keys need rotating)'
             cand -h 'Print help'
             cand --help 'Print help'
         }

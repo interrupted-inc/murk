@@ -214,7 +214,7 @@ Rotate secrets with new values
 * `--hex` — Output generated values as hex instead of base64
 * `--values-from <FILE>` — Read new values from a dotenv file of KEY=value lines (`-` for stdin), matched by key name
 * `--list` — List keys needing rotation instead of rotating (exits 1 if any)
-* `--json` — Output the listing as JSON (with --list, always exits 0)
+* `--json` — Output the listing as JSON, an object with `verified` and `issues` (with --list, exits 0 even when keys need rotating)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`

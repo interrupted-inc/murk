@@ -11,13 +11,33 @@
 //! vault.export()                   # dict of all key/values
 //! murk.get("DATABASE_URL")         # one-liner convenience
 //! ```
+//!
+//! `load()` applies the same trust rules as the CLI (`crate::load_vault`): a
+//! vault this machine does not trust raises `murk.TrustError`, with the
+//! message the CLI prints.
 
 use std::collections::HashMap;
 
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
-use crate::{env, export, policy, types};
+use crate::{MurkError, env, export, policy, types};
+
+pyo3::create_exception!(
+    murk,
+    TrustError,
+    PyRuntimeError,
+    "The vault was refused: not trusted on this machine, or tampered with."
+);
+
+/// A refusal of the vault itself (trust or integrity) raises `TrustError`;
+/// anything else `RuntimeError`.
+fn load_error(e: &MurkError) -> PyErr {
+    match e {
+        MurkError::Trust(_) | MurkError::Integrity(_) => TrustError::new_err(e.to_string()),
+        _ => PyRuntimeError::new_err(e.to_string()),
+    }
+}
 
 /// A loaded and decrypted murk vault.
 #[pyclass]
@@ -101,14 +121,22 @@ impl Vault {
             self.inner.recipients.len()
         )
     }
+
+    /// Warnings about this vault that did not stop the load — the ones the
+    /// CLI prints as `warn …` (an unsigned vault read by a key that cannot
+    /// sign, a legacy MAC, a trust pin that could not be written).
+    #[getter]
+    fn warnings(&self) -> Vec<String> {
+        self.decrypted.warnings.clone()
+    }
 }
 
-/// Load a murk vault. Reads MURK_KEY from the environment.
+/// Load a murk vault. Reads MURK_KEY from the environment. Raises
+/// `TrustError` when this machine does not trust the vault.
 #[pyfunction]
 #[pyo3(signature = (vault_path=".murk"))]
 fn load(vault_path: &str) -> PyResult<Vault> {
-    let (vault, murk, identity) =
-        crate::load_vault(vault_path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let (vault, murk, identity) = crate::load_vault(vault_path).map_err(|e| load_error(&e))?;
     let pubkey = identity
         .pubkey_string()
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
@@ -147,6 +175,7 @@ fn has_identity() -> bool {
 #[pymodule]
 fn murk(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Vault>()?;
+    m.add("TrustError", m.py().get_type::<TrustError>())?;
     m.add_function(wrap_pyfunction!(load, m)?)?;
     m.add_function(wrap_pyfunction!(get, m)?)?;
     m.add_function(wrap_pyfunction!(export_all, m)?)?;

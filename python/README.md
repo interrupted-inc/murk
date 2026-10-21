@@ -77,8 +77,13 @@ Whether a decryption identity (`MURK_KEY` / `MURK_KEY_FILE`) is available — i.
 | `vault[key]` | `str` | Dict-style access (raises on missing key) |
 | `key in vault` | `bool` | Check if a key exists |
 | `len(vault)` | `int` | Number of secrets |
+| `vault.warnings` | `list[str]` | Warnings about an accepted vault, the ones the CLI prints as `warn …` (empty for a clean load) |
 
 Scoped (per-user) overrides are applied automatically — if you have a scoped value for a key, it takes priority over the shared value.
+
+## Trust
+
+`load()`, `get()` and `export_all()` apply the same trust check as the CLI. A vault this machine does not trust — unsigned when your key could have signed it, signed by a key this machine hasn't accepted, rolled back, or tampered with — raises `murk.TrustError` (a subclass of `RuntimeError`) with the CLI's message. Nothing in the binding skips the check. Run `murk trust` once from a shell to accept a vault, or set `MURK_TRUSTED_SIGNERS` in CI. An agent grant key reads only through the trusted signers in its key file or `MURK_TRUSTED_SIGNERS`.
 
 ## Memory hygiene
 

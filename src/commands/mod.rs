@@ -123,23 +123,63 @@ pub(crate) fn load_vault(vault: &str) -> (types::Vault, types::Murk, MurkIdentit
     }
     // `murk_cli::load_vault` refuses a vault this machine does not trust
     // (unsigned, untrusted signer, rolled back, ...), so every caller and
-    // binding gets the same rules. What reaches here is trusted, or unsigned
-    // and loaded by a key that cannot sign.
+    // binding gets the same rules and the same warnings. What reaches here is
+    // trusted, or unsigned and loaded by a key that cannot sign.
     let result = try_or_die(murk_cli::load_vault(vault));
-    if result.1.legacy_mac {
-        eprintln!(
-            "{} vault uses legacy unkeyed MAC — run any write command to upgrade to BLAKE3",
-            "warn".yellow().bold()
-        );
-    }
-    if matches!(result.1.signature, types::SignatureState::Unsigned) {
-        eprintln!(
-            "{} vault is unsigned and your key cannot sign — nothing in the vault shows who wrote it; rely on signed git commits",
-            "warn".yellow().bold()
-        );
+    for warning in &result.1.warnings {
+        eprintln!("{} {warning}", "warn".yellow().bold());
     }
     maybe_nudge_agent_path(vault);
     result
+}
+
+/// Whether a key resolves for `vault_path`. The MAC and signature need a key,
+/// so without one nothing in the plaintext header can be integrity-checked.
+pub(crate) fn key_resolves(vault_path: &str) -> bool {
+    murk_cli::resolve_key_for_vault(vault_path).is_ok()
+}
+
+/// Say, once, that the header data a command is about to print was not
+/// integrity-checked. Anyone with write access to the repo can edit the
+/// plaintext header (drop an expiry, a revoke marker, a recipient) and without
+/// a key nothing notices, so output read without one must not pass as fact.
+pub(crate) fn warn_unverified() {
+    eprintln!(
+        "{} unverified header \u{2014} read without a key, so nothing here is integrity-checked",
+        "warn".yellow().bold()
+    );
+}
+
+/// [`warn_unverified`] for a command that only reads the plaintext header
+/// (`ls`, `info`, `agent plan`, ...), when no key resolves for `vault_path`.
+///
+/// These commands keep working on a vault this machine has not trusted yet, so
+/// they do not load it; a run that has a key is not labelled, but it is not
+/// checked either. Only [`read_header`] verifies.
+pub(crate) fn warn_if_keyless(vault_path: &str) {
+    if !key_resolves(vault_path) {
+        warn_unverified();
+    }
+}
+
+/// Read the vault header for a command whose result gates something (`rotate
+/// --list`), returning it with whether a key verified it.
+///
+/// With a key the vault loads through [`murk_cli::load_vault`] — MAC, signature
+/// and this machine's trust verdict — before anything is reported, so a header
+/// edited by someone without the key fails the command instead of passing.
+/// Whatever stops the load stops the command: a key that resolves but cannot
+/// check the vault must not quietly downgrade to an unchecked read. With no
+/// key nothing can be checked; the header is read as written and the caller
+/// must label what it reports (see [`warn_unverified`]).
+pub(crate) fn read_header(vault_path: &str) -> (types::Vault, bool) {
+    if key_resolves(vault_path) {
+        let (vault, _murk, _identity) = load_vault(vault_path);
+        (vault, true)
+    } else {
+        let vault = try_or_die(murk_cli::vault::read(std::path::Path::new(vault_path)));
+        (vault, false)
+    }
 }
 
 /// Fires the CI personal-key hint at most once per process. Module-level so

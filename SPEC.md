@@ -176,7 +176,7 @@ Entries also carry optional lifecycle metadata:
 - `expires_at` — ISO-8601 UTC hard expiry for credentials with a known end-of-life (e.g. a token). `doctor` flags it as expired or expiring soon.
 - `revoked_at` — ISO-8601 UTC marker set when a recipient who could read this key is revoked and rotation is deferred, or is removed from the group holding it. Its *presence* is the obligation: they can still decrypt the live value from git history until it changes. `doctor` flags it until then. A write that replaces the shared or group value (`add`, `rotate`, `import`) clears it; writing a personal override (`--group me`) does not, since that leaves the exposed value in place. Omitted when there is no pending rotation.
 
-Set the rotation/expiry fields with `murk describe KEY "desc" --rotate-every 90d --expires 2026-09-01` (`never` clears either); `revoked_at` is managed automatically by `circle revoke`, `group rm --member`, and `agent revoke` / `agent grant --renew`. All lifecycle fields are covered by the integrity MAC (see Integrity), so rotation policy and pending-rotation flags cannot be silently weakened without a key.
+Set the rotation/expiry fields with `murk describe KEY "desc" --rotate-every 90d --expires 2026-09-01` (`never` clears either); `revoked_at` is managed automatically by `circle revoke`, `group rm --member`, and `agent revoke` / `agent grant --renew`. All lifecycle fields are covered by the integrity MAC (see Integrity), so an edit that weakens rotation policy or clears a pending-rotation flag is caught by any command that loads the vault with a key. A command that reads the header without a key shows these fields unchecked and says so (see Trust, Header reads).
 
 Key names must be valid shell identifiers: `[A-Za-z_][A-Za-z0-9_]*`.
 
@@ -186,7 +186,7 @@ Optional agent access policy, in the plaintext header so it is readable without 
 
 - `agent_allow_tags` — in agent mode, a secret may be injected or granted only if its schema carries at least one of these tags. Once a policy is set it is default-deny: an untagged or wrong-tagged key is refused with a clear error (no override — the operator edits the policy). An empty list locks agents out entirely.
 
-The policy is covered by the integrity MAC (see Integrity), so it cannot be stripped or weakened without a key. The field is omitted entirely when no policy is set, keeping policy-free vaults byte-identical to pre-policy murk.
+The policy is covered by the integrity MAC (see Integrity), so a keyed load catches a policy that was stripped or weakened. The field is omitted entirely when no policy is set, keeping policy-free vaults byte-identical to pre-policy murk. `murk policy show` reads the header without a key and labels what it prints unverified (see Trust, Header reads).
 
 ### Secrets
 
@@ -240,7 +240,7 @@ The `meta` field is a single age blob encrypted to every recipient except agent 
 
 `grants` maps an agent grant name to its metadata: the agent's ephemeral `pubkey` (also a `recipients` entry), the `scope` of keys it may read, `issued_at`/`expires_at` timestamps, and the `issuer` pubkey. The agent is excluded from the `everyone` layer and from the meta — its access is the set of `scoped` ciphertexts encrypted to its pubkey, one per scope key, plus its own record in `agents`. Stored here (not in the header) so an agent's existence and scope don't leak. Covered by the MAC so TTL/scope/issuer can't be altered undetected. The field is omitted entirely when the vault has no grants. The `expires_at` TTL is enforced by the murk binary at read time — an expired grant, or one with no or an unreadable `expires_at`, fails closed — though not cryptographically (see THREAT_MODEL.md). The next save removes an expired grant (record, recipient and scoped copies) and marks its keys as owed a rotation.
 
-A grant record whose `pubkey` is the key that opened the meta is ignored on load and dropped by the next save: grants never open the meta, so such a record was written by a meta writer, and it never makes that key a grant.
+A grant record whose `pubkey` is the key that opened the meta was written by a meta writer: grants never open the meta. When that key is an operator key the trust rules know (rule 5 under Trust), the vault is refused as tampering. Otherwise the record is ignored on load and dropped by the next save, and it never makes that key a grant.
 
 ### Integrity
 
@@ -311,6 +311,10 @@ An accepted vault updates the pin: `trusted` becomes its non-grant recipients, g
 **CI.** A fresh runner has no pin. `MURK_TRUSTED_SIGNERS` (from a CI secret, in the entry format above) names the keys allowed to sign and pins their verifying keys. Without a pin there is no rollback mark on a runner.
 
 **Opting out.** `MURK_NO_SIGNER_PIN` (present with any value, or no home directory) stops murk reading or writing the pin. It does not switch the trust check off: every signed vault is then refused unless `MURK_TRUSTED_SIGNERS` names its signer, and rollback and stripped-signature detection are off.
+
+**Bindings.** The Python and Node bindings load through `load_vault` like the CLI, on every call that reads the vault (Node's `add` and `describe` included), with no option to skip it, and update the pin exactly as the CLI's load does. A refusal (`MurkError::Trust`) or a failed integrity check (`MurkError::Integrity`) raises `murk.TrustError` (a `RuntimeError` subclass) in Python and throws an `Error` with `code` `'MURK_TRUST'` in Node, carrying the message the CLI prints. A grant key with no anchor, or reading a 2.x vault, is a trust refusal too. Warnings about an accepted vault (an unsigned vault loaded by a key that cannot sign, a legacy MAC, a pin that could not be written) are collected in `Murk::warnings`: the CLI prints each as `warn …`, the bindings expose them as `vault.warnings`.
+
+**Header reads.** The MAC and the signature need a key, so a command that only reads the plaintext header checks nothing: anyone who can write the repo can drop an `expires_at` or `revoked_at`, or edit a description, and the command shows the edit as fact. `ls`, `info`, `circle`, `skeleton`, `agent plan`, `policy show` and `doctor` (its rotation check) never load the vault, so they keep working on one this machine has not trusted yet; run with no key (no `MURK_KEY`, no `MURK_KEY_FILE`, no stored key for the vault), each prints `warn unverified header — read without a key, so nothing here is integrity-checked` to stderr, once, in human and `--json` mode alike. A run that has a key is not labelled, but is not checked either: these commands do not load the vault with it. `murk rotate --list`, whose exit status gates scripts, is the one that verifies: see its entry.
 
 **Deliberate revert.** Restore the older file, run `murk trust` (it shows the counter going back), then any write: the save is numbered above everything this machine accepted, so teammates accept it as newer.
 
@@ -386,7 +390,11 @@ Rotation keeps each value in its tier and never widens who can read it: a shared
 
 Piped stdin works the same way when the batch takes one value (e.g. `murk rotate KEY`): all of stdin is the value. A batch of several values reads one value per line, matched to keys by position, so values can't span lines; input with more lines than values is refused before anything is written. If anything would be skipped, or a key would take more than one value, the batch is refused before any value is read, since later values would land on the wrong keys. `--values-from FILE` (`-` for stdin) matches values by name instead. It reads the file with the same `.env` parsing as `murk import`: `KEY=value` lines, with an optional `export` prefix and single- or double-quoted values that may span lines. An unclosed quote or other parse error aborts with nothing rotated, and so does a file that names a key more than once. Skipped entries (invalid or `MURK_*` names, lines without `=`) and unquoted values containing ` #` are reported by line number, never by value. Every key it names must be one this command can rotate, with exactly one value to replace; otherwise the whole batch is refused before anything is written, naming the keys. Keys it doesn't name are left unrotated and reported. `--values-from` can't be combined with `--generate`. A values file that is a symlink is refused, and one readable by others gets a warning; `--values-from -` keeps the new values off disk.
 
-`murk rotate --list` reports the keys that need rotating — the same overdue/expiry/post-revoke signals `doctor` evaluates, scoped to rotation. It reads only the plaintext schema, so it works without a key. Human output exits 1 when anything needs rotating (usable as a script gate); `--list --json` emits a `reason`-tagged array (`overdue`, `no_baseline`, `expired`, `expiring_soon`, `revoke_pending`) and always exits 0.
+`murk rotate --list` reports the keys that need rotating — the same overdue/expiry/post-revoke signals `doctor` evaluates, scoped to rotation. Human output exits 1 when anything needs rotating (usable as a script gate); `--list --json` always exits 0 for a clean or flagged vault.
+
+A gate must not be passable by editing the header, so the result is verified whenever it can be. **With a key** the vault loads through the full load path first (MAC, signature, this machine's trust verdict; `into_trusted` also records the pin like any load), and the report comes from the verified vault. Deleting `revoked_at` or `expires_at` from the header then fails the command (non-zero, no report) instead of reporting that no keys need rotating, and so does a vault this machine does not trust or a key that cannot open it; it never falls back to an unchecked read. **With no key** nothing can be checked: it reads the schema as written, prints the unverified warning (see Trust, Header reads), and under `MURK_STRICT` (or agent context) refuses the result by exiting 1 — in human mode instead of `ok`, in `--json` mode after printing it.
+
+`--json` prints an object, `{"verified": bool, "issues": [...]}`. `issues` is the `reason`-tagged array (`overdue`, `no_baseline`, `expired`, `expiring_soon`, `revoke_pending`) that `--json` printed alone before 0.14; `verified` is `true` when a key verified the vault and `false` otherwise. The array moved under a key because the flag has to be present when no key needs rotating, and an empty array has no element to carry it: `[]` is exactly what a header stripped of its flags produces. Consumers that iterated the old top-level array read `.issues` instead.
 
 ---
 
@@ -457,7 +465,7 @@ Writes a `.envrc` for direnv integration. Creates the file if missing, appends t
 
 ### `murk agent plan [--tag TAG] [--json] [-o FILE] [--vault NAME]`
 
-Emits schema-only context safe to paste into an AI agent prompt — key names, descriptions, examples, and tags. No decryption and no `MURK_KEY` required; the output contains no secret values, recipient pubkeys, vault name, or meta blob. `--tag` filters by tag (repeatable). `--json` outputs JSON. Prints to stdout, or writes to a file with `-o`.
+Emits schema-only context safe to paste into an AI agent prompt — key names, descriptions, examples, and tags. No decryption and no `MURK_KEY` required; the output contains no secret values, recipient pubkeys, vault name, or meta blob. `--tag` filters by tag (repeatable). `--json` outputs JSON. Prints to stdout, or writes to a file with `-o`. Without a key the schema is unchecked and the command says so on stderr (see Trust, Header reads).
 
 ---
 
@@ -513,7 +521,7 @@ Imports secrets from a `.env` file. Parses `KEY=VALUE` lines (supports `export` 
 
 Prints the public schema. Works without `MURK_KEY`. With a valid key, also shows recipient names and count. `--tag` filters by tag (repeatable). `--json` outputs JSON.
 
-Each key's row shows any rotation interval and expiry as a trailing `rotate 90d  expires 2026-09-01` segment (public, shown without a key); `--json` includes `rotation_interval_days` and `expires_at` per entry. `murk doctor` evaluates these against the clock — `info` just shows the policy.
+Each key's row shows any rotation interval and expiry as a trailing `rotate 90d  expires 2026-09-01` segment (public, shown without a key); `--json` includes `rotation_interval_days` and `expires_at` per entry. `murk doctor` evaluates these against the clock — `info` just shows the policy. Without a key none of it is integrity-checked, and `info` says so on stderr (see Trust, Header reads).
 
 ---
 
@@ -567,7 +575,7 @@ With `--member`, removes a recipient from the group and re-encrypts its secrets 
 
 ### `murk policy show [--json] [--vault NAME]`
 
-Prints the agent access policy. Works without a key — the policy is in the plaintext header. Shows the allowed tags, or notes that agent mode is unrestricted (no policy) or locked out (empty allow-list).
+Prints the agent access policy. Works without a key — the policy is in the plaintext header — but without one it is unchecked, and the command says so on stderr (see Trust, Header reads). Shows the allowed tags, or notes that agent mode is unrestricted (no policy) or locked out (empty allow-list).
 
 ---
 
@@ -628,7 +636,16 @@ Configures git to use `murk merge-driver %O %A %B %P` for `.murk` files via `.gi
 
 ### `murk verify [--vault NAME]`
 
-Verifies vault integrity (MAC and signature), reports whether this machine trusts the signer and why not (the same reasons a load refuses with), and runs safety checks without exporting secrets. Exits 1 on any finding.
+Verifies vault integrity (MAC and signature), reports whether this machine trusts the signer and why not (the same reasons a load refuses with), checks who signed the last git commit that touched the vault, and runs safety checks without exporting secrets. Exits 1 on any finding.
+
+**Commit check.** Only when the vault has git history. A signed commit proves nothing about who the signer is: git vouches for any key it is told about, an attacker's throwaway key included. So verify reports the commit as ok only when git verified the signature and the signing key is a trusted signer of this vault: an ssh-ed25519 key in the set the Trust rules used (`MURK_TRUSTED_SIGNERS` and a grant key file's anchor when either is given, otherwise the pin's trusted set; grant keys never count), matched by its `ssh-keygen -l` fingerprint. Only an ssh-ed25519 key can match, because it is the only key type that both signs git commits and is a murk signer. The line then reads `ok commit  last .murk commit signed by <name> with key <fingerprint>, a trusted signer of this vault`. Every other outcome is a finding, and exits 1:
+
+- **Signed by another key** — a gpg key, or an ssh key that is not a trusted signer: `signed by key <id>, which is not a trusted signer of this vault`, naming the recipient when the key is one. The vault's own recipients are not trusted by being listed; trust comes from the pin or the environment.
+- **Not vouched for by git** — the signature could not be checked, has expired, or was made with an expired key.
+- **Bad** — the signature does not match the commit, or the key is revoked in the user's `gpg.ssh.revocationFile`.
+- **Unsigned.**
+
+verify runs git with `gpg.ssh.allowedSignersFile` set to a temporary file listing the trusted ssh-ed25519 signers, so the result does not depend on the user's own allowed-signers list; without one git cannot check an ssh signature and reports a signed commit as unsigned.
 
 ---
 
@@ -640,7 +657,7 @@ Shows who signed the vault (name, full key and signing-key fingerprint, marked t
 
 ### `murk doctor [--vault NAME]`
 
-Checks the surrounding repo for hygiene issues — inline keys in `.env`, key files sitting next to the vault, state that would be bad to commit. If a vault is present it also reads the plaintext schema (no key required) and reports keys overdue for rotation or past/near their `expires_at`. Exits 1 on findings.
+Checks the surrounding repo for hygiene issues — inline keys in `.env`, key files sitting next to the vault, state that would be bad to commit. If a vault is present it also reads the plaintext schema and reports keys overdue for rotation or past/near their `expires_at`. That read is never integrity-checked: with no key `doctor` says so on stderr (see Trust, Header reads), and with one it still does not load the vault, so use `murk rotate --list` or `murk verify` where the result must be trusted. Exits 1 on findings.
 
 ---
 

@@ -87,7 +87,7 @@ complete -c murk -n "__fish_murk_using_subcommand rotate" -l all -d 'Rotate all 
 complete -c murk -n "__fish_murk_using_subcommand rotate" -l generate -d 'Generate random values instead of prompting'
 complete -c murk -n "__fish_murk_using_subcommand rotate" -l hex -d 'Output generated values as hex instead of base64'
 complete -c murk -n "__fish_murk_using_subcommand rotate" -l list -d 'List keys needing rotation instead of rotating (exits 1 if any)'
-complete -c murk -n "__fish_murk_using_subcommand rotate" -l json -d 'Output the listing as JSON (with --list, always exits 0)'
+complete -c murk -n "__fish_murk_using_subcommand rotate" -l json -d 'Output the listing as JSON, an object with `verified` and `issues` (with --list, exits 0 even when keys need rotating)'
 complete -c murk -n "__fish_murk_using_subcommand rotate" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand rm" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand rm" -s h -l help -d 'Print help'

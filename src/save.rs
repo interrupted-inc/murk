@@ -1839,5 +1839,6 @@ mod tests {
                 && err.to_string().contains("binds agent grant ghost"),
             "{err}"
         );
+        assert!(err.to_string().contains("tampered with"), "{err}");
     }
 }

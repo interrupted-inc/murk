@@ -76,8 +76,8 @@ pub use env::{
 pub use error::MurkError;
 pub use export::{DiffEntry, DiffKind, diff_secrets, export_secrets, resolve_secrets};
 pub use git::{
-    CommitSignature, MergeDriverSetupStep, git_command, last_commit_signature, setup_merge_driver,
-    vault_at_revision,
+    CommitSignature, CommitSigner, MergeDriverSetupStep, git_command, last_commit_signature,
+    setup_merge_driver, vault_at_revision,
 };
 pub use github::{GitHubError, fetch_keys};
 pub use grants::{create_grant, parse_ttl, remove_grant, validate_grant_name};

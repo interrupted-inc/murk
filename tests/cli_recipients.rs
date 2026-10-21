@@ -965,13 +965,14 @@ fn rotate_list_reports_each_rotation_problem() {
         .success();
 
     // Time passing, and an older vault. (A garbled timestamp is refused when
-    // the vault loads, so rotate --list never sees one.)
+    // the vault loads, so rotate --list never sees one.) Hand-editing the header
+    // breaks the MAC, so only a run with no key at all still reads it.
     let vault = dir.path().join("test.murk");
     set_schema_field(&vault, "STALE", "updated", Some("2020-01-01T00:00:00Z"));
     set_schema_field(&vault, "UNDATED", "updated", None);
 
-    let out = murk_bin(dir.path())
-        .current_dir(dir.path())
+    let home = TempDir::new().unwrap();
+    let out = keyless(&dir, &home)
         .args(["rotate", "--list", "--vault", "test.murk"])
         .assert()
         .code(1);
@@ -993,6 +994,205 @@ fn rotate_list_reports_each_rotation_problem() {
             || stderr.contains(&format!("SOON expires in 3d ({soon})")),
         "{stderr}"
     );
+}
+
+/// `murk` in `dir` with no key: `HOME` is a fresh directory, so the key `init`
+/// stored under the vault's own `HOME` is not auto-discovered.
+fn keyless(dir: &TempDir, home: &TempDir) -> assert_cmd::Command {
+    let mut cmd = murk_bin(home.path());
+    cmd.current_dir(dir.path());
+    cmd
+}
+
+fn stderr_of(assert: &assert_cmd::assert::Assert) -> String {
+    String::from_utf8(assert.get_output().stderr.clone()).unwrap()
+}
+
+/// A vault whose `TOKEN` needs rotating after a revoke (`revoked_at` set), or
+/// after its expiry passed (`expires_at` set). Returns the vault's `.murk`
+/// path and the operator key.
+fn vault_needing_rotation(dir: &TempDir, field: &str) -> (std::path::PathBuf, String) {
+    let (key, _) = init_vault(dir);
+    murk(dir, &key)
+        .args(["add", "TOKEN", "--vault", "test.murk"])
+        .write_stdin("old\n")
+        .assert()
+        .success();
+    match field {
+        "revoked_at" => {
+            authorize(dir, &key, &age_pubkey(), Some("bob"));
+            murk(dir, &key)
+                .args(["circle", "revoke", "bob", "--vault", "test.murk"])
+                .assert()
+                .success();
+        }
+        "expires_at" => {
+            murk(dir, &key)
+                .args([
+                    "describe",
+                    "TOKEN",
+                    "api token",
+                    "--expires",
+                    "2020-01-01",
+                    "--vault",
+                    "test.murk",
+                ])
+                .assert()
+                .success();
+        }
+        other => panic!("unknown field {other}"),
+    }
+    (dir.path().join("test.murk"), key)
+}
+
+/// Every command that prints data from the plaintext header with no key says,
+/// once, that nothing it shows was checked. A run with a key that verifies the
+/// vault (`rotate --list`) does not.
+#[test]
+fn keyless_header_reads_are_labelled_unverified() {
+    let dir = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    murk(&dir, &key)
+        .args(["add", "TOKEN", "--vault", "test.murk"])
+        .write_stdin("v\n")
+        .assert()
+        .success();
+
+    let commands: &[&[&str]] = &[
+        &["info"],
+        &["info", "--json"],
+        &["ls"],
+        &["ls", "--json"],
+        &["agent", "plan"],
+        &["agent", "plan", "--json"],
+        &["rotate", "--list"],
+        &["rotate", "--list", "--json"],
+        &["policy", "show"],
+        &["circle"],
+        &["skeleton"],
+        &["doctor"],
+    ];
+    for args in commands {
+        let out = keyless(&dir, &home)
+            .args(*args)
+            .args(["--vault", "test.murk"])
+            .assert();
+        let stderr = stderr_of(&out);
+        assert_eq!(
+            stderr.matches("unverified").count(),
+            1,
+            "`murk {}` must label its output unverified exactly once:\n{stderr}",
+            args.join(" ")
+        );
+    }
+
+    // With a key, `rotate --list` checks the vault and has nothing to label.
+    let out = murk(&dir, &key)
+        .args(["rotate", "--list", "--vault", "test.murk"])
+        .assert()
+        .success();
+    assert!(!stderr_of(&out).contains("unverified"));
+}
+
+/// `rotate --list --json` says whether a key verified the vault. The array of
+/// `reason`-tagged issues moves under `issues`, because an empty array has no
+/// element to carry the flag and `[]` is the very output a stripped header
+/// produces.
+#[test]
+fn rotate_list_json_reports_whether_the_vault_was_verified() {
+    let dir = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let (_, key) = vault_needing_rotation(&dir, "expires_at");
+
+    let keyed =
+        stdout_json(murk(&dir, &key).args(["rotate", "--list", "--json", "--vault", "test.murk"]));
+    assert_eq!(keyed["verified"], true, "{keyed}");
+    assert_eq!(keyed["issues"][0]["reason"], "expired", "{keyed}");
+    assert_eq!(keyed["issues"][0]["key"], "TOKEN", "{keyed}");
+
+    let keyless_run = stdout_json(keyless(&dir, &home).args([
+        "rotate",
+        "--list",
+        "--json",
+        "--vault",
+        "test.murk",
+    ]));
+    assert_eq!(keyless_run["verified"], false, "{keyless_run}");
+    assert_eq!(
+        keyless_run["issues"][0]["reason"], "expired",
+        "{keyless_run}"
+    );
+}
+
+/// Deleting `revoked_at` / `expires_at` from the header must not turn the
+/// `rotate --list` gate green. With a key the edit is caught as tampering;
+/// without one the result is labelled unverified, and `MURK_STRICT` refuses it.
+#[test]
+fn rotate_list_gate_survives_header_edits() {
+    for field in ["revoked_at", "expires_at"] {
+        let dir = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        let (vault, key) = vault_needing_rotation(&dir, field);
+        let list = |cmd: &mut assert_cmd::Command| {
+            cmd.args(["rotate", "--list", "--vault", "test.murk"])
+                .assert()
+        };
+
+        // Before the edit the gate is red, with a key or without.
+        list(&mut murk(&dir, &key)).code(1);
+        list(&mut keyless(&dir, &home)).code(1);
+
+        set_schema_field(&vault, "TOKEN", field, None);
+
+        // With the key: the edited header fails its integrity check.
+        let out = list(&mut murk(&dir, &key)).failure();
+        let stderr = stderr_of(&out);
+        assert!(stderr.contains("tampered"), "{field}: {stderr}");
+        assert!(
+            !stderr.contains("no keys need rotation"),
+            "{field}: {stderr}"
+        );
+        let out = murk(&dir, &key)
+            .args(["rotate", "--list", "--json", "--vault", "test.murk"])
+            .assert()
+            .failure();
+        assert!(
+            out.get_output().stdout.is_empty(),
+            "{field}: JSON printed for a tampered vault"
+        );
+
+        // Without it nothing can be checked: same exit as before, but labelled.
+        let out = list(&mut keyless(&dir, &home)).success();
+        assert!(stderr_of(&out).contains("unverified"), "{field}");
+
+        // MURK_STRICT refuses to report an unverified result, in both formats.
+        let out = list(keyless(&dir, &home).env("MURK_STRICT", "1")).failure();
+        assert!(stderr_of(&out).contains("unverified"), "{field}");
+        let out = keyless(&dir, &home)
+            .env("MURK_STRICT", "1")
+            .args(["rotate", "--list", "--json", "--vault", "test.murk"])
+            .assert()
+            .failure();
+        let json: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+        assert_eq!(json["verified"], false, "{field}: {json}");
+    }
+}
+
+/// A vault with a stale key (not a recipient) is not "no key": the key resolves
+/// but cannot check the vault, so the gate fails instead of falling back to an
+/// unchecked read.
+#[test]
+fn rotate_list_with_a_key_that_cannot_verify_fails() {
+    let dir = TempDir::new().unwrap();
+    let (_, _) = vault_needing_rotation(&dir, "expires_at");
+    let stranger = age::x25519::Identity::generate();
+    let stranger_key = age::secrecy::ExposeSecret::expose_secret(&stranger.to_string()).to_string();
+    murk(&dir, &stranger_key)
+        .args(["rotate", "--list", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not a recipient"));
 }
 
 // ── agent exec supervision ──

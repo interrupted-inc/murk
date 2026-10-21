@@ -607,8 +607,10 @@ pub(crate) fn cmd_policy(sub: PolicyCommand) {
     match sub {
         PolicyCommand::Show { json, vault } => {
             let vault_path = murk_cli::resolve_vault_path(&vault);
-            // Policy lives in the plaintext header — no key needed to read it.
+            // Policy lives in the plaintext header — no key needed to read it,
+            // and with none nothing checks that it is the policy that was set.
             let v = murk_cli::vault::read(Path::new(&vault_path)).unwrap_or_else(|e| die(&e, 1));
+            warn_if_keyless(&vault_path);
             let tags = v.policy.as_ref().map(|p| p.agent_allow_tags.clone());
             if json {
                 let out = serde_json::json!({ "agent_allow_tags": tags });
@@ -670,6 +672,9 @@ pub(crate) fn cmd_recipients(json: bool, vault_path: &str) {
 
     // Borrowed from the SecretString, never copied into a plain String.
     let secret_key = murk_cli::resolve_key_for_vault(vault_path).ok();
+    if secret_key.is_none() {
+        warn_unverified();
+    }
     let entries = try_or_die(murk_cli::list_recipients(
         &vault,
         secret_key.as_ref().map(|s| s.expose_secret()),

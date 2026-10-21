@@ -15,6 +15,9 @@ pub(crate) fn cmd_info(tags: &[String], json: bool, vault_path: &str) {
     let secret_key = key_with_source.as_ref().map(|(k, _)| k.expose_secret());
     let key_source = key_with_source.as_ref().map(|(_, s)| s.clone());
     let info = try_or_die(murk_cli::vault_info(&raw_bytes, tags, secret_key));
+    if key_with_source.is_none() {
+        warn_unverified();
+    }
 
     if json {
         let entries: Vec<serde_json::Value> = info
