@@ -158,7 +158,7 @@ Entries also carry optional lifecycle metadata:
 - `expires_at` — ISO-8601 UTC hard expiry for credentials with a known end-of-life (e.g. a token). `doctor` flags it as expired or expiring soon.
 - `revoked_at` — ISO-8601 UTC marker set when a recipient who could read this key is revoked and rotation is deferred. Its *presence* is the obligation: the revoked recipient can still decrypt the live value from git history until it changes. `doctor` flags it until then; any value write clears it. Omitted when there is no pending rotation.
 
-Set the rotation/expiry fields with `murk describe KEY "desc" --rotate-every 90d --expires 2026-09-01` (`never` clears either); `revoked_at` is managed automatically by `circle revoke`. All lifecycle fields are covered by the integrity MAC (see Integrity), so rotation policy and pending-rotation flags cannot be silently weakened without a key.
+Set the rotation/expiry fields with `murk describe KEY "desc" --rotate-every 90d --expires 2026-09-01` (`never` clears either); `revoked_at` is managed automatically by `circle revoke`. All lifecycle fields are covered by the integrity MAC (see Integrity), so a command that decrypts the vault detects a change made without a key. `murk rotate --list` reads only the plaintext schema and does not check the MAC, so it reports such a change as the truth.
 
 Key names must be valid shell identifiers: `[A-Za-z_][A-Za-z0-9_]*`.
 

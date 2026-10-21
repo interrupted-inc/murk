@@ -236,6 +236,8 @@ This section covers common implementation weaknesses that apply to a local Rust 
 - The vault name written to `.envrc` is quoted by `shell_escape` (`src/env.rs`; test `write_envrc_escapes_vault_name`).
 - Before `cmd_exec` injects variables, it refuses empty key names, key names with `=` or NUL, and values with NUL.
 
+*Gap:* murk does not restrict which variable names a vault sets. A recipient who can write the vault can add `PATH`, `BASH_ENV`, `GIT_SSH_COMMAND` or `MURK_STRICT`, and `murk export` and `murk exec` then set it for the reader.
+
 **Path traversal and link following (CWE-22, CWE-59).** Untrusted names do not become paths:
 
 - A GitHub username must be 1 to 39 ASCII letters, digits or hyphens before it goes into the URL (`fetch_keys` in `src/github.rs`).

@@ -134,20 +134,10 @@ jobs:
           fi
           [ -n "$pr" ] || exit 0
 
-          # Merge on green CI only when the whole PR is nothing but lockfile
-          # updates; otherwise make sure auto-merge is off.
-          # Fetch the file list on its own line so a failed request fails the
-          # step instead of reading as "lockfiles only".
-          files=$(gh pr diff "$pr" --name-only)
-          others=$(grep -vxE 'Cargo\.lock|fuzz/Cargo\.lock' <<<"$files" || true)
-          if [ -z "$others" ] && [ -z "$manual" ]; then
-            gh pr merge "$pr" --auto --rebase
-          elif [ -n "$others" ]; then
-            echo "::notice::PR #$pr changes more than lockfiles, leaving it for review: $(paste -sd, - <<<"$others")"
-            if [ "$(gh pr view "$pr" --json autoMergeRequest --jq '.autoMergeRequest != null')" = true ]; then
-              gh pr merge "$pr" --disable-auto
-            fi
-          fi
+          # Turn auto-merge on or off. HEAD is this run's fix commit on top of
+          # the default branch (unless the branch had manual commits), and the
+          # script is the default branch's, not the PR's.
+          scripts/advisories-automerge.sh "$pr" "$manual"
 
       - name: Open or update the unfixable-advisories issue
         if: steps.fix.outputs.unfixable == 'true'
