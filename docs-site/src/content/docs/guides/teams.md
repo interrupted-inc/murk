@@ -13,29 +13,39 @@ shared password to rotate, no separate secrets server to run.
 
 ## Adding a teammate
 
-Each person generates their own keypair first:
+Each person has their own key. The handoff takes four steps:
 
-```bash
-# Alice sets up the vault
-murk init
-murk add DATABASE_URL
+1. Alice creates the vault and commits it:
 
-# Bob generates his own key
-murk init
-```
+   ```bash
+   murk init
+   murk add DATABASE_URL
+   git add .murk && git commit -m "add vault" && git push
+   ```
 
-Then an existing recipient authorizes Bob's public key:
+2. Bob clones the repository and runs `murk init` once in his clone. It
+   creates his key (or reuses the one he already has for this vault) and,
+   because he is not authorized yet, prints his public key. He sends that
+   key to Alice.
 
-```bash
-murk circle authorize age1bob... --name bob@example.com
-```
+   ```bash
+   murk init
+   ```
 
-Once Bob is authorized, the vault is re-encrypted to include his key, and he
-can decrypt everything in the shared layer:
+3. Alice authorizes the key, then commits and pushes. This re-encrypts the
+   shared secrets to include Bob's key.
 
-```bash
-murk export
-```
+   ```bash
+   murk circle authorize age1bob... --name bob@example.com
+   git commit -am "authorize bob" && git push
+   ```
+
+4. Bob pulls. He can now read the shared secrets:
+
+   ```bash
+   git pull
+   murk get DATABASE_URL
+   ```
 
 Bob can still keep his own local overrides on top of the shared secrets. See
 [shared vs scoped secrets](/guides/shared-vs-scoped/):
@@ -115,18 +125,24 @@ can do. See [Hardware-backed keys](/guides/hardware-keys/#mixed-teams).
 
 ## Authorizing via GitHub
 
-Manual key exchange works, but the easier path for most teams is authorizing
-by GitHub username:
+Instead of exchanging age keys, you can authorize by GitHub username:
 
 ```bash
 murk circle authorize github:bob
 ```
 
 This fetches Bob's SSH public keys from `https://github.com/bob.keys` (no
-authentication required) and adds them as recipients: no pasting an age
-public key over Slack. murk accepts `ssh-ed25519` keys by default, and they
-sign directly, so teammates added this way need no signing-key confirmation.
-`ssh-rsa` keys need `--allow-ssh-rsa` because ed25519 is recommended.
+authentication required) and adds every `ssh-ed25519` key on the account as a
+recipient: no pasting an age public key over Slack. It skips `ssh-rsa` keys with
+a warning unless you pass `--allow-ssh-rsa`, and fails if every key is RSA.
+`ssh-ed25519` keys sign directly, so teammates added this way need no
+signing-key confirmation.
+
+Bob decrypts with the matching private key by setting `MURK_KEY_FILE` to it
+(for example `~/.ssh/id_ed25519`). murk does not search `~/.ssh` on its own.
+It needs an unencrypted SSH private key that only Bob can read, and it cannot
+read a passphrase-protected one. If Bob has no such key, use the age key
+exchange above.
 
 ### Recipient pinning
 
@@ -147,8 +163,8 @@ full trust analysis.
 ## Listing and managing recipients
 
 ```bash
-murk circle           # list recipients
-murk circle revoke RECIPIENT   # remove a recipient (see offboarding)
+murk circle                    # list recipients
+murk circle revoke RECIPIENT   # RECIPIENT is a public key or a display name (see offboarding)
 ```
 
 murk compares keys by their canonical spelling, so `authorize` refuses a
@@ -157,9 +173,19 @@ every spelling of a key. An `age1...` key with a non-canonical encoding (the
 high bit of its value set) is refused outright, so it can't serve as an alias
 that outlives a revocation.
 
-For encrypting a secret to only a subset of the team (not the whole
-recipient list), use named groups: `murk group create|ls|add|rm NAME`. See
-the [CLI reference](/reference/cli/#murk-group) for the full flag surface.
+To share a secret with only part of the team, use a group:
+
+```bash
+murk group create ops
+murk group add ops --member bob@example.com
+murk add STRIPE_KEY --group ops
+```
+
+`murk group ls` lists groups, and `murk group rm ops --member bob@example.com`
+removes a member. `murk circle authorize ... --group ops` adds a new
+recipient to a group in the same step. See [shared vs scoped
+secrets](/guides/shared-vs-scoped/) and the [CLI
+reference](/reference/cli/#murk-group) for the full flag surface.
 
 A change to a group's membership has to be signed by a member of that group.
 A machine that has pinned the earlier membership refuses a change made by
