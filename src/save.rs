@@ -595,7 +595,9 @@ pub fn save_vault(
 /// older revision, numbered at or below the removal — still lists it: the
 /// save is numbered past the removal and signed by a trusted key, so every
 /// machine would take it as the key re-added. A save that adds the key itself
-/// (`circle authorize`) re-adds it on purpose and is allowed.
+/// (`circle authorize`) re-adds it on purpose and is allowed, and so is a save
+/// on a branch the removal has not reached (see
+/// [`crate::trust::removal_applies`]), where the key is still a member.
 fn refuse_carried_removed_keys(
     vault_path: &str,
     vault: &types::Vault,
@@ -606,12 +608,14 @@ fn refuse_carried_removed_keys(
     let (Some(pin), Some(on_disk)) = (prior_pin.as_ref(), on_disk) else {
         return Ok(prior_pin);
     };
+    let checkout = crate::trust::Checkout::of(vault_path, Some(pin));
     let canonical = |r: &String| crate::recipients::canonical_recipient(r).into_owned();
     let before: BTreeSet<String> = on_disk.recipients.iter().map(canonical).collect();
     let carried = vault.recipients.iter().find_map(|r| {
         let key = canonical(r);
         let at = *pin.removed.get(&key)?;
-        (before.contains(&key) && on_disk.generation <= at).then_some((r, at))
+        let applies = crate::trust::removal_applies(pin, &key, &checkout);
+        (applies && before.contains(&key) && on_disk.generation <= at).then_some((r, at))
     });
     match carried {
         Some((key, at)) => Err(MurkError::Secret(format!(
