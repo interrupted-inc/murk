@@ -6,8 +6,9 @@
 # starts with `# murk-trusted-signer:` lines, and murk-action takes only the
 # key line, so `grep AGE-SECRET-KEY` keeps that line on its way into the
 # Actions secret store. The CI job also gets MURK_TRUSTED_SIGNERS, because a
-# bare key names no signer. murk-action then runs `murk export` and sees only
-# the granted keys. The `gh` CLI is shimmed for the recording (it writes the
+# bare key names no signer. It carries no expiry line either, so each murk
+# command warns that only the vault's grant record bounds it. murk-action
+# then runs `murk export` and sees only the granted keys. The `gh` CLI is shimmed for the recording (it writes the
 # key to a local file) so the on-camera command is exactly what a reader
 # copies.
 # The TTL is seconds here so the expiry fits on camera; use 30d in real life.
@@ -91,6 +92,10 @@ Sleep 1s
 Type "murk export"
 Enter
 Sleep 2500ms
+
+Type "# warn: a bare key line has no expiry; the vault record bounds it."
+Enter
+Sleep 2s
 
 Type "# DEPLOY_TOKEN only. PROD_DB was never encrypted to this key."
 Enter
