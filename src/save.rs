@@ -775,8 +775,11 @@ fn build_meta(
 /// pinned on another signer's word (`added_by`) is never written: signing it
 /// would vouch for it under the writer's name, so other machines would keep
 /// believing it after its adder is removed. Such a key reaches other machines
-/// through a write by someone who confirmed it. Without a pin (trust from
-/// `MURK_TRUSTED_SIGNERS`) the loaded entries are carried forward as they are.
+/// through a write by someone who confirmed it. The loaded entries are carried
+/// forward as they are only when this machine has no pin file at all
+/// (`MURK_NO_SIGNER_PIN`, or no home directory). A load trusted through
+/// `MURK_TRUSTED_SIGNERS` still writes a pin, with no keys added to `signers`,
+/// so a later save there writes only the pinned keys and the writer's own.
 pub(crate) fn vouched_registry(
     vault: &types::Vault,
     loaded: &BTreeMap<String, String>,
