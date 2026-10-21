@@ -1462,13 +1462,9 @@ mod tests {
         let ps = path.to_str().unwrap();
 
         let mut vault = signed_test_vault(&pk, &make_recipient(&pk));
-        vault.recipients.push(agent_pk.clone());
         let state = types::Murk {
             values: HashMap::from([("API_KEY".into(), secret("REAL"))]),
-            recipients: HashMap::from([
-                (pk.clone(), "alice".to_string()),
-                (agent_pk.clone(), "agent:old".to_string()),
-            ]),
+            recipients: HashMap::from([(pk.clone(), "alice".to_string())]),
             ..Default::default()
         };
         let home = tempfile::tempdir().unwrap();
@@ -1495,6 +1491,10 @@ mod tests {
             issuer: pk.clone(),
         };
         meta.grants.insert("old".into(), grant.clone());
+        // A grant's key is minted for it: it joins the vault with the grant,
+        // never as a teammate first.
+        vault.recipients.push(agent_pk.clone());
+        meta.recipients.insert(agent_pk.clone(), "agent:old".into());
         vault.agents = crate::agents::blobs_for(&meta.grants, &[]).unwrap();
         vault.secrets.get_mut("API_KEY").unwrap().private.insert(
             agent_pk.clone(),
