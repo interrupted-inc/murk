@@ -30,11 +30,13 @@ Scope is a hard, cryptographic boundary: a grant cannot decrypt a key it wasn't 
 
 ## TTL and revocation
 
-`--ttl` (default `2h`) is recorded in the grant's metadata alongside its scope and issuer. **The TTL is enforced at read time**: past `expires_at`, the murk binary refuses the grant at every entry point (CLI, MCP, the bindings). Like the allow-tag policy, that is a binary-level guardrail, not cryptographic access control — age keys can't self-destruct, and old vault versions stay decryptable from git history with raw age — so revocation is still what closes the exposure. `murk agent ls` lists active grants with their scope and TTL status (time remaining, or how long expired) and works offline.
+`--ttl` (default `2h`) is recorded in the grant's metadata alongside its scope and issuer. **The TTL is enforced at read time**: past `expires_at`, the murk binary refuses the grant on every read (CLI, MCP, the bindings). The MCP `murk_plan` tool still lists the schema of the grant's keys. Like the allow-tag policy, that is a binary-level guardrail, not cryptographic access control — age keys can't self-destruct, and old vault versions stay decryptable from git history with raw age — so revocation is still what closes the exposure. `murk agent ls` lists active grants with their scope and TTL status (time remaining, or how long expired) and works offline.
 
 To renew a grant past (or nearing) its TTL, pass `--renew` to `murk agent grant`: it revokes the existing key and mints a fresh one under the same name, in a single vault write. Without `--renew`, re-minting a live name is refused.
 
 `murk agent revoke NAME [--rotate]` removes the grant and its ephemeral recipient, clearing its private ciphertexts so it can no longer read current values. Because the key could still decrypt old `.murk` versions from git history, **revocation doesn't erase git history**: `--rotate` re-prompts for new values across the grant's scope, which is the step that actually closes the exposure.
+
+Revocation and policy changes apply when a process loads the vault. A running `murk mcp` server and a loaded binding object keep the vault state from their last load, so they still serve a revoked grant. Restart the server and reload the binding object after you change access. Grant expiry is checked again on every value read.
 
 ## Where grant state lives
 

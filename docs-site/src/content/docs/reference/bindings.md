@@ -194,6 +194,11 @@ grant can't decrypt out-of-scope secrets in the first place — its ephemeral
 key isn't a recipient of them — so this is a backstop, not the only guard. See
 [AI agents & MCP](/guides/ai-agents-mcp/) for the full model.
 
+A loaded vault object is a snapshot. It keeps the decrypted values and the
+policy and grant state from when you loaded it, so a later revocation or
+policy change on disk does not reach it. Load the vault again after you
+change access. Grant expiry is checked again on every value read.
+
 ## Decrypted values in memory
 
 murk zeroes plaintext from its own memory when a value is dropped, but that
