@@ -1000,23 +1000,17 @@ pub fn regenerate_meta(
         return Ok(None);
     }
 
-    // The merged vault is signed by the merging key, so the group rule a load
-    // applies (a membership change needs a member's signature) must hold for
-    // that key against ours: otherwise every machine would refuse the result.
-    if let Ok(me) = identity.pubkey_string()
-        && let Some(group) = crate::trust::group_change_violation(
-            &merged.recipients,
-            &meta.groups,
-            &crate::trust::canonical_groups(&ours_meta.groups),
-            &me,
-        )
-    {
-        conflicts.push(MergeConflict {
-            field: format!("groups.{group}"),
-            reason: format!(
-                "theirs changes the membership of group {group}, and you are not a member of it; a member of {group} must do this merge"
-            ),
-        });
+    let pin = crate::pins::read(vault_path)?;
+    if let Some(conflict) = result_conflict(
+        &identity,
+        merged,
+        &meta,
+        &ours_meta,
+        pin.as_ref(),
+        ours,
+        theirs,
+    ) {
+        conflicts.push(conflict);
         return Ok(None);
     }
 
@@ -1030,7 +1024,6 @@ pub fn regenerate_meta(
             theirs.vault_id.clone()
         };
     }
-    let pin = crate::pins::read(vault_path)?;
     merged.generation = ours
         .generation
         .max(theirs.generation)
@@ -1081,6 +1074,47 @@ pub fn regenerate_meta(
     // and `murk trust`. The signature covers the finished file, so it comes last.
     merged.sig = crate::sign_vault(merged, &identity);
     Ok(Some("meta regenerated".into()))
+}
+
+/// Why the merged result must not be signed by the merging key, if it must
+/// not: the group rule a load applies (a membership change needs a member's
+/// signature) must hold for that key against ours, or every machine would
+/// refuse the result; and a key removed on this machine may come back only
+/// through a side numbered past its removal — older sides that merely still
+/// list it must not carry it into a result numbered and signed past
+/// everything.
+fn result_conflict(
+    identity: &crate::crypto::MurkIdentity,
+    merged: &Vault,
+    meta: &Meta,
+    ours_meta: &Meta,
+    pin: Option<&crate::pins::TrustPin>,
+    ours: &Vault,
+    theirs: &Vault,
+) -> Option<MergeConflict> {
+    if let Ok(me) = identity.pubkey_string()
+        && let Some(group) = crate::trust::group_change_violation(
+            &merged.recipients,
+            &meta.groups,
+            &crate::trust::canonical_groups(&ours_meta.groups),
+            &me,
+        )
+    {
+        return Some(MergeConflict {
+            field: format!("groups.{group}"),
+            reason: format!(
+                "theirs changes the membership of group {group}, and you are not a member of it; a member of {group} must do this merge"
+            ),
+        });
+    }
+    let (key, at) = crate::trust::removed_key_kept_by_merge(pin, merged, &[ours, theirs])?;
+    Some(MergeConflict {
+        field: format!("recipients.{}", recipient_label(&key)),
+        reason: format!(
+            "rolled back: {} was removed from this vault at generation {at} on this machine, and neither side re-adds them in a newer revision — merge the branch that removed them first",
+            crate::truncate_pubkey(&key)
+        ),
+    })
 }
 
 /// The authenticity gate before any merging: the ancestor, then ours and

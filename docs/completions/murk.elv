@@ -442,6 +442,7 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand --help 'Print help'
         }
         &'murk;trust'= {
+            cand --re-add 'Trust a key this machine recorded as removed from the vault again (its public key, or its name in the vault). Repeat for each key; a vault signed by or listing a removed key is never trusted without it'
             cand --vault 'Vault filename'
             cand --yes 'Accept without asking (for scripts; review first)'
             cand --print-key 'Print your own trusted-signer entry (for MURK_TRUSTED_SIGNERS) and signing-key fingerprint (for teammates to confirm), then exit'

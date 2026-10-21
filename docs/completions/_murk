@@ -624,6 +624,7 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (trust)
 _arguments "${_arguments_options[@]}" : \
+'(--print-key)*--re-add=[Trust a key this machine recorded as removed from the vault again (its public key, or its name in the vault). Repeat for each key; a vault signed by or listing a removed key is never trusted without it]:KEY:_default' \
 '--vault=[Vault filename]:VAULT:_default' \
 '--yes[Accept without asking (for scripts; review first)]' \
 '(--yes)--print-key[Print your own trusted-signer entry (for MURK_TRUSTED_SIGNERS) and signing-key fingerprint (for teammates to confirm), then exit]' \

@@ -270,7 +270,13 @@ pub fn pin_created_vault(
     let head = crate::trust::head_of(vault_path);
     crate::pins::update(vault_path, |fresh| {
         Ok(Some(crate::trust::accepted_pin(
-            &loaded, fresh, true, &head,
+            &loaded,
+            fresh,
+            crate::trust::Acceptance::Trust {
+                reset_counter: true,
+                readmit: &std::collections::BTreeSet::new(),
+            },
+            &head,
         )))
     })
 }

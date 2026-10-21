@@ -300,13 +300,14 @@ fn run() {
         Command::Trust {
             yes,
             print_key,
+            re_add,
             vault,
         } => {
             let vault = murk_cli::resolve_vault_path(&vault);
             if print_key {
                 cmd_trust_print_key(&vault);
             } else {
-                cmd_trust(yes, &vault);
+                cmd_trust(yes, &re_add, &vault);
             }
         }
         Command::Doctor { vault } => cmd_doctor(&murk_cli::resolve_vault_path(&vault)),

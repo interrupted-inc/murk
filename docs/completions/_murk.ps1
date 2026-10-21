@@ -513,6 +513,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             break
         }
         'murk;trust' {
+            [CompletionResult]::new('--re-add', '--re-add', [CompletionResultType]::ParameterName, 'Trust a key this machine recorded as removed from the vault again (its public key, or its name in the vault). Repeat for each key; a vault signed by or listing a removed key is never trusted without it')
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('--yes', '--yes', [CompletionResultType]::ParameterName, 'Accept without asking (for scripts; review first)')
             [CompletionResult]::new('--print-key', '--print-key', [CompletionResultType]::ParameterName, 'Print your own trusted-signer entry (for MURK_TRUSTED_SIGNERS) and signing-key fingerprint (for teammates to confirm), then exit')

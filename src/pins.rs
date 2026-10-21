@@ -17,8 +17,13 @@
 //!   counter accepted, so another vault's file or an older revision is refused;
 //! - `was_signed`: whether a signed version was ever accepted, so a stripped
 //!   signature is refused;
-//! - `signers`: verifying keys for murk ≤ 0.13 (signed view v1) age signatures,
-//!   recorded only from a vault the user accepted.
+//! - `signers`: confirmed verifying keys of age signers, and `added_by`: for
+//!   an entry pinned on another signer's word, that signer — the entry stops
+//!   counting once they are removed;
+//! - `removed`: keys removed from the vault, with the generation they were
+//!   removed at, so an older revision cannot bring them back;
+//! - `head` and `branch_heads`: fingerprints of the vaults accepted at the
+//!   marks, so a different vault with the same counter is seen as a fork.
 //!
 //! The pin is written only by an accepted load, an explicit `murk trust`, or
 //! this machine's own save — never from an unverified vault. See
@@ -65,9 +70,29 @@ pub struct TrustPin {
     /// Group name → canonical member keys, as last accepted.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub groups: BTreeMap<String, BTreeSet<String>>,
-    /// Canonical pubkey → base64 verifying key for v1 age signatures.
+    /// Canonical pubkey → base64 verifying key of an age signer.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub signers: BTreeMap<String, String>,
+    /// For a `signers` entry this machine pinned from a signer registry on
+    /// another signer's word: canonical recipient → that signer. The entry
+    /// counts only while that signer is trusted (see [`TrustPin::pinned_key`]).
+    /// An entry without one was confirmed here: with `murk trust`, or as this
+    /// machine's own key.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub added_by: BTreeMap<String, String>,
+    /// Keys an accepted vault removed: canonical key → the generation of the
+    /// vault that removed it. A vault listing the key at that generation or
+    /// below, or signed by it, is refused; a newer vault from a trusted signer
+    /// that lists it again, or `murk trust --re-add`, takes it out.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub removed: BTreeMap<String, u64>,
+    /// Fingerprint ([`crate::trust::vault_fingerprint`]) of the vault accepted
+    /// at `generation`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub head: String,
+    /// Fingerprint of the vault accepted at each branch's mark.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub branch_heads: BTreeMap<String, String>,
     /// Whether a signed version of this vault was ever accepted here.
     #[serde(default)]
     pub was_signed: bool,
@@ -78,6 +103,25 @@ impl TrustPin {
     /// load, or an own save), as opposed to a legacy or empty record.
     pub fn has_trust(&self) -> bool {
         self.v >= PIN_VERSION && !self.trusted.is_empty()
+    }
+
+    /// The verifying key pinned for `key` (canonical), if it still counts: an
+    /// entry pinned on another signer's word counts only while that signer is
+    /// trusted here.
+    pub fn pinned_key(&self, key: &str) -> Option<&String> {
+        let vk = self.signers.get(key)?;
+        match self.added_by.get(key) {
+            Some(adder) if !self.trusted.contains(adder) => None,
+            _ => Some(vk),
+        }
+    }
+
+    /// The `signers` entries that still count (see [`TrustPin::pinned_key`]).
+    pub fn standing_signers(&self) -> BTreeMap<String, String> {
+        self.signers
+            .keys()
+            .filter_map(|k| self.pinned_key(k).map(|vk| (k.clone(), vk.clone())))
+            .collect()
     }
 }
 

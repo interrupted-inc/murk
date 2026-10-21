@@ -267,6 +267,7 @@ complete -c murk -n "__fish_murk_using_subcommand group; and __fish_seen_subcomm
 complete -c murk -n "__fish_murk_using_subcommand group; and __fish_seen_subcommand_from help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c murk -n "__fish_murk_using_subcommand verify" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand verify" -s h -l help -d 'Print help'
+complete -c murk -n "__fish_murk_using_subcommand trust" -l re-add -d 'Trust a key this machine recorded as removed from the vault again (its public key, or its name in the vault). Repeat for each key; a vault signed by or listing a removed key is never trusted without it' -r
 complete -c murk -n "__fish_murk_using_subcommand trust" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand trust" -l yes -d 'Accept without asking (for scripts; review first)'
 complete -c murk -n "__fish_murk_using_subcommand trust" -l print-key -d 'Print your own trusted-signer entry (for MURK_TRUSTED_SIGNERS) and signing-key fingerprint (for teammates to confirm), then exit'

@@ -31,13 +31,23 @@
 //!    vault this machine has seen in 0.14 form is a rollback.
 //! 7. A group membership change must be signed by a member of that group as
 //!    pinned (removing a member who left the vault entirely is exempt).
+//! 8. A key an accepted vault removed stays removed: a vault signed by it, or
+//!    listing it at the generation it was removed at or below, is refused. A
+//!    newer vault from a trusted signer that lists it again, or `murk trust
+//!    --re-add`, brings it back.
+//! 9. The generation may rise at most [`MAX_GENERATION_STEP`] above the mark
+//!    and never past [`MAX_GENERATION`]; a different vault with the counter
+//!    this machine accepted on the branch is a fork.
 //!
-//! An accepted vault replaces the pin's trusted set, grants and groups with its
-//! own, and raises the counter. Its registry entries for trusted recipients are
-//! pinned where no key was pinned before — believed because the vault carrying
-//! them was signed by an already-trusted signer (or confirmed by `murk trust`).
-//! A pinned key is never replaced. `murk trust` accepts a refused vault on the
-//! user's say-so after showing what changed.
+//! An accepted vault that is the newest this machine has seen, on a checked-
+//! out branch, replaces the pin's trusted set, grants and groups with its
+//! own, and raises the counter; any other accepted load is history and only
+//! narrows the pin (see [`Acceptance`]). Its registry entries for trusted
+//! recipients are pinned where no key was pinned before — believed because the
+//! vault carrying them was signed by an already-trusted signer (or confirmed by
+//! `murk trust`), and only while that signer stays trusted. A pinned key is
+//! never replaced. `murk trust` accepts a refused vault on the user's say-so
+//! after showing what changed.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -51,6 +61,17 @@ use crate::types;
 /// other machines without a pin). Grant keys listed here still never count.
 /// See [`parse_trusted_signer`] for the entry format.
 pub const TRUSTED_SIGNERS_VAR: &str = "MURK_TRUSTED_SIGNERS";
+
+/// The largest generation accepted: 2^53 − 1, the largest integer every JSON
+/// reader holds exactly. A vault above it is refused as tampering, so no
+/// signer can push the counter to where it stops increasing.
+pub const MAX_GENERATION: u64 = (1 << 53) - 1;
+
+/// How far above this machine's mark a loaded vault's generation may be.
+/// Every save adds one and a merge one past its sides, so a team needs a
+/// million saves between two loads here to reach it; a vault that jumps
+/// further is refused until `murk trust`.
+pub const MAX_GENERATION_STEP: u64 = 1_000_000;
 
 /// Trusted signers supplied from outside the vault and the pin: canonical
 /// recipient → the verifying key its signatures must verify under (`None` for
@@ -114,6 +135,24 @@ pub enum Refusal {
     /// entry. Grants get freshly minted keys, so this is tampering — and
     /// recording it would mark the operator as a grant here.
     GrantBindsOperator { grant: String, key: String },
+    /// The vault is signed by, or lists, a key an accepted vault removed
+    /// (`removed_at`), and is not a newer revision re-adding it: `found` is at
+    /// or below `removed_at`, or the removed key signed it. `murk trust`
+    /// accepts it only with `--re-add` naming the key.
+    RemovedKey {
+        key: String,
+        removed_at: u64,
+        found: u64,
+        signer: bool,
+    },
+    /// A different vault with the generation this machine accepted on the
+    /// branch (or outside git): the branch was rewritten, or another save
+    /// with the same counter replaced the accepted one.
+    Forked { generation: u64 },
+    /// The generation is more than [`MAX_GENERATION_STEP`] above the mark.
+    GenerationJump { pinned: u64, found: u64 },
+    /// The generation is above [`MAX_GENERATION`].
+    GenerationOutOfRange { found: u64 },
 }
 
 impl Refusal {
@@ -121,7 +160,9 @@ impl Refusal {
     /// are: an agent grant is read-only by design. Nor is a changed verifying
     /// key: an age key's verifying key is derived from its secret, so a
     /// different one for the same recipient is a forgery. Nor a grant bound
-    /// to an operator key, which is tampering.
+    /// to an operator key, which is tampering, nor a generation past
+    /// [`MAX_GENERATION`]. A removed key is accepted only when named (see
+    /// [`Refusal::RemovedKey`]).
     pub fn acceptable(&self) -> bool {
         !matches!(
             self,
@@ -129,6 +170,7 @@ impl Refusal {
                 | Refusal::GrantWithoutRecord { .. }
                 | Refusal::SignerKeyChanged { .. }
                 | Refusal::GrantBindsOperator { .. }
+                | Refusal::GenerationOutOfRange { .. }
         )
     }
 }
@@ -282,10 +324,137 @@ pub fn pinned_trusted_signers(vault_path: &str) -> Result<TrustedSigners, String
             if k.starts_with("ssh-ed25519 ") {
                 Some((k.clone(), None))
             } else {
-                pin.signers.get(k).map(|vk| (k.clone(), Some(vk.clone())))
+                pin.pinned_key(k).map(|vk| (k.clone(), Some(vk.clone())))
             }
         })
         .collect())
+}
+
+/// A short fingerprint of a signed vault — the SHA-256 of its signature, as
+/// hex — that tells two vaults with the same generation apart. Empty for an
+/// unsigned vault or one with a murk ≤ 0.13 signature in its meta.
+pub fn vault_fingerprint(vault: &types::Vault) -> String {
+    use sha2::{Digest, Sha256};
+    let Some(sig) = &vault.sig else {
+        return String::new();
+    };
+    Sha256::digest(sig.sig.as_bytes())
+        .iter()
+        .take(16)
+        .fold(String::new(), |mut s, b| {
+            use std::fmt::Write;
+            let _ = write!(s, "{b:02x}");
+            s
+        })
+}
+
+/// The removed keys (canonical, with the generation each was removed at)
+/// that `loaded` is signed by or lists, whatever its generation. `murk
+/// trust` re-trusts a vault carrying any of them only when the user names
+/// each one.
+pub fn removed_keys_in(loaded: &Loaded<'_>, pin: Option<&TrustPin>) -> BTreeMap<String, u64> {
+    let Some(pin) = pin.filter(|p| p.v >= pins::PIN_VERSION) else {
+        return BTreeMap::new();
+    };
+    let signer = match loaded.signature {
+        types::SignatureState::Signed { signer, .. } => Some(signer.as_str()),
+        types::SignatureState::Unsigned => None,
+    };
+    loaded
+        .vault
+        .recipients
+        .iter()
+        .map(String::as_str)
+        .chain(signer)
+        .filter_map(|k| {
+            let k = canonical_recipient(k).into_owned();
+            pin.removed.get(&k).map(|&at| (k, at))
+        })
+        .collect()
+}
+
+/// Rule 8 for a load: the vault is signed by a removed key, or lists one at
+/// or below the generation it was removed at. A newer vault listing it again
+/// is how a trusted signer re-adds someone, so it passes (its signer is
+/// checked like any other).
+fn removal_refusal(loaded: &Loaded<'_>, pin: Option<&TrustPin>) -> Option<Refusal> {
+    let pin = pin.filter(|p| p.v >= pins::PIN_VERSION)?;
+    let found = loaded.vault.generation;
+    if let types::SignatureState::Signed { signer, .. } = loaded.signature
+        && let Some(&removed_at) = pin.removed.get(canonical_recipient(signer).as_ref())
+    {
+        return Some(Refusal::RemovedKey {
+            key: signer.clone(),
+            removed_at,
+            found,
+            signer: true,
+        });
+    }
+    loaded.vault.recipients.iter().find_map(|r| {
+        let removed_at = *pin.removed.get(canonical_recipient(r).as_ref())?;
+        (found <= removed_at).then(|| Refusal::RemovedKey {
+            key: r.clone(),
+            removed_at,
+            found,
+            signer: false,
+        })
+    })
+}
+
+/// Rule 9 for a load: a generation more than [`MAX_GENERATION_STEP`] above
+/// the mark, or a different vault with the generation accepted on this
+/// branch (outside git: overall). A detached HEAD has no mark to fork from.
+fn counter_refusal(
+    loaded: &Loaded<'_>,
+    pin: Option<&TrustPin>,
+    head: &HeadState,
+) -> Option<Refusal> {
+    let pin = pin.filter(|p| p.v >= pins::PIN_VERSION)?;
+    let found = loaded.vault.generation;
+    if pin.generation > 0 && found > pin.generation.saturating_add(MAX_GENERATION_STEP) {
+        return Some(Refusal::GenerationJump {
+            pinned: pin.generation,
+            found,
+        });
+    }
+    let fingerprint = vault_fingerprint(loaded.vault);
+    let (mark, seen) = match head {
+        HeadState::Branch(b) => (pin.branches.get(b).copied(), pin.branch_heads.get(b)),
+        HeadState::NotARepo => (Some(pin.generation), Some(&pin.head)),
+        HeadState::Detached => (None, None),
+    };
+    let forked = mark == Some(found)
+        && !fingerprint.is_empty()
+        && seen.is_some_and(|s| !s.is_empty() && *s != fingerprint);
+    forked.then_some(Refusal::Forked { generation: found })
+}
+
+/// The verdict for a load of the working vault: the core rules, then the
+/// removal and counter rules. A refusal `murk trust` can never accept comes
+/// first; a removed key next, so a vault that is also refused for another
+/// reason still needs the key named.
+fn load_verdict(
+    loaded: &Loaded<'_>,
+    pin: Option<&TrustPin>,
+    external_signers: Option<&TrustedSigners>,
+    head: &HeadState,
+) -> Verdict {
+    let core = verdict(loaded, pin, external_signers, head);
+    if let Verdict::Refused(r) = &core
+        && !r.acceptable()
+    {
+        return core;
+    }
+    if let Some(refusal) = removal_refusal(loaded, pin) {
+        return Verdict::Refused(refusal);
+    }
+    if matches!(core, Verdict::Refused(_)) {
+        return core;
+    }
+    match counter_refusal(loaded, pin, head) {
+        Some(refusal) => Verdict::Refused(refusal),
+        None => core,
+    }
 }
 
 /// Verify `vault`'s signature against `anchor` alone, for a loader that
@@ -362,10 +531,14 @@ pub fn canonical_groups(groups: &Groups) -> BTreeMap<String, BTreeSet<String>> {
 /// pin (an agent grant's key file). When it or `MURK_TRUSTED_SIGNERS` is
 /// given, their union is the trusted set and the pin's set is ignored; the
 /// pin still supplies the rollback, vault-id and downgrade checks.
+///
+/// `readmit` names removed keys (canonical) the user is re-adding with
+/// `murk trust --re-add`: they are judged as if never removed.
 pub fn assess(
     vault_path: &str,
     loaded: &Loaded<'_>,
     anchor: Option<&TrustedSigners>,
+    readmit: &BTreeSet<String>,
 ) -> Result<Assessment, String> {
     let pin = pins::read(vault_path)?;
     let env_signers = env_trusted_signers()?;
@@ -380,7 +553,11 @@ pub fn assess(
         ),
     };
     let head = head_of(vault_path);
-    let verdict = verdict(loaded, pin.as_ref(), external.as_ref(), &head);
+    let judged = pin.clone().map(|mut p| {
+        p.removed.retain(|k, _| !readmit.contains(k));
+        p
+    });
+    let verdict = load_verdict(loaded, judged.as_ref(), external.as_ref(), &head);
     Ok(Assessment {
         verdict,
         pin,
@@ -399,7 +576,7 @@ pub fn reassess(
     assessment: &Assessment,
     pin: Option<&TrustPin>,
 ) -> Verdict {
-    verdict(
+    load_verdict(
         loaded,
         pin,
         assessment.external.as_ref(),
@@ -428,7 +605,7 @@ fn signer_key_refusal(
     let signer_c = canonical_recipient(signer).into_owned();
     let expected = match external_signers {
         Some(external) => external.get(&signer_c).cloned().flatten(),
-        None => trusted_pin.and_then(|p| p.signers.get(&signer_c).cloned()),
+        None => trusted_pin.and_then(|p| p.pinned_key(&signer_c).cloned()),
     };
     match expected {
         Some(expected) if expected == vk => None,
@@ -518,6 +695,11 @@ fn verdict(
     external_signers: Option<&TrustedSigners>,
     head: &HeadState,
 ) -> Verdict {
+    if loaded.vault.generation > MAX_GENERATION {
+        return Verdict::Refused(Refusal::GenerationOutOfRange {
+            found: loaded.vault.generation,
+        });
+    }
     if let Some(refusal) = grant_binding_refusal(loaded, pin, external_signers) {
         return Verdict::Refused(refusal);
     }
@@ -655,6 +837,9 @@ pub fn check_merge_side(
             crate::validate::show(&side.vault.vault_id)
         ));
     }
+    if let Some(refusal) = merge_side_counter_or_removal(side, base.map(|(b, _)| b), pin.as_ref()) {
+        return Err(refusal);
+    }
     let env_signers = env_trusted_signers()?;
     let side_pin = pin.map(|mut p| {
         p.generation = 0;
@@ -694,6 +879,83 @@ pub fn check_merge_side(
         ));
     }
     Ok(())
+}
+
+/// Rules 8 and 9 for a merge side. A side signed by a removed key is refused.
+/// A side that lists a removed key the ancestor did not, numbered at or below
+/// the removal, is an older revision re-adding them: refused as a rollback. A
+/// side that merely still lists such a key (a branch forked before the
+/// removal) passes here: the merge takes the removal from the other side, and
+/// [`removed_key_kept_by_merge`] refuses a result that keeps the key. The
+/// counter may be at most [`MAX_GENERATION_STEP`] above both the mark and the
+/// ancestor; unlike a load it may be below the mark, since a merged branch is
+/// legitimately older.
+fn merge_side_counter_or_removal(
+    side: &Loaded<'_>,
+    base: Option<&types::Vault>,
+    pin: Option<&TrustPin>,
+) -> Option<String> {
+    let pin = pin.filter(|p| p.v >= pins::PIN_VERSION)?;
+    let found = side.vault.generation;
+    let in_base: BTreeSet<String> = base
+        .map(|b| {
+            b.recipients
+                .iter()
+                .map(|r| canonical_recipient(r).into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    if let types::SignatureState::Signed { signer, .. } = side.signature
+        && let Some(at) = pin.removed.get(canonical_recipient(signer).as_ref())
+    {
+        return Some(format!(
+            "rolled back: it is signed by {}, who was removed from this vault at generation {at} on this machine",
+            label(side.names, signer)
+        ));
+    }
+    for r in &side.vault.recipients {
+        let canonical = canonical_recipient(r).into_owned();
+        if let Some(&at) = pin.removed.get(&canonical)
+            && found <= at
+            && !in_base.contains(&canonical)
+        {
+            return Some(format!(
+                "rolled back: it adds {} again, who was removed from this vault at generation {at} on this machine, in a revision numbered {found}, not newer",
+                label(side.names, r)
+            ));
+        }
+    }
+    let mark = pin.generation.max(base.map_or(0, |b| b.generation));
+    (mark > 0 && found > mark.saturating_add(MAX_GENERATION_STEP)).then(|| {
+        format!(
+            "its generation {found} jumps more than {MAX_GENERATION_STEP} past {mark}, the highest this machine accepted or the common ancestor's"
+        )
+    })
+}
+
+/// Rule 8 for a merge result: a removed key the merged recipients still list
+/// must be re-added by a side numbered above the removal (one that passed
+/// [`check_merge_side`], so its signer is trusted). Otherwise the result would
+/// bring them back from older revisions alone. Returns the key and the
+/// generation it was removed at.
+pub fn removed_key_kept_by_merge(
+    pin: Option<&TrustPin>,
+    merged: &types::Vault,
+    sides: &[&types::Vault],
+) -> Option<(String, u64)> {
+    let pin = pin.filter(|p| p.v >= pins::PIN_VERSION)?;
+    merged.recipients.iter().find_map(|r| {
+        let canonical = canonical_recipient(r).into_owned();
+        let at = *pin.removed.get(&canonical)?;
+        let readded = sides.iter().any(|side| {
+            side.generation > at
+                && side
+                    .recipients
+                    .iter()
+                    .any(|s| canonical_recipient(s) == canonical)
+        });
+        (!readded).then(|| (r.clone(), at))
+    })
 }
 
 /// The first group whose membership changed relative to the pin without the
@@ -745,100 +1007,293 @@ pub fn group_change_violation(
     None
 }
 
-/// The pin to store once `loaded` is accepted (by a trusted load, `murk
-/// trust`, or this machine's own signed save) while `head` is checked out.
-/// Keeps the higher counters unless `reset_counter` (an explicit `murk trust`
-/// of a rollback), which lowers the mark for this branch.
+/// How an accepted vault came to be accepted, which decides what it may
+/// change in the pin.
+#[derive(Debug, Clone, Copy)]
+pub enum Acceptance<'a> {
+    /// A load the trust rules accepted. It is the vault's current state, and
+    /// replaces the trusted set, groups and registry, only when it is newer
+    /// than everything this machine accepted and checked out on a branch (or
+    /// outside git). Any other accepted load — a detached HEAD, a branch
+    /// behind the mark, the vault already accepted, or a different vault with
+    /// that counter — is history: it only narrows the pin (marks, grants seen,
+    /// the signed bit), so reading history never adds trust.
+    Load,
+    /// The user's decision: `murk trust`, or `murk init` creating the vault.
+    /// `reset_counter` lowers this branch's mark to the vault's counter (a
+    /// rollback or fork accepted on purpose). `readmit` names the removed
+    /// keys (canonical) the user re-adds with `--re-add`; any other removed
+    /// key stays removed.
+    Trust {
+        reset_counter: bool,
+        readmit: &'a BTreeSet<String>,
+    },
+    /// This machine's own signed save of a vault that listed `before`
+    /// (canonical recipients; `None` for a new file). It changes the trusted
+    /// set only by what the save itself added or removed, so saving over a
+    /// vault read as history does not trust the keys it carried.
+    OwnSave {
+        before: Option<&'a BTreeSet<String>>,
+    },
+}
+
+/// The pin to store once `loaded` is accepted (see [`Acceptance`]) while
+/// `head` is checked out. Keeps the higher counters unless `reset_counter`.
+///
+/// A key the trusted set loses is recorded in `removed` with the vault's
+/// generation — when the vault is this branch's next accepted state (a
+/// branch seen here before, or outside git), the user's decision, or this
+/// machine's own save — and leaves it only when a newer accepted vault lists
+/// it again, or the user re-adds it. A registry entry for a recipient with
+/// no pinned key is pinned on the signer's word and recorded in `added_by`;
+/// when that signer leaves the trusted set the entry is dropped (see SPEC,
+/// Trust: "independently confirmed").
 pub fn accepted_pin(
     loaded: &Loaded<'_>,
     prior: Option<&TrustPin>,
-    reset_counter: bool,
+    how: Acceptance<'_>,
     head: &HeadState,
 ) -> TrustPin {
     let prior_v2 = prior.filter(|p| p.v >= pins::PIN_VERSION);
-    let mut grants: BTreeSet<String> = prior_v2.map(|p| p.grants.clone()).unwrap_or_default();
+    let had_trust = prior_v2.is_some_and(TrustPin::has_trust);
+    let reset_counter = matches!(
+        how,
+        Acceptance::Trust {
+            reset_counter: true,
+            ..
+        }
+    );
+    let found = loaded.vault.generation;
+    // Generation 0 is murk ≤ 0.13: no order, so every such load is current.
+    let current = match how {
+        Acceptance::Load => prior_v2.filter(|p| p.has_trust()).is_none_or(|p| {
+            *head != HeadState::Detached
+                && (found > p.generation || (found == 0 && p.generation == 0))
+        }),
+        Acceptance::Trust { .. } | Acceptance::OwnSave { .. } => true,
+    };
+    let branch_seen = match head {
+        HeadState::Branch(b) => prior_v2.is_some_and(|p| p.branches.contains_key(b)),
+        _ => false,
+    };
+
+    let mut pin = prior_v2.cloned().unwrap_or_default();
+    pin.v = pins::PIN_VERSION;
     // A key this machine trusts (or trusted) as a signer is never recorded as
     // a grant: that would lock its owner out here for good.
-    grants.extend(grant_keys(loaded.grants).into_iter().filter(|k| {
-        !prior_v2.is_some_and(|p| p.trusted.contains(k) || p.ever_trusted.contains(k))
-    }));
-    let found = loaded.vault.generation;
-    let prior_high = prior_v2.map_or(0, |p| p.generation);
-    let generation = if reset_counter && *head == HeadState::NotARepo {
-        found
-    } else {
-        found.max(prior_high)
-    };
-    let mut branches = prior_v2.map(|p| p.branches.clone()).unwrap_or_default();
-    if let HeadState::Branch(b) = head {
-        let entry = branches.entry(b.clone()).or_insert(found);
-        *entry = if reset_counter {
-            found
-        } else {
-            (*entry).max(found)
-        };
-    }
-    let vault_id = if loaded.vault.vault_id.is_empty() {
-        prior_v2.map(|p| p.vault_id.clone()).unwrap_or_default()
+    let new_grants: Vec<String> = grant_keys(loaded.grants)
+        .into_iter()
+        .filter(|k| !pin.trusted.contains(k) && !pin.ever_trusted.contains(k))
+        .collect();
+    pin.grants.extend(new_grants);
+    advance_marks(&mut pin, loaded.vault, current, reset_counter, head);
+
+    let prior_id = std::mem::take(&mut pin.vault_id);
+    pin.vault_id = if loaded.vault.vault_id.is_empty() {
+        prior_id.clone()
     } else {
         loaded.vault.vault_id.clone()
     };
-    let signed = matches!(loaded.signature, types::SignatureState::Signed { .. });
-    // The vault's non-grant recipients — where a grant record names a key this
-    // machine trusts as a signer, that key stays a signer.
-    let trusted: BTreeSet<String> = loaded
-        .vault
+    // Removals belong to one vault: another vault's counters do not compare.
+    let other_vault = !prior_id.is_empty() && prior_id != pin.vault_id;
+    if other_vault {
+        pin.removed.clear();
+    }
+
+    let dropped = replace_trusted(&mut pin, loaded.vault, how, had_trust, current);
+    // A load on a branch never seen here may be a stale branch numbered past
+    // the mark: what it lacks is not recorded as removed.
+    let record_removals = !other_vault
+        && match how {
+            Acceptance::Load => current && (*head == HeadState::NotARepo || branch_seen),
+            Acceptance::Trust { .. } | Acceptance::OwnSave { .. } => true,
+        };
+    if record_removals {
+        for k in dropped {
+            let at = pin.removed.entry(k).or_insert(found);
+            *at = (*at).max(found);
+        }
+    }
+    // Who comes back: a newer accepted vault listing the key (its signer was
+    // trusted, or this load is history and changes nothing), the user naming
+    // it, or this machine's own save adding it.
+    let trusted = std::mem::take(&mut pin.trusted);
+    match how {
+        Acceptance::Load if current => pin
+            .removed
+            .retain(|k, at| !(trusted.contains(k) && found > *at)),
+        Acceptance::Load => {}
+        Acceptance::Trust { readmit, .. } => pin.removed.retain(|k, _| !readmit.contains(k)),
+        Acceptance::OwnSave { before } => pin
+            .removed
+            .retain(|k, _| !(trusted.contains(k) && before.is_none_or(|b| !b.contains(k)))),
+    }
+    pin.trusted = trusted;
+    let removed = pin.removed.clone();
+    pin.trusted.retain(|k| !removed.contains_key(k));
+
+    pin_signing_keys(&mut pin, loaded, current);
+    if current {
+        pin.groups = canonical_groups(loaded.groups);
+    }
+    let trusted = pin.trusted.clone();
+    pin.ever_trusted.extend(trusted);
+    pin.was_signed = matches!(loaded.signature, types::SignatureState::Signed { .. })
+        || prior.is_some_and(|p| p.was_signed);
+    pin
+}
+
+/// Raise the counters for an accepted `vault`: the overall mark (and the
+/// fingerprint of the vault at it) only for a current acceptance, the
+/// branch's mark for any. `reset_counter` lowers them to the vault's.
+fn advance_marks(
+    pin: &mut TrustPin,
+    vault: &types::Vault,
+    current: bool,
+    reset_counter: bool,
+    head: &HeadState,
+) {
+    let found = vault.generation;
+    let fingerprint = vault_fingerprint(vault);
+    if current
+        && (found > pin.generation
+            || (reset_counter && (*head == HeadState::NotARepo || found == pin.generation)))
+    {
+        pin.generation = found;
+        pin.head.clone_from(&fingerprint);
+    }
+    if let HeadState::Branch(b) = head {
+        let old = pin.branches.get(b).copied();
+        let mark = match old {
+            Some(m) if !reset_counter => m.max(found),
+            _ => found,
+        };
+        pin.branches.insert(b.clone(), mark);
+        if reset_counter || old.is_none_or(|m| found > m) {
+            pin.branch_heads.insert(b.clone(), fingerprint);
+        }
+    }
+}
+
+/// Set the pin's trusted set for an accepted `vault` and return the keys it
+/// lost. A first decision, or a current acceptance, takes the vault's non-
+/// grant recipients; history leaves the set alone; an own save applies only
+/// what it added and removed relative to the file it replaced. Where a grant
+/// record names a key this machine trusts as a signer, that key stays a
+/// signer.
+fn replace_trusted(
+    pin: &mut TrustPin,
+    vault: &types::Vault,
+    how: Acceptance<'_>,
+    had_trust: bool,
+    current: bool,
+) -> BTreeSet<String> {
+    let recipients: BTreeSet<String> = vault
         .recipients
         .iter()
         .map(|r| canonical_recipient(r).into_owned())
-        .filter(|r| !grants.contains(r))
         .collect();
-    // Verifying keys: the ones pinned before, plus the signer's own and the
-    // registry entries of the vault's trusted signers — believed because the
-    // vault carrying them is accepted. A pinned key is never replaced, and is
-    // kept after its owner is revoked so their old revisions still verify.
-    let mut signers = prior_v2.map(|p| p.signers.clone()).unwrap_or_default();
-    if let types::SignatureState::Signed { signer, .. } = loaded.signature {
-        let signer = canonical_recipient(signer).into_owned();
-        if let Some(vk) = loaded.signer_vk {
-            signers
-                .entry(signer.clone())
-                .or_insert_with(|| vk.to_string());
+    let vault_signers: BTreeSet<String> = recipients
+        .iter()
+        .filter(|r| !pin.grants.contains(*r))
+        .cloned()
+        .collect();
+    if !had_trust {
+        pin.trusted = vault_signers;
+        return BTreeSet::new();
+    }
+    match how {
+        Acceptance::Load if !current => BTreeSet::new(),
+        Acceptance::OwnSave {
+            before: Some(before),
+        } => {
+            let dropped: BTreeSet<String> = pin
+                .trusted
+                .iter()
+                .filter(|k| before.contains(*k) && !recipients.contains(*k))
+                .cloned()
+                .collect();
+            let grants = &pin.grants;
+            pin.trusted
+                .retain(|k| !dropped.contains(k) && !grants.contains(k));
+            pin.trusted
+                .extend(vault_signers.into_iter().filter(|k| !before.contains(k)));
+            dropped
         }
-        // Binding another recipient's key lets the signer speak as them, so
-        // it must not reach further than the signer could itself: an entry
-        // for a member of a group (as pinned, or in this vault) is believed
-        // only from a member of that group. Otherwise a trusted non-member
-        // could bind a member's name to their own key, then sign as that
-        // member to change the group.
-        let groups = canonical_groups(loaded.groups);
-        let pinned_groups = prior_v2.map(|p| &p.groups);
-        let may_bind = |pk: &str| {
-            groups
-                .values()
-                .chain(pinned_groups.into_iter().flat_map(BTreeMap::values))
-                .all(|members| !members.contains(pk) || members.contains(&signer))
-        };
-        for (pk, vk) in loaded.registry {
-            let pk = canonical_recipient(pk).into_owned();
-            if trusted.contains(&pk) && (pk == signer || may_bind(&pk)) {
-                signers.entry(pk).or_insert_with(|| vk.clone());
-            }
+        _ => {
+            let dropped = pin.trusted.difference(&vault_signers).cloned().collect();
+            pin.trusted = vault_signers;
+            dropped
         }
     }
-    let mut ever_trusted = prior_v2.map(|p| p.ever_trusted.clone()).unwrap_or_default();
-    ever_trusted.extend(trusted.iter().cloned());
-    TrustPin {
-        v: pins::PIN_VERSION,
-        vault_id,
-        generation,
-        branches,
-        ever_trusted,
+}
+
+/// Update the verifying keys for an accepted vault. An entry pinned on a
+/// signer's word (`added_by`) goes when that signer is no longer trusted, so
+/// a key they bound to a teammate's name stops counting. A current acceptance
+/// then pins the signer's own key and the registry entries of the vault's
+/// trusted recipients where none is pinned — believed because the vault
+/// carrying them is accepted, and recorded as added by the signer. A pinned
+/// key is never replaced, and is kept after its owner is revoked so their old
+/// revisions still verify.
+fn pin_signing_keys(pin: &mut TrustPin, loaded: &Loaded<'_>, current: bool) {
+    let TrustPin {
         trusted,
-        grants,
-        groups: canonical_groups(loaded.groups),
         signers,
-        was_signed: signed || prior.is_some_and(|p| p.was_signed),
+        added_by,
+        groups: pinned_groups,
+        ..
+    } = pin;
+    // Dropped here for good: the vault that removes the adder may still carry
+    // the entry (its writer vouched for it while the adder was trusted), and
+    // that must not pin it again under a new name.
+    let mut dropped = BTreeSet::new();
+    added_by.retain(|pk, adder| {
+        let stands = trusted.contains(adder);
+        if !stands {
+            signers.remove(pk);
+            dropped.insert(pk.clone());
+        }
+        stands
+    });
+    let types::SignatureState::Signed { signer, .. } = loaded.signature else {
+        return;
+    };
+    if !current {
+        return;
+    }
+    let signer = canonical_recipient(signer).into_owned();
+    if let Some(vk) = loaded.signer_vk
+        && !dropped.contains(&signer)
+    {
+        signers
+            .entry(signer.clone())
+            .or_insert_with(|| vk.to_string());
+    }
+    // Binding another recipient's key lets the signer speak as them, so it
+    // must not reach further than the signer could itself: an entry for a
+    // member of a group (as pinned, or in this vault) is believed only from a
+    // member of that group. Otherwise a trusted non-member could bind a
+    // member's name to their own key, then sign as that member to change the
+    // group.
+    let groups = canonical_groups(loaded.groups);
+    let may_bind = |pk: &str| {
+        groups
+            .values()
+            .chain(pinned_groups.values())
+            .all(|members| !members.contains(pk) || members.contains(&signer))
+    };
+    for (pk, vk) in loaded.registry {
+        let pk = canonical_recipient(pk).into_owned();
+        if !trusted.contains(&pk) || signers.contains_key(&pk) || dropped.contains(&pk) {
+            continue;
+        }
+        if pk == signer {
+            signers.insert(pk, vk.clone());
+        } else if may_bind(&pk) {
+            signers.insert(pk.clone(), vk.clone());
+            added_by.insert(pk, signer.clone());
+        }
     }
 }
 
@@ -996,7 +1451,47 @@ pub fn refusal_message(
             crate::validate::show(grant),
             label(loaded.names, key)
         ),
+        Refusal::RemovedKey {
+            key,
+            removed_at,
+            found,
+            signer,
+        } => removed_key_message(vault_path, loaded, key, *removed_at, *found, *signer),
+        Refusal::Forked { generation } => format!(
+            "vault {vault_path} forked: generation {generation} is not the vault this machine accepted at that generation here — the branch was rewritten, or another save with the same counter replaced it\nmerge the two saves with the murk merge driver, or {review}"
+        ),
+        Refusal::GenerationJump { pinned, found } => format!(
+            "vault {vault_path} jumps from generation {pinned} to {found}, more than {MAX_GENERATION_STEP} saves at once — a signer may be running the counter up\n{review}"
+        ),
+        Refusal::GenerationOutOfRange { found } => format!(
+            "vault {vault_path} has generation {found}, above the largest murk accepts ({MAX_GENERATION}) — it may have been tampered with to exhaust the counter\nrestore {vault_path} from git"
+        ),
     }
+}
+
+/// The message for [`Refusal::RemovedKey`].
+fn removed_key_message(
+    vault_path: &str,
+    loaded: &Loaded<'_>,
+    key: &str,
+    removed_at: u64,
+    found: u64,
+    signer: bool,
+) -> String {
+    let who = label(loaded.names, key);
+    let what = if signer {
+        format!(
+            "it is signed by {who}, who was removed from this vault at generation {removed_at} on this machine\nrestore {vault_path} from git"
+        )
+    } else {
+        format!(
+            "it lists {who}, who was removed from this vault at generation {removed_at} on this machine, and its generation {found} is not newer — an older revision may have been replayed\nupdate to the vault that removed them (pull, or merge the removal into this branch)"
+        )
+    };
+    format!(
+        "vault {vault_path} rolled back: {what}; to re-add them on purpose, have a trusted teammate authorize them again, or review it and run `murk trust --vault {vault_path} --re-add {}`",
+        canonical_recipient(key)
+    )
 }
 
 #[cfg(test)]
@@ -1013,8 +1508,18 @@ mod tests {
         super::verdict(loaded, pin, env, &HeadState::NotARepo)
     }
 
+    /// A trusted load, or (`reset`) an explicit `murk trust` of a rollback.
     fn accepted_pin(loaded: &Loaded<'_>, prior: Option<&TrustPin>, reset: bool) -> TrustPin {
-        super::accepted_pin(loaded, prior, reset, &HeadState::NotARepo)
+        static NONE: BTreeSet<String> = BTreeSet::new();
+        let how = if reset {
+            Acceptance::Trust {
+                reset_counter: true,
+                readmit: &NONE,
+            }
+        } else {
+            Acceptance::Load
+        };
+        super::accepted_pin(loaded, prior, how, &HeadState::NotARepo)
     }
 
     #[test]
@@ -1023,8 +1528,8 @@ mod tests {
         let feature = HeadState::Branch("feature".into());
         let at = |g| Case::new(&[A], g, A);
         // main accepted at 5, then feature moved to 6.
-        let pin = super::accepted_pin(&at(5).loaded(), None, false, &main);
-        let pin = super::accepted_pin(&at(6).loaded(), Some(&pin), false, &feature);
+        let pin = super::accepted_pin(&at(5).loaded(), None, Acceptance::Load, &main);
+        let pin = super::accepted_pin(&at(6).loaded(), Some(&pin), Acceptance::Load, &feature);
         // Switching back to main (still 5) is fine; main going back to 4 is not.
         assert_eq!(
             super::verdict(&at(5).loaded(), Some(&pin), None, &main),
