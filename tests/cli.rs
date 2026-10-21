@@ -6085,7 +6085,7 @@ fn an_expired_grant_never_receives_a_rotated_value() {
     let agent_key_path = dir.path().join("agent.key");
     murk(&dir, &key)
         .args([
-            "agent", "grant", "--name", "bot", "--only", "A", "--ttl", "1s",
+            "agent", "grant", "--name", "bot", "--only", "A", "--ttl", "3s",
         ])
         .arg("--out")
         .arg(&agent_key_path)
@@ -6093,7 +6093,7 @@ fn an_expired_grant_never_receives_a_rotated_value() {
         .assert()
         .success();
     let bot = grant_pubkey(&read_agent_key(&agent_key_path));
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    std::thread::sleep(std::time::Duration::from_millis(3100));
 
     murk(&dir, &key)
         .args(["rotate", "A", "--vault", "test.murk"])
@@ -6316,13 +6316,13 @@ fn vault_with_an_expired_grant() -> (TempDir, String) {
         .success();
     murk(&dir, &key)
         .args([
-            "agent", "grant", "--name", "old", "--only", "A", "--ttl", "1s",
+            "agent", "grant", "--name", "old", "--only", "A", "--ttl", "3s",
         ])
         .args(["--out", "-", "--vault", "test.murk"])
         .assert()
         .success();
     mint_exec_grant(&dir, &key, "bot", &["A"]);
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    std::thread::sleep(std::time::Duration::from_millis(3100));
     (dir, key)
 }
 
@@ -6526,14 +6526,14 @@ fn agent_grant_fails_closed_after_ttl() {
     let agent_key_path = dir.path().join("agent.key");
     murk(&dir, &key)
         .args(["agent", "grant", "--name", "codex", "--only", "STRIPE_KEY"])
-        .args(["--ttl", "1s", "--out"])
+        .args(["--ttl", "3s", "--out"])
         .arg(&agent_key_path)
         .args(["--vault", "test.murk"])
         .assert()
         .success();
     let agent_key = read_agent_key(&agent_key_path);
 
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    std::thread::sleep(std::time::Duration::from_millis(3100));
 
     // Past the TTL every read with the grant key fails closed, naming the
     // grant and pointing at re-issue. (In-TTL reads are covered by

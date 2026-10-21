@@ -1248,12 +1248,12 @@ fn values_from_refuses_symlinks_and_warns_on_loose_files() {
 fn expired_grant(dir: &TempDir, key: &str, name: &str, only: &str) {
     murk(dir, key)
         .args([
-            "agent", "grant", "--name", name, "--only", only, "--ttl", "1s",
+            "agent", "grant", "--name", name, "--only", only, "--ttl", "3s",
         ])
         .args(["--out", &format!("{name}.key"), "--vault", "test.murk"])
         .assert()
         .success();
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    std::thread::sleep(std::time::Duration::from_millis(3100));
 }
 
 #[test]
