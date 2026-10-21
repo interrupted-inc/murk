@@ -111,7 +111,8 @@ set up. Starting a project of your own? See
    signing-key fingerprint) and every recipient, then asks before it records
    anything. Check the signer's fingerprint with the person who invited you,
    over something other than the repo. Run
-   `murk diff` and `git log -p -- .murk` first if you want to see what
+   `git log -p -- .murk` first if you want to see what changed. On a machine
+   that already trusts the vault, `murk diff 'HEAD@{1}'` shows what a pull
    changed. Skip this step and the first load on a machine is refused with
    "not trusted on this machine yet". murk remembers your answer on this
    machine, not in the repo, and asks again only if a later vault looks

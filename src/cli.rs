@@ -73,14 +73,14 @@ pub enum Command {
         vault: String,
     },
 
-    /// Restore MURK_KEY from a BIP39 recovery phrase
+    /// Print the key encoded by a BIP39 recovery phrase (saves nothing)
     Restore {
         /// Vault filename, for the restored-identity recipient check
         #[arg(long, env = "MURK_VAULT", default_value = ".murk")]
         vault: String,
     },
 
-    /// Re-derive recovery phrase from current MURK_KEY
+    /// Print the BIP39 recovery phrase for the key murk resolves (MURK_KEY, MURK_KEY_FILE or the stored key for .murk)
     Recover,
 
     // Secrets
@@ -568,7 +568,9 @@ pub enum AgentCommand {
         /// Time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)
         #[arg(long, default_value = "2h")]
         ttl: String,
-        /// Replace a live grant with this name: revoke its key, mint a fresh one
+        /// Replace the grant with this name: revoke its key, mint a fresh one. Without this, murk
+        /// refuses a name that still has a grant record, and an expired grant keeps its record
+        /// until the next vault write
         #[arg(long)]
         renew: bool,
         /// Where to write the agent key: a path, or `-` for stdout

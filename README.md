@@ -73,7 +73,7 @@ The script checks the archive against the release's `SHA256SUMS`, which catches 
 
 It installs to `/usr/local/bin` by default. Set `PREFIX` (binary goes to `$PREFIX/bin`), `DESTDIR` (staging root prepended to the path), or `MURK_INSTALL_DIR` (exact bin directory, overrides `PREFIX`) on the `sh` side of the pipe, e.g. `... | PREFIX="$HOME/.local" sh`.
 
-Pre-built binaries are available for Linux (x86_64, aarch64, armhf), macOS (x86_64, Apple Silicon), and Windows on the [releases page](https://github.com/interrupted-sh/murk/releases). On Windows, download the `.zip` from that page. Binary releases are [attested](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds). Verify one downloaded file at a time with `gh attestation verify murk-v0.13.0-aarch64-apple-darwin.tar.gz --repo interrupted-sh/murk --signer-workflow interrupted-sh/murk/.github/workflows/release.yaml` (needs `gh auth login`; 0.12.0 and later; releases up to 0.11.0 were signed as `interrupted-inc/murk`). See [VERIFYING.md](VERIFYING.md) for verifying older releases and the npm, PyPI, and crates.io releases too.
+Pre-built binaries are available for Linux (x86_64, aarch64, armhf), macOS (x86_64, Apple Silicon), and Windows on the [releases page](https://github.com/interrupted-sh/murk/releases). On Windows, download the `.zip` from that page. Binary releases are [attested](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds). Verify one downloaded file at a time with `gh attestation verify murk-v0.13.0-aarch64-apple-darwin.tar.gz --repo interrupted-sh/murk --signer-workflow interrupted-sh/murk/.github/workflows/release.yaml` (needs `gh auth login`; 0.12.0 and later; releases 0.10.2 to 0.11.0 were signed as `interrupted-inc/murk`, and 0.3.1 to 0.10.1 as `iicky/murk`). See [VERIFYING.md](VERIFYING.md) for verifying older releases and the npm, PyPI, and crates.io releases too.
 
 ## Quick start
 
@@ -200,9 +200,11 @@ A `.murk` file lists its own recipients, so a valid signature alone doesn't say 
 
 ```bash
 git log -p -- .murk   # who changed the vault
-murk diff             # what changed, and who signed it
+murk diff 'HEAD@{1}'  # after a pull: what changed, and any new signer
 murk trust            # shows the signer, its signing-key fingerprint and every recipient, then asks (--yes for scripts)
 ```
+
+A plain `murk diff` compares with `HEAD`, which already holds the pulled vault, so it shows nothing after a pull. A fresh clone has no `HEAD@{1}`, and a newly authorized teammate's key can't open the revisions from before they were authorized. In those cases, read `git log -p -- .murk` and what `murk trust` prints.
 
 murk refuses a vault that is unsigned (when your key can sign, or when `MURK_TRUSTED_SIGNERS` is set), was signed when you last accepted it and now isn't, is signed by a key this machine doesn't trust or by an agent grant, is another vault's file, is older than one already accepted on that branch, or changes a group without a member's signature. The message says what it saw. After a refusal you've reviewed, `murk trust` accepts it again. To revert a branch on purpose, restore the old file, run `murk trust`, then make any write. If murk can't write its pin (a read-only home), it warns and carries on.
 
@@ -294,7 +296,7 @@ export MURK_KEY_FILE=~/.config/murk/restored.key
 | Command | Description |
 |---------|-------------|
 | `murk agent plan` | Emit schema-only context for AI agent prompts (no key required) (experimental) |
-| `murk agent exec --only KEY -- CMD...` | Run a command with strict agent-safe defaults (clean env, no `MURK_KEY`, injected values masked in the output; refuses an auto-discovered personal key unless you pass `--allow-operator-key`, so supply a grant key) (experimental) |
+| `murk agent exec --only KEY -- CMD...` | Run a command with strict agent-safe defaults (clean env, no `MURK_KEY`, injected values masked in the output; refuses any key that is not an agent grant, your own included, unless you pass `--allow-operator-key`, so supply a grant key) (experimental) |
 | `murk agent grant --name NAME --only KEY [--ttl DUR]` | Mint a short-lived scoped key that reads only the named secrets (`--ttl` defaults to 2h; reads fail closed after the TTL — revoke to close it for good) (experimental) |
 | `murk agent init --name NAME --only KEY` | Set the agent allow-list, mint a grant and print how to run the agent (experimental) |
 | `murk agent connect [CLIENT] --only KEY` | Wire `murk mcp` into an AI editor's MCP config with a scoped grant (experimental) |
@@ -309,7 +311,7 @@ export MURK_KEY_FILE=~/.config/murk/restored.key
 | Command | Description |
 |---------|-------------|
 | `murk circle` | List recipients |
-| `murk circle authorize PUBKEY [--name NAME] [--allow-ssh-rsa]` | Add a recipient (age key, `ssh:path`, or `github:user`; `github:` is experimental) |
+| `murk circle authorize PUBKEY [--name NAME] [--allow-ssh-rsa]` | Add a recipient (age key, `ssh:path`, or `github:user`; `github:` is experimental). An SSH recipient decrypts only with `MURK_KEY_FILE` pointing at its unencrypted private key. murk does not search `~/.ssh` |
 | `murk circle revoke RECIPIENT` | Remove a recipient |
 | `murk group create NAME` | Create a named recipient group (encrypt a secret to a subset) (experimental) |
 | `murk group ls` | List groups and their members (experimental) |
@@ -416,7 +418,7 @@ See [SPEC.md](SPEC.md) for the full specification.
 
 **Key storage** — your secret key lives in `~/.config/murk/keys/` with `chmod 600` permissions, outside your repository. The `.env` file in your project contains only a `MURK_KEY_FILE` reference to this path, not the key itself. Similar to SSH keys in `~/.ssh`, but murk also exposes secrets via `export` and `exec` into subprocess environments. If a machine is compromised, rotate your key and re-authorize with a new one.
 
-**Hardware-backed keys** — for stronger protection, point `MURK_KEY_FILE` at an age plugin identity file (YubiKey, Apple Secure Enclave, FIDO2, etc.) so the private key lives in hardware and never exists as bytes on disk. See [hardware identities](#hardware-identities) below.
+**Hardware-backed keys** — for stronger protection, point `MURK_KEY_FILE` at an age plugin identity file (YubiKey, Apple Secure Enclave, FIDO2, etc.) so the private key lives in hardware (the FIDO2 plugin is the exception) and never exists as bytes on disk. See [hardware identities](#hardware-identities) below.
 
 **Shared secrets are readable by every recipient except agent grants.** Any other recipient can decrypt every secret in the shared tier. Schema fields such as tags do not restrict human recipients. For narrower access, assign a secret to a named group (encrypted to that group's members) or set a private value for one recipient (`--group me`).
 
@@ -432,19 +434,19 @@ See [THREAT_MODEL.md](THREAT_MODEL.md) for the full threat model.
 
 By default `murk init` generates a raw age key and stores it under `~/.config/murk/keys/`. That's fine for development, but the key lives on disk as plaintext — anyone with read access to the file can decrypt everything.
 
-For production use, point `MURK_KEY_FILE` at an [age plugin identity file](https://github.com/FiloSottile/age#plugins) so the private key lives in tamper-resistant hardware and only consents to decrypt with a physical action (touch, Touch ID, PIN):
+For production use, point `MURK_KEY_FILE` at an [age plugin identity file](https://github.com/FiloSottile/age#plugins) so the private key lives in tamper-resistant hardware (the FIDO2 plugin is the exception, see the table) and only consents to decrypt with a physical action (touch, Touch ID, PIN):
 
 | Hardware | Plugin |
 | --- | --- |
 | YubiKey 4 and 5 (other PIV tokens with a P-256 key may work) | [`age-plugin-yubikey`](https://github.com/str4d/age-plugin-yubikey) |
 | Apple Secure Enclave (Touch ID) | [`age-plugin-se`](https://github.com/remko/age-plugin-se) |
-| Any FIDO2 security key | [`age-plugin-fido2-hmac`](https://github.com/olastor/age-plugin-fido2-hmac) |
+| FIDO2 key with `hmac-secret` (experimental; the identity is held in memory while decrypting) | [`age-plugin-fido2-hmac`](https://github.com/olastor/age-plugin-fido2-hmac) |
 | OpenPGP Card | [`age-plugin-openpgp-card`](https://crates.io/crates/age-plugin-openpgp-card) |
 
 Example setup with a YubiKey:
 
 ```bash
-# Install the plugin. It must be on $PATH because murk runs it to decrypt.
+# Install the plugin. It must be on $PATH because murk runs it to encrypt and to decrypt.
 brew install age-plugin-yubikey
 
 # Create an identity on the YubiKey. The plugin asks for the PIV PIN
@@ -470,11 +472,11 @@ murk get SOME_KEY
 
 To keep using the YubiKey in new shells, put that `export` in your shell profile, or in `.env` if you load it with `source .env`. `murk init` wrote a `MURK_KEY_FILE` line to `.env` for your software key. Remove or replace it so a later `source .env` does not switch you back.
 
-The identity file contains a `#    Recipient: age1yubikey1...` header followed by an `AGE-PLUGIN-YUBIKEY-1...` pointer. murk reads the pubkey from the header, so looking up your scoped secrets needs no plugin call. murk runs the plugin when it decrypts with this identity, and when it encrypts to a YubiKey recipient. A save encrypts to every recipient, so anyone who writes the vault needs the plugin on `$PATH`. Decryption is when the YubiKey asks for a tap.
+The identity file contains a `#    Recipient: age1yubikey1...` header followed by an `AGE-PLUGIN-YUBIKEY-1...` pointer. murk reads the pubkey from the header without calling the plugin. murk runs the plugin when it decrypts with this identity, and when it encrypts to a YubiKey recipient. A save encrypts to every recipient, so anyone who writes the vault needs the plugin on `$PATH`. Decryption is when the YubiKey asks for a tap.
 
 If the plugin binary isn't on `$PATH`, murk fails with `age-plugin-yubikey unavailable` — install it and retry. `MURK_KEY` (the inline env var) rejects `AGE-PLUGIN-...` strings: a bare plugin identity doesn't carry the recipient pubkey, so use `MURK_KEY_FILE` pointing at the identity file.
 
-**No BIP39 recovery for hardware identities.** The whole point of hardware-backed keys is that the raw key bytes never leave the device, so there are no bytes to encode as a recovery phrase. Instead, enroll a second hardware device at setup and add both pubkeys as recipients (`murk circle authorize <backup-pubkey>`) — if you lose one, the backup still decrypts.
+**No BIP39 recovery for hardware identities.** The point of hardware-backed keys is that the raw key bytes stay on the device (the FIDO2 plugin is the exception), so there are no bytes to encode as a recovery phrase. Instead, enroll a second hardware device at setup and add both pubkeys as recipients (`murk circle authorize <backup-pubkey>`) — if you lose one, the backup still decrypts.
 
 **`MURK_KEY` vs `MURK_KEY_FILE`.** Setting `MURK_KEY` to a raw `AGE-SECRET-KEY-1...` string in `.env` works once your shell loads that file, but the key is then plaintext on disk. Prefer `MURK_KEY_FILE` pointing at either a file under `~/.config/murk/keys/` (convenience) or a hardware-backed plugin identity file (strongly recommended for production). Set one, not both: murk refuses to run when both are non-empty, and treats an empty value as unset.
 

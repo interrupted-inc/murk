@@ -87,9 +87,11 @@ attacker's access. Replace the key instead:
    rotate those groups' secrets. Run these with the old key
    (`MURK_KEY_FILE=~/.config/murk/restored.key`), or ask a teammate who is a
    member of those groups.
-4. In a terminal, revoke the old key and enter a new value for each secret:
-   `murk circle revoke <old-public-key> --rotate` (see [offboarding a
-   teammate](/guides/offboarding/)).
+4. Switch to the new key. Run `unset MURK_KEY MURK_KEY_FILE` so murk uses the
+   key from step 2. murk refuses to revoke the key it runs as, so this step
+   fails with the old key. In a terminal, revoke the old key and enter a new
+   value for each secret: `murk circle revoke <old-public-key> --rotate` (see
+   [offboarding a teammate](/guides/offboarding/)).
 5. Delete the restored key file and remove its `export` line.
 6. Replace the real credentials at their providers. Distribute the new ones,
    then invalidate the old ones (in an urgent case, invalidate them first).

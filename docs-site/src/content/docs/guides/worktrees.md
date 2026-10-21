@@ -83,11 +83,16 @@ detached HEAD, or a branch this machine has never seen (reviewing a PR
 branch, say), there is no counter check, so murk accepts a signed vault from
 a trusted signer whatever its counter.
 
+The set of trusted signers is shared too, and it follows the last vault any
+worktree loaded. A worktree on an old branch can make the main checkout ask
+for `murk trust` again.
+
 ## Agents need their own key
 
 Discovery of a stored key is disabled entirely in strict mode and in agent
 context, worktree or not. Either is on when `MURK_STRICT` or `MURK_AGENT` is
-set to a truthy value (`1`, `true` or `yes`). An agent working in a fresh
+set to anything except empty, `0`, `false`, `no` or `off`, in any letter
+case. A typo or `on` also turns it on. An agent working in a fresh
 worktree has to present its own key, normally a scoped grant, or fail closed.
 
 This is a default, not a sandbox. A process running as you can still read

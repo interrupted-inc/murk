@@ -40,10 +40,14 @@ Each person has their own key. The handoff takes four steps:
    git commit -am "authorize bob" && git push
    ```
 
-4. Bob pulls. He can now read the shared secrets:
+4. Bob pulls. murk refuses the vault on his machine until he trusts it, so
+   he reviews it and runs `murk trust` once (see [Trusting the vault on a new
+   machine](#trusting-the-vault-on-a-new-machine)). He can then read the
+   shared secrets:
 
    ```bash
    git pull
+   murk trust
    murk get DATABASE_URL
    ```
 
@@ -63,9 +67,15 @@ trusted on this machine yet" and shows who signed it:
 
 ```bash
 git log -p -- .murk    # who changed the vault, and how
-murk diff              # the changes, decoded
+murk diff 'HEAD@{1}'   # after a pull: the changes since before it, decoded
 murk trust             # show the signer, its signing-key fingerprint and every recipient, then ask
 ```
+
+A plain `murk diff` compares with `HEAD`, which is the pulled commit, so it
+shows nothing right after a pull. A fresh clone has no `HEAD@{1}`, and a newly
+authorized teammate's key can't open the revisions from before they were
+authorized. In that case, read `git log -p -- .murk` and what `murk trust`
+prints.
 
 `murk trust` prints the signer's full key and signing-key fingerprint, and
 marks each recipient that is new since this machine last trusted the vault.
@@ -79,7 +89,11 @@ refuses a vault and you've reviewed why: an unsigned vault, a signature from
 a key the machine doesn't trust, a teammate's signing key it hasn't confirmed
 yet, an older revision, another vault's file, or
 a group membership change not signed by a member of that group. Switching to
-an older branch is not one of them: each branch keeps its own counter.
+an older branch is not a rollback, because each branch keeps its own counter.
+But an accepted vault replaces the set of trusted signers with its own
+recipients. After you load an older branch, the newer branch can be refused
+as "not a trusted signer on this machine" if the teammate who signed it was
+added after that older vault. Review it and run `murk trust` again.
 After that, teammates' ordinary writes are accepted without a prompt: the
 signer is a recipient of the vault this machine last accepted, and its
 signing key is already known here. A newly authorized teammate's first write
@@ -168,7 +182,7 @@ full trust analysis.
 
 ```bash
 murk circle                    # list recipients
-murk circle revoke RECIPIENT   # RECIPIENT is a public key or a display name (see offboarding)
+murk circle revoke RECIPIENT   # a public key, a display name or github:user (see offboarding)
 ```
 
 murk compares keys by their canonical spelling, so `authorize` refuses a
@@ -210,7 +224,8 @@ vault, and CI, before the first 0.14 write lands on the shared branch.
 
 1. On each machine, the first load of an existing vault is refused once,
    with "not trusted on this machine yet" and the current signer. Review the
-   history (`git log -p -- .murk`, `murk diff`), then run `murk trust`. A
+   history (`git log -p -- .murk`, and `murk diff REF` against the last
+   revision you reviewed), then run `murk trust`. A
    0.13 pin carried no trust, so everyone does this once.
 2. The first 0.14 save adds a vault id and a save counter and re-signs the
    vault in the new format. A vault from 0.13 has no id, so murk derives it

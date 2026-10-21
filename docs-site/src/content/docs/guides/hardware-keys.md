@@ -38,6 +38,7 @@ brew install age-plugin-yubikey
 # 2. Generate an identity bound to the YubiKey. Prompts for the PIV PIN
 #    (default 123456) and a touch. --touch-policy always asks for a tap on
 #    every decrypt. --pin-policy once asks for the PIN once per session.
+mkdir -p ~/.config/murk
 age-plugin-yubikey --generate --touch-policy always --pin-policy once \
   > ~/.config/murk/yubikey.txt
 
@@ -47,7 +48,9 @@ chmod 600 ~/.config/murk/yubikey.txt
 # 3. With your current key, authorize the YubiKey's public key.
 murk circle authorize "$(grep -i recipient ~/.config/murk/yubikey.txt | awk '{print $NF}')" --name yubikey
 
-# 4. Switch to the YubiKey. Add this line to your shell profile or .envrc.
+# 4. Switch to the YubiKey. Add these lines to your shell profile or .envrc.
+#    murk refuses to run when both variables are set.
+unset MURK_KEY
 export MURK_KEY_FILE=~/.config/murk/yubikey.txt
 
 # 5. Read a secret. The YubiKey blinks; tap it to decrypt.
@@ -136,7 +139,7 @@ model](/security/threat-model/) for the full signing story.
 If some teammates sign and some don't, their writes arrive unsigned, and
 the signing teammates' machines refuse them. To bring a hardware-key
 teammate's change in, a signing teammate reviews it (`git log -p -- .murk`,
-`murk diff`) and runs:
+and `murk diff 'HEAD@{1}'` after a pull) and runs:
 
 ```bash
 murk trust

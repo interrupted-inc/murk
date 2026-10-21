@@ -66,8 +66,8 @@ Encrypted secrets manager for developers — one file, age encryption, git-frien
 
 * `init` — Initialize a vault or reuse its existing key
 * `env` — Write a .envrc for direnv integration
-* `restore` — Restore MURK_KEY from a BIP39 recovery phrase
-* `recover` — Re-derive recovery phrase from current MURK_KEY
+* `restore` — Print the key encoded by a BIP39 recovery phrase (saves nothing)
+* `recover` — Print the BIP39 recovery phrase for the key murk resolves (MURK_KEY, MURK_KEY_FILE or the stored key for .murk)
 * `add` — Add or update a secret
 * `generate` — Generate a random secret and store it
 * `rotate` — Rotate secrets with new values
@@ -126,7 +126,7 @@ Write a .envrc for direnv integration
 
 ## `murk restore`
 
-Restore MURK_KEY from a BIP39 recovery phrase
+Print the key encoded by a BIP39 recovery phrase (saves nothing)
 
 **Usage:** `murk restore [OPTIONS]`
 
@@ -140,7 +140,7 @@ Restore MURK_KEY from a BIP39 recovery phrase
 
 ## `murk recover`
 
-Re-derive recovery phrase from current MURK_KEY
+Print the BIP39 recovery phrase for the key murk resolves (MURK_KEY, MURK_KEY_FILE or the stored key for .murk)
 
 **Usage:** `murk recover`
 
@@ -481,7 +481,7 @@ Mint a scoped ephemeral key that can read only the named secrets (experimental)
 * `--ttl <TTL>` — Time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)
 
   Default value: `2h`
-* `--renew` — Replace a live grant with this name: revoke its key, mint a fresh one
+* `--renew` — Replace the grant with this name: revoke its key, mint a fresh one. Without this, murk refuses a name that still has a grant record, and an expired grant keeps its record until the next vault write
 * `--out <OUT>` — Where to write the agent key: a path, or `-` for stdout
 * `--force` — Replace a file already at --out (refused by default)
 * `--vault <VAULT>` — Vault filename
