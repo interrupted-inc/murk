@@ -1,16 +1,18 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH describe 1  "describe " 
+.TH murk-describe 1  "describe " 
 .SH NAME
-describe \- Add or update a key description
+murk\-describe \- Set a key\*(Aqs description, example, tags and rotation or expiry policy
 .SH SYNOPSIS
 \fBmurk describe\fR [\fB\-\-example\fR] [\fB\-\-tag\fR] [\fB\-\-rotate\-every\fR] [\fB\-\-expires\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIKEY\fR> <\fIDESCRIPTION\fR> 
 .SH DESCRIPTION
-Add or update a key description
+Set a key\*(Aqs description, example, tags and rotation or expiry policy
+.PP
+Each call replaces the description. It also replaces the example: omitting `\-\-example` clears it. `\-\-tag` replaces the tags only when given. `\-\-rotate\-every` and `\-\-expires` change only when given.
 .SH OPTIONS
 .TP
 \fB\-\-example\fR \fI<EXAMPLE>\fR
-Example value
+Example value. Omitting it clears the current example
 .TP
 \fB\-\-tag\fR \fI<TAG>\fR
 Tag for grouping (repeatable, replaces existing tags)
@@ -25,10 +27,10 @@ Hard expiry date, e.g. `2026\-09\-01`. `never` clears it
 Vault filename
 .TP
 \fB\-h\fR, \fB\-\-help\fR
-Print help
+Print help (see a summary with \*(Aq\-h\*(Aq)
 .TP
 <\fIKEY\fR>
 Secret key name
 .TP
 <\fIDESCRIPTION\fR>
-Description text
+Description text (replaces the current one)

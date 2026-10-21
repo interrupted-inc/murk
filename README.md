@@ -288,7 +288,7 @@ murk restore
 | `murk agent connect [CLIENT] --only KEY` | Wire `murk mcp` into an AI editor's MCP config with a scoped grant |
 | `murk agent disconnect [CLIENT] [--rotate]` | Remove murk from an AI editor's MCP config (`--rotate` also revokes the grant and rotates its keys) |
 | `murk agent ls` | List active agent grants and their TTLs |
-| `murk agent revoke NAME [--rotate]` | Revoke a grant and rotate the keys it could read |
+| `murk agent revoke NAME [--rotate]` | Revoke a grant (`--rotate` also rotates the secrets it could read) |
 | `murk mcp [--allow-exec]` | Run a stdio MCP server exposing scoped secrets to AI agents (needs a grant + `MURK_AGENT`) |
 | `murk policy show\|set\|clear` | Manage the agent allow-list (tags agents may receive) |
 
@@ -317,7 +317,7 @@ murk restore
 
 | Command | Description |
 |---------|-------------|
-| `murk diff [REF]` | Show secret changes, recipient changes and signer changes since a git ref (the old revision is verified before anything in it is shown) |
+| `murk diff [REF] [--show-values] [--json]` | Show secret, recipient and signer changes since a git ref. Prints key names only, unless you pass `--show-values`. The old revision is verified before anything in it is shown |
 | `murk setup-merge-driver` | Configure git to merge `.murk` vaults: the driver verifies both sides and signs the result |
 
 **Shell**

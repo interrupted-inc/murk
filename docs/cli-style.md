@@ -12,32 +12,41 @@ no punctuation, lowercase, bold-colored, one space before the message.
 |---------|----------------|-------------------------------------------------|
 | `ok`    | green bold     | check passed / operation succeeded              |
 | `warn`  | yellow bold    | non-fatal issue the user should see             |
-| `error` | red bold       | fatal, printed right before exit(1)             |
-| `hint`  | cyan bold      | next-action suggestion under a warn or error    |
+| `✕`     | red            | fatal error, printed right before exit. Each further line of the message prints as an indented `hint` line |
+| `hint`  | cyan bold      | next-action suggestion under a warn or `✕` line |
 | `◆`     | magenta        | action-completed branding mark (not a status)   |
+
+Fatal errors go through `die()`, which prints the `✕` form. The `error`
+word prefix (red bold) appears in four places only: `scan`, the merge
+driver and the two strict-mode guards.
 
 Examples:
 
 ```
 ok vault integrity verified
 warn 1 ssh-rsa key authorized — ed25519 is recommended
-error MURK_KEY not set
-hint run `murk init` to generate a key
+✕ MURK_KEY not set
+  hint run `murk init` to generate a key
+  hint or point MURK_KEY_FILE at an existing key file
 ◆ authorized alice
 ```
 
 Never write `ok:`, `warn:`, `Error:`, `OK` etc. Prefixes are lowercase and
-colon-free.
+colon-free. Current exceptions: clap's own usage errors print `error:`, and
+the warning about a `.env` readable by others prints `warning:`.
 
 ## Inline markers
 
 | Marker | Color   | Use                                           |
 |--------|---------|-----------------------------------------------|
 | `◆`    | magenta | completed action / branding dot               |
-| `✦`    | yellow  | scoped (mote) variant of `◆` — scoped add/update, scoped recipients in info |
-| `⚠`    | yellow  | inline warning inside a list item             |
-| `✕`    | red     | failed check inside a list item               |
-| `*`    | plain   | "this entry is you" marker in `circle` / info |
+| `✦`    | faint   | scoped (mote) variant of `◆`, used for scoped recipients in `info` |
+| `⚠`    | yellow  | warning, as the lead of a line or inside a list item |
+| `✕`    | red     | fatal error line (see Prefixes), or a failed check inside a list item |
+| `*`    | plain   | "this entry is you" marker in `info` and `group ls`. `circle` marks you with a magenta `◆` |
+| `▸`    | dimmed  | bullet in a list of secret names (revoke and grant output) |
+| `✓`    | green   | rotation summary line |
+| `+` `-` `~` | magenta, red, yellow (bold) | added, removed and changed secrets in `murk diff` |
 
 Use `◆` for "something happened" lines, not for status. Use `ok` / `warn` /
 `error` prefixes for status lines. A finding list under a `warn` header
@@ -46,8 +55,10 @@ should use `✕` for each failing item, not repeated `warn` prefixes.
 ## Formatting
 
 - **Recipient display names** — green bold
-- **Pubkeys** — dimmed, truncated to 10–12 chars + `…` when displayed next to
-  a name (full pubkey acceptable when it's the primary subject of a line)
+- **Pubkeys**: dimmed, shown as the first 8 and last 4 characters joined by
+  `…` (for example `age1ps8p…a26p`) when displayed next to a name. Strings of
+  13 characters or fewer are shown whole. A full key is fine when it is the
+  subject of the line.
 - **File paths, key names** — `bold()`
 - **Fix hints / follow-ups** — two-space indent under the parent line,
   dimmed color
@@ -82,13 +93,14 @@ should act on exits 1, even if the vault itself is readable.
 
 The demo theme is Catppuccin Mocha but the CLI should degrade gracefully
 on any terminal. Always use the `colored` crate's semantic helpers
-(`.green().bold()`, `.dimmed()`) — never raw ANSI escapes.
+(`.green().bold()`, `.dimmed()`). Do not use raw ANSI escapes. The `.env`
+permission warning in the library is a current exception.
 
 See [brand.md](./brand.md) for the canonical palette (ANSI slots and brand
 hex), the brand purple `#8760FF`, and the rule that the CLI stays
 theme-adaptive while fixed assets use the locked hex.
 
-## Examples from the codebase
+## Output examples
 
 ```rust
 // status line
@@ -106,7 +118,13 @@ eprintln!(
 eprintln!("{} authorized {}", "◆".magenta(), display.bold());
 
 // finding list under a warn header
-eprintln!("{} {} findings", "warn".yellow().bold(), findings.len());
+eprintln!(
+    "{} {} issue{} in {}",
+    "warn".yellow().bold(),
+    findings.len(),
+    if findings.len() == 1 { "" } else { "s" },
+    header
+);
 for f in &findings {
     eprintln!("  {} {} — {}", "✕".red(), f.category.bold(), f.message);
     if let Some(fix) = &f.fix {

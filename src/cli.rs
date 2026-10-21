@@ -113,10 +113,10 @@ pub enum Command {
     Generate {
         /// Secret key name
         key: String,
-        /// Length in bytes (default 32)
+        /// Length in bytes
         #[arg(long, default_value = "32")]
         length: usize,
-        /// Output as hex instead of base64
+        /// Encode the value as hex instead of URL-safe base64
         #[arg(long)]
         hex: bool,
         /// Description for this key
@@ -147,10 +147,10 @@ pub enum Command {
         /// Generate random values instead of prompting
         #[arg(long)]
         generate: bool,
-        /// Length in bytes for generated values (default 32)
+        /// Length in bytes for generated values
         #[arg(long, default_value = "32")]
         length: usize,
-        /// Output generated values as hex instead of base64
+        /// Encode generated values as hex instead of URL-safe base64
         #[arg(long)]
         hex: bool,
         /// Read new values from a dotenv file of KEY=value lines (`-` for stdin), matched by key name
@@ -234,7 +234,7 @@ pub enum Command {
         /// Path to the .env file to import
         #[arg(default_value = ".env")]
         file: String,
-        /// Overwrite existing secrets without prompting
+        /// Overwrite existing secrets. Without it, import stops if any key already exists
         #[arg(long)]
         force: bool,
         /// Assign imported secrets to this group (`everyone`, `me`, or a group
@@ -251,14 +251,18 @@ pub enum Command {
     },
 
     // Metadata & inspection
-    /// Add or update a key description
+    /// Set a key's description, example, tags and rotation or expiry policy
+    ///
+    /// Each call replaces the description. It also replaces the example:
+    /// omitting `--example` clears it. `--tag` replaces the tags only when
+    /// given. `--rotate-every` and `--expires` change only when given.
     Describe {
         /// Secret key name
         key: String,
-        /// Description text
+        /// Description text (replaces the current one)
         #[arg(value_parser = NewText::BLOCK)]
         description: String,
-        /// Example value
+        /// Example value. Omitting it clears the current example
         #[arg(long, value_parser = NewText::LINE)]
         example: Option<String>,
         /// Tag for grouping (repeatable, replaces existing tags)
@@ -308,7 +312,7 @@ pub enum Command {
         /// Filter by tag (repeatable)
         #[arg(long)]
         tag: Vec<String>,
-        /// Strip inherited environment (only murk secrets + PATH)
+        /// Start the command with only murk secrets plus PATH, HOME and TERM on Unix (on Windows, PATH and a fixed set of system variables)
         #[arg(long)]
         clean_env: bool,
         /// Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)
@@ -323,7 +327,7 @@ pub enum Command {
     },
 
     // Agents
-    /// Agent-oriented commands (schema-only output for AI agent prompts)
+    /// Give AI agents scoped, time-limited access to secrets
     Agent {
         #[command(subcommand)]
         sub: AgentCommand,
@@ -369,10 +373,10 @@ pub enum Command {
         /// Display name for this recipient
         #[arg(long, value_parser = NewText::LINE)]
         name: Option<String>,
-        /// Accept changed GitHub keys without confirmation
+        /// Accept changed GitHub keys. Without it, authorize stops when a user's keys differ from the pinned set
         #[arg(long)]
         force: bool,
-        /// Allow ssh-rsa recipients (rejected by default — use ed25519)
+        /// Allow ssh-rsa keys. They are refused or skipped by default, so prefer ed25519
         #[arg(long)]
         allow_ssh_rsa: bool,
         /// Vault filename
@@ -528,9 +532,10 @@ pub enum AgentCommand {
         vault: String,
     },
 
-    /// Run a command with strict agent-safe defaults (clears the inherited
-    /// environment, strips MURK_KEY, requires --only, masks injected values in
-    /// the output)
+    /// Run a command with strict agent-safe defaults (keeps only PATH, HOME and
+    /// TERM from the inherited environment on Unix, or PATH and a fixed set of
+    /// system variables on Windows, strips MURK_KEY, requires --only, masks
+    /// injected values in the output)
     #[command(trailing_var_arg = true)]
     Exec {
         /// Inject these specific keys (required — agent mode fails closed)
@@ -612,11 +617,16 @@ pub enum AgentCommand {
         vault: String,
     },
 
-    /// Revoke an agent grant and rotate the keys it could read
+    /// Revoke an agent grant
+    ///
+    /// The grant's key can still decrypt old versions of the vault from git
+    /// history, so rotate the secrets it could read: pass `--rotate`, or answer
+    /// the prompt on a terminal.
     Revoke {
         /// Grant name
         name: String,
-        /// Rotate the keys it could read in the same session
+        /// Rotate the secrets the grant could read, in the same run. murk stores
+        /// a new value for each. It does not rotate them at the provider
         #[arg(long)]
         rotate: bool,
         /// With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)
@@ -627,12 +637,11 @@ pub enum AgentCommand {
         vault: String,
     },
 
-    /// Wire `murk mcp` into an AI editor's MCP config, minting a scoped grant.
-    /// No CLIENT auto-detects installed editors. Give one (claude, cursor,
-    /// vscode, zed, gemini, omp, codex) to target it.
+    /// Add `murk mcp` to an AI client's MCP config and mint a scoped grant for it
     Connect {
-        /// Editor to configure. Omit to auto-detect
-        /// (claude, cursor, vscode, zed, gemini, omp, codex)
+        /// Client to configure: claude, cursor, vscode, zed, gemini, omp or codex.
+        /// Omit it to configure every client that already has a config file or
+        /// marker directory (such as `.cursor/`) next to the vault
         client: Option<String>,
         /// Keys the agent may read (required — fails closed)
         #[arg(long, required = true)]
@@ -640,7 +649,7 @@ pub enum AgentCommand {
         /// Set the agent allow-list to these tags before granting (repeatable)
         #[arg(long = "allow-tag", value_parser = NewText::LINE)]
         allow_tag: Vec<String>,
-        /// Also expose `murk agent exec` to the agent (adds --allow-exec)
+        /// Also enable the `murk_exec` tool in the MCP server (writes `--allow-exec` into the client config)
         #[arg(long)]
         allow_exec: bool,
         /// Grant time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)
@@ -683,10 +692,10 @@ pub enum CircleCommand {
         /// Also add the new recipient to this group
         #[arg(long)]
         group: Option<String>,
-        /// Accept changed GitHub keys without confirmation
+        /// Accept changed GitHub keys. Without it, authorize stops when a user's keys differ from the pinned set
         #[arg(long)]
         force: bool,
-        /// Allow ssh-rsa recipients (rejected by default — use ed25519)
+        /// Allow ssh-rsa keys. They are refused or skipped by default, so prefer ed25519
         #[arg(long)]
         allow_ssh_rsa: bool,
         /// Vault filename

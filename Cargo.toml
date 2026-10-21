@@ -43,8 +43,8 @@ path = "src/lib.rs"
 name = "murk"
 path = "src/main.rs"
 
-# Dev-only: renders docs/cli-reference.md from the clap model. Gated behind the
-# `doc-gen` feature so it is skipped by a normal build/release.
+# Dev-only: renders the CLI reference, env reference, completions and man pages.
+# Gated behind the `doc-gen` feature so it is skipped by a normal build/release.
 [[bin]]
 name = "gen-docs"
 path = "src/bin/gen-docs.rs"

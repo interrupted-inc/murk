@@ -1,16 +1,18 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH revoke 1  "revoke " 
+.TH murk-agent-revoke 1  "revoke " 
 .SH NAME
-revoke \- Revoke an agent grant and rotate the keys it could read
+murk\-agent\-revoke \- Revoke an agent grant
 .SH SYNOPSIS
 \fBmurk agent revoke\fR [\fB\-\-rotate\fR] [\fB\-\-values\-from\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fINAME\fR> 
 .SH DESCRIPTION
-Revoke an agent grant and rotate the keys it could read
+Revoke an agent grant
+.PP
+The grant\*(Aqs key can still decrypt old versions of the vault from git history, so rotate the secrets it could read: pass `\-\-rotate`, or answer the prompt on a terminal.
 .SH OPTIONS
 .TP
 \fB\-\-rotate\fR
-Rotate the keys it could read in the same session
+Rotate the secrets the grant could read, in the same run. murk stores a new value for each. It does not rotate them at the provider
 .TP
 \fB\-\-values\-from\fR \fI<FILE>\fR
 With \-\-rotate, read new values from a dotenv file of KEY=value lines (`\-` for stdin)
@@ -19,7 +21,7 @@ With \-\-rotate, read new values from a dotenv file of KEY=value lines (`\-` for
 Vault filename
 .TP
 \fB\-h\fR, \fB\-\-help\fR
-Print help
+Print help (see a summary with \*(Aq\-h\*(Aq)
 .TP
 <\fINAME\fR>
 Grant name
