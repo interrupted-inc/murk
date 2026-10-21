@@ -290,10 +290,13 @@ enum Op {
         to: Dest,
     },
     /// Merge the n-th pushed branch into the machine's current checkout (the
-    /// murk driver runs on a conflict).
+    /// murk driver runs on a conflict). With `take_theirs`, a refused merge
+    /// is resolved as murk's hint says: take the branch's vault and commit
+    /// (only stored sequences set it).
     MergeBranch {
         m: M,
         branch: usize,
+        take_theirs: bool,
     },
     /// Push the machine's current checkout to a new branch on the remote,
     /// as a pull request would.
@@ -383,7 +386,11 @@ fn op() -> impl Strategy<Value = Op> {
             dest(),
         )
             .prop_map(|(rev, to)| Op::Replay { rev, to }),
-        1 => (m(), 0..4usize).prop_map(|(m, branch)| Op::MergeBranch { m, branch }),
+        1 => (m(), 0..4usize).prop_map(|(m, branch)| Op::MergeBranch {
+            m,
+            branch,
+            take_theirs: false
+        }),
         1 => m().prop_map(|m| Op::Push { m }),
     ]
 }
@@ -1065,9 +1072,22 @@ impl<'f> World<'f> {
                 )
             }
             Op::Sync { m } => Some(self.sync(step, m.0)),
-            Op::MergeBranch { m, branch } => {
+            Op::MergeBranch {
+                m,
+                branch,
+                take_theirs,
+            } => {
                 let branch = format!("origin/{}", self.pushed(*branch)?);
-                Some(self.merge(step, m.0, &branch, false))
+                let merged = self.merge(step, m.0, &branch, false);
+                if !take_theirs || !matches!(merged, Ok(Ran::Refused(_))) {
+                    return Some(merged);
+                }
+                let mach = self.machine(m.0);
+                let _ = mach.git(&["merge", "-q", "--no-edit", &branch]);
+                mach.git_ok(&["checkout", "--theirs", "--", ".murk"]);
+                mach.git_ok(&["add", ".murk"]);
+                mach.git_ok(&["commit", "-q", "--no-edit"]);
+                Some(Ok(Ran::Accepted))
             }
             Op::Trust { m, forgery } => {
                 let mach = self.machine(m.0);
@@ -1888,6 +1908,7 @@ fn known_sequences() -> Vec<(&'static str, Vec<Scripted>)> {
                 accepts(Op::MergeBranch {
                     m: alice,
                     branch: 0,
+                    take_theirs: false,
                 }),
                 accepts(Op::Sync { m: alice }),
                 accepts(load_main.clone()),
@@ -1916,6 +1937,31 @@ fn known_sequences() -> Vec<(&'static str, Vec<Scripted>)> {
                     at: At::Main,
                 })
                 .decisive(),
+            ],
+        ),
+        (
+            // A vault signed by a key this machine removed is refused on
+            // every branch from the moment of the removal, even on a main
+            // the removal has not reached; merging the removal then leaves a
+            // main alice can read.
+            "a removed member signs on main before the removal merges",
+            vec![
+                accepts(Op::Load {
+                    m: alice,
+                    at: At::NewBranch(0),
+                }),
+                accepts(revoke_bob.clone()),
+                accepts(Op::Push { m: alice }),
+                accepts(load_main.clone()),
+                runs(forge(Sign::Own)),
+                accepts(Op::Sync { m: alice }),
+                refuses(load_main.clone()).decisive(),
+                accepts(Op::MergeBranch {
+                    m: alice,
+                    branch: 0,
+                    take_theirs: true,
+                }),
+                accepts(load_main.clone()).decisive(),
             ],
         ),
     ]
