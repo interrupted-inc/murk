@@ -694,6 +694,21 @@ fn diff_refuses_a_forged_revision() {
     fs::copy(&forged, repo.join(".murk")).unwrap();
     commit(&repo, "forged");
     fs::write(repo.join(".murk"), genuine).unwrap();
+    // A revision is checked against the trust pin, never recorded in it.
+    let pins = || {
+        let mut all: Vec<(PathBuf, Vec<u8>)> =
+            fs::read_dir(alice.home.join(".config/murk/signer-pins"))
+                .unwrap()
+                .map(|e| {
+                    let path = e.unwrap().path();
+                    let bytes = fs::read(&path).unwrap();
+                    (path, bytes)
+                })
+                .collect();
+        all.sort();
+        all
+    };
+    let pinned = pins();
 
     for args in [
         &["diff", "HEAD"][..],
@@ -710,6 +725,7 @@ fn diff_refuses_a_forged_revision() {
             ))
             .stderr(predicate::str::contains("attacker").not());
     }
+    assert_eq!(pins(), pinned, "diff must not change the trust pin");
 }
 
 // ── Legitimate flows ──

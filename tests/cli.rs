@@ -2861,6 +2861,8 @@ fn murk_process_is_not_readable_through_proc() {
             "exec",
             "--only",
             "TOKEN",
+            // The operator's own key: no grant is needed to test the process.
+            "--allow-operator-key",
             "--vault",
             "test.murk",
             "--",

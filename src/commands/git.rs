@@ -401,9 +401,9 @@ impl Change {
                 sign(&Op::Removed),
                 murk_cli::terminal_text(name, false)
             ),
-            Change::Grant { name, key, .. } => format!(
+            Change::Grant { op, name, key } => format!(
                 "{} grant {} ({})",
-                sign(&Op::Changed),
+                sign(op),
                 murk_cli::terminal_text(name, false),
                 key.as_deref().map(label).unwrap_or_default()
             ),

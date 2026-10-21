@@ -1587,6 +1587,11 @@ mod tests {
         // with `PermissionDenied`, not `NotFound`. The guard must not treat
         // it as "no existing config" and silently overwrite it.
         use std::os::unix::fs::PermissionsExt;
+        // Root reads a mode-000 file anyway, so the guard is never reached.
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("skipped: running as root");
+            return;
+        }
         let dir = tempfile::TempDir::new().unwrap();
         let a = adapter("cursor").unwrap();
         let path = a.config_path(dir.path());
@@ -1602,6 +1607,11 @@ mod tests {
     #[test]
     fn disconnect_client_not_found_guard_is_specific_to_not_found() {
         use std::os::unix::fs::PermissionsExt;
+        // Root reads a mode-000 file anyway, so the guard is never reached.
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("skipped: running as root");
+            return;
+        }
         let dir = tempfile::TempDir::new().unwrap();
         let a = adapter("cursor").unwrap();
         let path = a.config_path(dir.path());
