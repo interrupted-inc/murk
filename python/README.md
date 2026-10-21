@@ -29,14 +29,15 @@ pip install murk-secrets
 ## Quick start
 
 ```bash
-# Load your key (created by murk init)
+# Optional on the machine that ran murk init (see "Key lookup").
+# POSIX shell syntax.
 source .env
 ```
 
 ```python
 import murk
 
-# Load the vault (reads MURK_KEY from environment)
+# Load the vault (finds your key; see "Key lookup")
 vault = murk.load()
 
 # Get a single secret
@@ -53,7 +54,7 @@ api_key = vault["API_KEY"]
 
 ### `murk.load(vault_path=".murk") -> Vault`
 
-Load and decrypt a murk vault. Reads `MURK_KEY` or `MURK_KEY_FILE` from the environment.
+Load and decrypt a murk vault. Finds your key as described in [Key lookup](#key-lookup).
 
 ### `murk.get(key, vault_path=".murk") -> str | None`
 
@@ -65,18 +66,18 @@ One-liner: load the vault and export all secrets as a dict.
 
 ### `murk.has_identity() -> bool`
 
-Whether a decryption identity (`MURK_KEY` / `MURK_KEY_FILE`) is available — i.e. whether `load()` can decrypt. This is not a check for whether a secret exists; use `key in vault` / `vault.keys()` for that.
+Returns `True` if murk can find a key for `./.murk`: `MURK_KEY`, `MURK_KEY_FILE` or the key file `murk init` stored. Returns `False` if no key is found, if both variables are set, or if the key file cannot be read. It does not read the vault, so `True` does not guarantee that `load()` succeeds. It does not check whether a secret exists. Use `key in vault` or `vault.keys()` for that.
 
 ### `Vault`
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `vault.get(key)` | `str \| None` | Get a single decrypted value |
-| `vault.export()` | `dict[str, str]` | All secrets as a dict |
-| `vault.keys()` | `list[str]` | List of key names |
-| `vault[key]` | `str` | Dict-style access (raises on missing key) |
-| `key in vault` | `bool` | Check if a key exists |
-| `len(vault)` | `int` | Number of secrets |
+| `vault.get(key)` | `str \| None` | Decrypted value, or `None` if no value is readable for the key |
+| `vault.export()` | `dict[str, str]` | Every secret you can read |
+| `vault.keys()` | `list[str]` | Key names in the vault schema, including keys you cannot read |
+| `vault[key]` | `str` | Like `get`, but raises `RuntimeError` (not `KeyError`) if no value is readable |
+| `key in vault` | `bool` | `True` if the key is in the schema, even if you cannot read its value |
+| `len(vault)` | `int` | Number of keys in the schema |
 
 Scoped (per-user) overrides are applied automatically — if you have a scoped value for a key, it takes priority over the shared value.
 
@@ -92,22 +93,22 @@ holding decrypted values longer than you need them.
 
 ## Agent policy
 
-When the loaded key is an agent grant (minted with `murk agent grant`), the vault's agent policy is enforced on read, the same way the CLI enforces it at `murk agent exec`: `get()` and `export()` raise `RuntimeError` if the policy forbids a key. Operator keys are unaffected. This makes a policy vault strict from every entry point — though an agent already cannot decrypt out-of-scope secrets at all, since its ephemeral key is not a recipient of them.
+If the loaded key is an agent grant (from `murk agent grant`), the bindings enforce the vault's agent policy on every read, as `murk agent exec` does. `get()` and `export()` raise `RuntimeError` when the policy forbids a key they can read. Once the grant's TTL has passed, `export()` and `get()` of a readable key raise too. `keys()`, `len()` and `in` read only the schema and never check the policy. A plain operator key skips the check unless `MURK_SELF_SCOPE` or `MURK_AGENT` is set. A grant also cannot decrypt out-of-scope secrets, because its key is not a recipient of them, so the policy check is a second guard.
 
-## Environment
+A loaded `Vault` keeps the values and policy from its last load. Policy changes and revocations apply only after you call `load()` again. Grant expiry is checked again on each value read.
 
-Set one of:
-- `MURK_KEY` — your age secret key directly
-- `MURK_KEY_FILE` — path to your key file (created by `murk init`)
+## Key lookup
 
-The easiest setup is `source .env` in your project directory after running `murk init`.
+`load()` finds your key the same way the CLI does:
+
+1. `MURK_KEY` (your age secret key) or `MURK_KEY_FILE` (the path to a key file). Set one, not both. murk refuses to load when both are set.
+2. The key file that `murk init` stored under `~/.config/murk/keys/`.
+
+`murk init` also writes a `.env` that points `MURK_KEY_FILE` at that file. On the machine where you ran `murk init`, you do not need to source it. Set the variable yourself in CI, in containers and whenever `MURK_STRICT` or `MURK_AGENT` is set, because both turn off step 2.
 
 ## Requirements
 
-- Python >= 3.9
-- [murk CLI](https://github.com/interrupted-sh/murk) installed (to create and manage vaults)
-- A `.murk` vault file in your project (created with `murk init`)
-- `MURK_KEY` or `MURK_KEY_FILE` in the environment (created by `murk init`, loaded via `source .env`)
+Python 3.9 or later, the murk CLI, a `.murk` vault in your project and a key (see [Key lookup](#key-lookup)).
 
 ## License
 

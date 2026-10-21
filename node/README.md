@@ -27,14 +27,15 @@ npm install @interrupted/murk-secrets
 ## Quick start
 
 ```bash
-# Load your key (created by murk init)
+# Optional on the machine that ran murk init (see "Key lookup").
+# POSIX shell syntax.
 source .env
 ```
 
 ```typescript
-import { load, get, exportAll } from '@interrupted/murk-secrets'
+import { load, get, exportAll, add } from '@interrupted/murk-secrets'
 
-// Load the vault (reads MURK_KEY from environment)
+// Load the vault (finds your key; see "Key lookup")
 const vault = load()
 
 // Get a single secret
@@ -58,7 +59,7 @@ add('NEW_TOKEN', 'value')                             // one-liner
 
 ### `load(vaultPath?: string): Vault`
 
-Load and decrypt a murk vault. Reads `MURK_KEY` or `MURK_KEY_FILE` from the environment.
+Load and decrypt a murk vault. Finds your key as described in [Key lookup](#key-lookup).
 
 ### `get(key: string, vaultPath?: string): string | null`
 
@@ -74,17 +75,17 @@ One-liner: load the vault and store a secret. See `vault.add` below.
 
 ### `hasIdentity(): boolean`
 
-Whether a decryption identity (`MURK_KEY` / `MURK_KEY_FILE`) is available — i.e. whether `load()` can decrypt. This is not a check for whether a secret exists; use `vault.has(key)` / `vault.keys()` for that.
+Returns `true` if murk can find a key for `./.murk`: `MURK_KEY`, `MURK_KEY_FILE` or the key file `murk init` stored. Returns `false` if no key is found, if both variables are set, or if the key file cannot be read. It does not read the vault, so `true` does not guarantee that `load()` succeeds. It does not check whether a secret exists. Use `vault.has(key)` or `vault.keys()` for that.
 
 ### `Vault`
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `vault.get(key)` | `string \| null` | Get a single decrypted value |
+| `vault.get(key)` | `string \| null` | Decrypted value, or `null` if no value is readable for the key |
 | `vault.export()` | `Record<string, string>` | All secrets as an object |
-| `vault.keys()` | `string[]` | List of key names |
-| `vault.has(key)` | `boolean` | Check if a key exists |
-| `vault.length` | `number` | Number of secrets |
+| `vault.keys()` | `string[]` | Key names in the vault schema, including keys you cannot read |
+| `vault.has(key)` | `boolean` | `true` if the key is in the schema, even if you cannot read its value |
+| `vault.length` | `number` | Number of keys in the schema |
 | `vault.add(key, value, options?)` | `void` | Store a secret (see below) |
 | `vault.describe(key, description, options?)` | `void` | Set a key's description/tags/example |
 
@@ -92,13 +93,13 @@ Scoped (per-user) overrides are applied automatically — if you have a scoped v
 
 ### Writing secrets
 
-`vault.add(key, value, options?)` mirrors `murk add`: it encrypts the value, re-signs the vault, and writes it back to disk under an exclusive lock (safe against concurrent writers). An existing key is overwritten in place. Options:
+`vault.add(key, value, options?)` mirrors `murk add`: it encrypts the value, re-signs the vault, and writes it back to disk under an exclusive lock (safe against concurrent writers). An `everyone` or group write replaces the key's base value. A group write removes the shared value, and a shared write removes the group assignment. A `me` write leaves the shared value alone. `tags` are added to the key's existing tags. Options:
 
-- `tier` — where the value lives: `'everyone'` (default, shared to all recipients), `'me'` (a personal value encrypted to you only), or a **group name** (encrypted to that group's members; you must be a member).
+- `tier` — where the value lives: `'everyone'` (default, encrypted to every recipient except agent grants), `'me'` (a personal value encrypted to you only), or a **group name** (encrypted to that group's members; you must be a member).
 - `desc` — a human-readable description recorded in the schema.
 - `tags` — tags recorded on the key; tags are the unit the agent allow-tag policy gates on.
 
-`vault.describe(key, description, options?)` updates a key's schema metadata (`tags`, `example`) without touching its value. A key with no value becomes a documented-but-unset entry, the same as `murk describe`.
+`vault.describe(key, description, options?)` works like `murk describe`, without `--rotate-every` and `--expires`. It never touches the value and always replaces the description. `options.tags` replaces the existing tags when it is non-empty. Leaving out `options.example` clears the current example. If the key does not exist yet, `describe` creates a documented entry with no value.
 
 Trust-changing operations — rotation, adding/removing recipients or group members, and minting agent grants — are deliberately **not** exposed here; use the CLI for those.
 
@@ -121,14 +122,22 @@ the value as late as possible, pass it straight into `add`, and don't keep it ar
 
 ## Agent policy
 
-When the loaded key is an agent grant (minted with `murk agent grant`), the vault's agent policy is enforced on read, the same way the CLI enforces it at `murk agent exec`: `get()` and `export()` throw if the policy forbids a key. Operator keys are unaffected. This makes a policy vault strict from every entry point — though an agent already cannot decrypt out-of-scope secrets at all, since its ephemeral key is not a recipient of them.
+If the loaded key is an agent grant (from `murk agent grant`), the bindings enforce the vault's agent policy on reads and writes, as `murk agent exec` does. `get()` and `export()` throw when the policy forbids a key they can read. `add()` and `describe()` check the key before saving and throw without changing the vault. Once the grant's TTL has passed, `export()`, `add()`, `describe()` and `get()` of a readable key throw too. `keys()`, `has()` and `length` read only the schema and never check the policy. A plain operator key skips the check unless `MURK_SELF_SCOPE` or `MURK_AGENT` is set. A grant also cannot decrypt out-of-scope secrets, because its key is not a recipient of them, so the policy check is a second guard.
+
+`get()` and `export()` use the values and policy from the vault's last load. Policy changes and revocations reach them only after you call `load()` again or write through the handle. `add()` and `describe()` reload the vault from disk first, so they always check the current policy, and they refresh the handle afterwards. Grant expiry is checked again on each value read.
+
+## Key lookup
+
+`load()` finds your key the same way the CLI does:
+
+1. `MURK_KEY` (your age secret key) or `MURK_KEY_FILE` (the path to a key file). Set one, not both. murk refuses to load when both are set.
+2. The key file that `murk init` stored under `~/.config/murk/keys/`.
+
+`murk init` also writes a `.env` that points `MURK_KEY_FILE` at that file. On the machine where you ran `murk init`, you do not need to source it. Set the variable yourself in CI, in containers and whenever `MURK_STRICT` or `MURK_AGENT` is set, because both turn off step 2.
 
 ## Requirements
 
-- Node.js >= 16
-- [murk CLI](https://github.com/interrupted-sh/murk) installed (to create and manage vaults)
-- A `.murk` vault file in your project (created with `murk init`)
-- `MURK_KEY` or `MURK_KEY_FILE` in the environment (created by `murk init`, loaded via `source .env`)
+Node.js 18.17 or later on Node 18, or 20.3 or later (not Node 19), the murk CLI, a `.murk` vault in your project and a key (see [Key lookup](#key-lookup)). The addon needs Node-API version 9.
 
 ## License
 
