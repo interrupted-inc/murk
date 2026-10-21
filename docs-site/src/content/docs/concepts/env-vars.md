@@ -23,9 +23,13 @@ The automatic lookup is keyed on the vault's absolute path, and a git worktree p
 
 ## Safety and agent context
 
+:::caution[Experimental]
+Strict mode (`MURK_STRICT`, and the strict mode that `MURK_AGENT` forces) is experimental. It is four specific checks, listed below, not a guarantee that no plaintext touches disk.
+:::
+
 | Variable | Description |
 | --- | --- |
-| `MURK_STRICT` | Truthy (`1`/`true`/`yes`) fails closed rather than let a secret touch disk: `murk edit`'s scratch file must live on a RAM-backed filesystem (aborting before launching the editor otherwise), `export`/`get` refuse to run with stdout pointed at a regular file, and the automatic key lookup in `~/.config/murk/keys` is disabled. |
+| `MURK_STRICT` | Experimental. Truthy (`1`/`true`/`yes`) turns on four fail-closed checks: `murk edit`'s scratch file must live on a RAM-backed filesystem (aborting before launching the editor otherwise), `export`/`get` refuse to run with stdout pointed at a regular file, and the automatic key lookup in `~/.config/murk/keys` is disabled. |
 | `MURK_AGENT` | Marks the process as running on behalf of an AI agent. Forces strict mode unconditionally: there's no way to turn strict back off from inside an agent context, even by setting `MURK_STRICT=0`. `murk agent exec` sets it (alongside `MURK_STRICT=1`) on its child process automatically. |
 | `MURK_SELF_SCOPE` | Truthy holds *your own* key to the vault's agent allow-tag policy, as if you were an agent: `get`, `exec`/`agent exec`, and single-key `edit KEY` fail closed on a non-allowed key, `export` withholds forbidden keys, and bulk `edit` is refused. Implied automatically inside an agent context. A no-op on a vault with no policy set. See [Grants](/concepts/grants/). |
 | `MURK_NO_SIGNER_PIN` | Opts out of signer-registry pinning (TOFU) on load: an escape hatch for a deliberate signer-key change, not something to leave set. See [Recipients & signatures](/concepts/recipients-signatures/). |

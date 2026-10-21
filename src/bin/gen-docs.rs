@@ -89,7 +89,7 @@ const ENV_GROUPS: &[(&str, &[EnvVar])] = &[
         &[
             EnvVar {
                 name: "MURK_STRICT",
-                summary: "Truthy fails closed rather than let a secret touch disk, and disables the automatic key lookup under `~/.config/murk/keys`.",
+                summary: "Experimental. Truthy turns on four fail-closed checks: `get` and `export` refuse to write to a regular file, `edit` needs a RAM-backed scratch file, and the automatic key lookup under `~/.config/murk/keys` is off. Not a guarantee that no plaintext touches disk.",
             },
             EnvVar {
                 name: "MURK_AGENT",

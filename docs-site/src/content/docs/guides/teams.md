@@ -46,6 +46,10 @@ murk add DATABASE_URL --group me
 
 ## Authorizing via GitHub
 
+:::caution[Experimental]
+GitHub recipients (`github:`) are experimental. murk fetches GitHub keys over the network and trusts them on first use, so confirm the keys belong to the person you mean.
+:::
+
 Manual key exchange works, but the easier path for most teams is authorizing
 by GitHub username:
 
@@ -82,7 +86,7 @@ murk circle revoke RECIPIENT   # remove a recipient (see offboarding)
 ```
 
 For encrypting a secret to only a subset of the team (not the whole
-recipient list), use named groups: `murk group create|ls|add|rm NAME`. See
+recipient list), use named groups (experimental): `murk group create|ls|add|rm NAME`. See
 the [CLI reference](/reference/cli/#murk-group) for the full flag surface.
 
 When someone leaves the team, don't just stop there. See

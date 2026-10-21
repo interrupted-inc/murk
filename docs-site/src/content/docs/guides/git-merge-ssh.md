@@ -5,6 +5,10 @@ sidebar:
   order: 9
 ---
 
+:::caution[Experimental]
+The merge driver and `murk diff` are experimental. The merge driver has had little testing against real git merges, so review a merged vault before you push it. `murk diff` is not covered by integrity checks for old revisions: it decrypts them without checking their MAC or signature.
+:::
+
 `.murk` is a single JSON-ish file with encrypted values, which means a naive
 git merge on it doesn't work the way it would for plaintext. git has no
 idea two different encrypted blobs might represent non-conflicting changes

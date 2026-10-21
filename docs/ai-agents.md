@@ -1,5 +1,7 @@
 # Using murk with AI agents
 
+> **Experimental.** Agent grants, `murk agent exec`, `murk mcp`, `murk agent connect`/`disconnect` and the agent policy are experimental. They are new and their access rules changed in 0.13.1. A running `murk mcp` server does not see a revocation or policy change until it restarts, so restart it after you revoke. Treat them as a guardrail, not a security boundary.
+
 AI coding agents need secrets — API keys, database URLs, service tokens. The common pattern is pasting them into `.env` files or chat prompts. Both are bad: prompts get logged, `.env` files get committed, and there's no way to revoke access when the session ends.
 
 murk gives agents access to secrets without exposing them in plaintext.
@@ -40,7 +42,7 @@ murk gives agents access to secrets without exposing them in plaintext.
 
 ## Agent context
 
-Set `MURK_AGENT=1` to tell murk it's running for an agent. In an agent context, **strict mode is forced**: murk won't fall back to your stored key in `~/.config/murk/keys` (the agent must present its own `MURK_KEY`/`MURK_KEY_FILE` — e.g. a grant key — or fail closed), won't write plaintext secrets to a file, and requires a RAM-backed tmpdir for `murk edit`.
+Set `MURK_AGENT=1` to tell murk it's running for an agent. In an agent context, **strict mode is forced**: murk won't fall back to your stored key in `~/.config/murk/keys` (the agent must present its own `MURK_KEY`/`MURK_KEY_FILE` — e.g. a grant key — or fail closed), won't let `get` or `export` print plaintext to a regular file, and requires a RAM-backed tmpdir for `murk edit`. `murk edit` itself is experimental: its lifecycle is new and its process handling is Unix-only.
 
 `murk agent exec` sets `MURK_AGENT=1` and `MURK_STRICT=1` for the child, so a nested `murk` stays strict and won't fall back to your stored key on the normal path. This is a safe default, **not a sandbox**: a child controls its own environment, so it can unset those vars or read `~/.config/murk/keys` directly — for real containment, run agents under a separate user or in a container (see below). If you want a non-strict shell yourself, just don't set `MURK_AGENT`. In CI, murk stays out of the way but prints a nudge toward a scoped grant key when it sees a pipeline decrypting with your personal key. `murk agent exec` does not wait for CI to object: it refuses your personal key everywhere unless you pass `--allow-operator-key`, and that flag always prints a warning, in CI or not.
 

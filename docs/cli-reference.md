@@ -72,7 +72,7 @@ Encrypted secrets manager for developers — one file, age encryption, git-frien
 * `rotate` — Rotate secrets with new values
 * `rm` — Remove a secret
 * `get` — Get a single decrypted value
-* `edit` — Edit secrets in $EDITOR
+* `edit` — Edit secrets in $EDITOR (experimental)
 * `ls` — List all key names
 * `export` — Export all secrets as shell export statements
 * `import` — Import secrets from a .env file
@@ -80,16 +80,16 @@ Encrypted secrets manager for developers — one file, age encryption, git-frien
 * `info` — Show public schema and key info
 * `skeleton` — Export schema-only vault with no secrets or recipients
 * `exec` — Run a command with secrets injected as environment variables
-* `agent` — Agent-oriented commands (schema-only output for AI agent prompts)
-* `mcp` — Run an MCP (Model Context Protocol) stdio server for AI agents
-* `policy` — Manage the agent access policy
+* `agent` — Agent-oriented commands (experimental)
+* `mcp` — Run an MCP (Model Context Protocol) stdio server for AI agents (experimental)
+* `policy` — Manage the agent access policy (experimental)
 * `circle` — Manage recipients
-* `group` — Manage recipient groups
+* `group` — Manage recipient groups (experimental)
 * `verify` — Verify vault integrity without exporting secrets
 * `doctor` — Check the surrounding repo for hygiene issues
 * `scan` — Scan files for leaked secret values
-* `diff` — Show secret changes vs a git ref
-* `setup-merge-driver` — Configure git to use murk's merge driver for .murk files
+* `diff` — Show secret changes vs a git ref (experimental)
+* `setup-merge-driver` — Configure git to use murk's merge driver for .murk files (experimental)
 * `completion` — Generate or install shell completions
 
 
@@ -158,7 +158,7 @@ Add or update a secret
 
 * `--desc <DESC>` — Description for this key
 * `--example <EXAMPLE>` — Example value
-* `--group <GROUP>` — Who can read it: a group name, `everyone` (default), or `me`
+* `--group <GROUP>` — Who can read it: a group name (experimental), `everyone` (default), or `me`
 * `--tag <TAG>` — Tag for grouping (repeatable)
 * `--vault <VAULT>` — Vault filename
 
@@ -184,7 +184,7 @@ Generate a random secret and store it
 * `--hex` — Output as hex instead of base64
 * `--desc <DESC>` — Description for this key
 * `--example <EXAMPLE>` — Example value
-* `--group <GROUP>` — Who can read it: a group name, `everyone` (default), or `me`
+* `--group <GROUP>` — Who can read it: a group name (experimental), `everyone` (default), or `me`
 * `--tag <TAG>` — Tag for grouping (repeatable)
 * `--vault <VAULT>` — Vault filename
 
@@ -256,7 +256,7 @@ Get a single decrypted value
 
 ## `murk edit`
 
-Edit secrets in $EDITOR
+Edit secrets in $EDITOR (experimental)
 
 **Usage:** `murk edit [OPTIONS] [KEY]`
 
@@ -267,7 +267,7 @@ Edit secrets in $EDITOR
 ###### **Options:**
 
 * `--scoped` — Edit scoped overrides instead of shared secrets
-* `--group <GROUP>` — Edit values for this group instead of shared secrets
+* `--group <GROUP>` — Edit values for this group instead of shared secrets (experimental)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`
@@ -321,7 +321,7 @@ Import secrets from a .env file
 ###### **Options:**
 
 * `--force` — Overwrite existing secrets without prompting
-* `--group <GROUP>` — Assign imported secrets to this group (default: everyone)
+* `--group <GROUP>` — Assign imported secrets to a group name (experimental), or `me` (default: everyone)
 * `--example <EXAMPLE>` — Example value applied to every imported key
 * `--vault <VAULT>` — Vault filename
 
@@ -406,26 +406,26 @@ Run a command with secrets injected as environment variables
 
 ## `murk agent`
 
-Agent-oriented commands (schema-only output for AI agent prompts)
+Agent-oriented commands (experimental)
 
 **Usage:** `murk agent <COMMAND>`
 
 ###### **Subcommands:**
 
-* `plan` — Emit schema-only context safe to paste into an AI agent prompt
-* `exec` — Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only, masks injected values in the output)
-* `grant` — Mint a scoped ephemeral key that can read only the named secrets
-* `init` — One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely
-* `ls` — List active agent grants and their TTLs
-* `revoke` — Revoke an agent grant and rotate the keys it could read
-* `connect` — Wire `murk mcp` into an AI editor's MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it
-* `disconnect` — Remove murk's entry from an AI editor's MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys
+* `plan` — Emit schema-only context safe to paste into an AI agent prompt (experimental)
+* `exec` — Run a command with strict agent-safe defaults (experimental; clears the inherited environment, strips MURK_KEY, requires --only, masks injected values in the output)
+* `grant` — Mint a scoped ephemeral key that can read only the named secrets (experimental)
+* `init` — One-shot onboarding (experimental): optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely
+* `ls` — List active agent grants and their TTLs (experimental)
+* `revoke` — Revoke an agent grant and rotate the keys it could read (experimental)
+* `connect` — Wire `murk mcp` into an AI editor's MCP config, minting a scoped grant (experimental). No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it
+* `disconnect` — Remove murk's entry from an AI editor's MCP config (experimental). No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys
 
 
 
 ## `murk agent plan`
 
-Emit schema-only context safe to paste into an AI agent prompt
+Emit schema-only context safe to paste into an AI agent prompt (experimental)
 
 **Usage:** `murk agent plan [OPTIONS]`
 
@@ -442,7 +442,7 @@ Emit schema-only context safe to paste into an AI agent prompt
 
 ## `murk agent exec`
 
-Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only, masks injected values in the output)
+Run a command with strict agent-safe defaults (experimental; clears the inherited environment, strips MURK_KEY, requires --only, masks injected values in the output)
 
 **Usage:** `murk agent exec [OPTIONS] --only <ONLY> <COMMAND>...`
 
@@ -462,7 +462,7 @@ Run a command with strict agent-safe defaults (clears the inherited environment,
 
 ## `murk agent grant`
 
-Mint a scoped ephemeral key that can read only the named secrets
+Mint a scoped ephemeral key that can read only the named secrets (experimental)
 
 **Usage:** `murk agent grant [OPTIONS] --name <NAME> --only <ONLY>`
 
@@ -483,7 +483,7 @@ Mint a scoped ephemeral key that can read only the named secrets
 
 ## `murk agent init`
 
-One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely
+One-shot onboarding (experimental): optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely
 
 **Usage:** `murk agent init [OPTIONS] --name <NAME> --only <ONLY>`
 
@@ -504,7 +504,7 @@ One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, a
 
 ## `murk agent ls`
 
-List active agent grants and their TTLs
+List active agent grants and their TTLs (experimental)
 
 **Usage:** `murk agent ls [OPTIONS]`
 
@@ -519,7 +519,7 @@ List active agent grants and their TTLs
 
 ## `murk agent revoke`
 
-Revoke an agent grant and rotate the keys it could read
+Revoke an agent grant and rotate the keys it could read (experimental)
 
 **Usage:** `murk agent revoke [OPTIONS] <NAME>`
 
@@ -538,7 +538,7 @@ Revoke an agent grant and rotate the keys it could read
 
 ## `murk agent connect`
 
-Wire `murk mcp` into an AI editor's MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it
+Wire `murk mcp` into an AI editor's MCP config, minting a scoped grant (experimental). No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it
 
 **Usage:** `murk agent connect [OPTIONS] --only <ONLY> [CLIENT]`
 
@@ -565,7 +565,7 @@ Wire `murk mcp` into an AI editor's MCP config, minting a scoped grant. No CLIEN
 
 ## `murk agent disconnect`
 
-Remove murk's entry from an AI editor's MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys
+Remove murk's entry from an AI editor's MCP config (experimental). No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys
 
 **Usage:** `murk agent disconnect [OPTIONS] [CLIENT]`
 
@@ -587,7 +587,7 @@ Remove murk's entry from an AI editor's MCP config. No CLIENT clears every confi
 
 ## `murk mcp`
 
-Run an MCP (Model Context Protocol) stdio server for AI agents
+Run an MCP (Model Context Protocol) stdio server for AI agents (experimental)
 
 **Usage:** `murk mcp [OPTIONS]`
 
@@ -602,7 +602,7 @@ Run an MCP (Model Context Protocol) stdio server for AI agents
 
 ## `murk policy`
 
-Manage the agent access policy
+Manage the agent access policy (experimental)
 
 **Usage:** `murk policy <COMMAND>`
 
@@ -686,12 +686,12 @@ Add a recipient to the vault
 
 ###### **Arguments:**
 
-* `<PUBKEY>` — Public key (age1...), ssh:path, ssh: (default ~/.ssh/id_ed25519.pub), or github:username
+* `<PUBKEY>` — Public key (age1...), ssh:path, ssh: (default ~/.ssh/id_ed25519.pub), or github:username (experimental)
 
 ###### **Options:**
 
 * `--name <NAME>` — Display name for this recipient
-* `--group <GROUP>` — Also add the new recipient to this group
+* `--group <GROUP>` — Also add the new recipient to this group (experimental)
 * `--force` — Accept changed GitHub keys without confirmation
 * `--allow-ssh-rsa` — Allow ssh-rsa recipients (rejected by default — use ed25519)
 * `--vault <VAULT>` — Vault filename
@@ -721,7 +721,7 @@ Remove a recipient from the vault
 
 ## `murk group`
 
-Manage recipient groups
+Manage recipient groups (experimental)
 
 **Usage:** `murk group <COMMAND>`
 
@@ -853,7 +853,7 @@ Scan files for leaked secret values
 
 ## `murk diff`
 
-Show secret changes vs a git ref
+Show secret changes vs a git ref (experimental)
 
 **Usage:** `murk diff [OPTIONS] [GIT_REF]`
 
@@ -875,7 +875,7 @@ Show secret changes vs a git ref
 
 ## `murk setup-merge-driver`
 
-Configure git to use murk's merge driver for .murk files
+Configure git to use murk's merge driver for .murk files (experimental)
 
 **Usage:** `murk setup-merge-driver`
 

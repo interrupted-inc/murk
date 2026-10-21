@@ -2,6 +2,8 @@
 
 [![npm](https://img.shields.io/npm/v/@interrupted/murk-secrets)](https://www.npmjs.com/package/@interrupted/murk-secrets)
 
+> **Experimental writes.** Reading secrets (`load`, `get`, `exportAll`) is stable. Writing (`add`, `describe`) is experimental: the write API is new and may change. See [Feature status](https://murk.interrupted.sh/reference/feature-status/).
+
 Node.js/TypeScript bindings for [murk](https://github.com/interrupted-sh/murk) — an encrypted secrets manager for developers.
 
 ## Prerequisites

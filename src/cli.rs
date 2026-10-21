@@ -54,7 +54,7 @@ pub enum Command {
         /// Example value
         #[arg(long)]
         example: Option<String>,
-        /// Who can read it: a group name, `everyone` (default), or `me`
+        /// Who can read it: a group name (experimental), `everyone` (default), or `me`
         #[arg(long)]
         group: Option<String>,
         /// Deprecated alias for `--group me`
@@ -84,7 +84,7 @@ pub enum Command {
         /// Example value
         #[arg(long)]
         example: Option<String>,
-        /// Who can read it: a group name, `everyone` (default), or `me`
+        /// Who can read it: a group name (experimental), `everyone` (default), or `me`
         #[arg(long)]
         group: Option<String>,
         /// Tag for grouping (repeatable)
@@ -140,14 +140,14 @@ pub enum Command {
         vault: String,
     },
 
-    /// Edit secrets in $EDITOR
+    /// Edit secrets in $EDITOR (experimental)
     Edit {
         /// Edit a single key (omit to edit all)
         key: Option<String>,
         /// Edit scoped overrides instead of shared secrets
         #[arg(long)]
         scoped: bool,
-        /// Edit values for this group instead of shared secrets
+        /// Edit values for this group instead of shared secrets (experimental)
         #[arg(long)]
         group: Option<String>,
         /// Vault filename
@@ -189,7 +189,7 @@ pub enum Command {
         /// Overwrite existing secrets without prompting
         #[arg(long)]
         force: bool,
-        /// Assign imported secrets to this group (default: everyone)
+        /// Assign imported secrets to a group name (experimental), or `me` (default: everyone)
         #[arg(long)]
         group: Option<String>,
         /// Example value applied to every imported key
@@ -269,13 +269,13 @@ pub enum Command {
     },
 
     // Agents
-    /// Agent-oriented commands (schema-only output for AI agent prompts)
+    /// Agent-oriented commands (experimental)
     Agent {
         #[command(subcommand)]
         sub: AgentCommand,
     },
 
-    /// Run an MCP (Model Context Protocol) stdio server for AI agents
+    /// Run an MCP (Model Context Protocol) stdio server for AI agents (experimental)
     Mcp {
         /// Vault filename
         #[arg(long, env = "MURK_VAULT", default_value = ".murk")]
@@ -287,7 +287,7 @@ pub enum Command {
         allow_exec: bool,
     },
 
-    /// Manage the agent access policy
+    /// Manage the agent access policy (experimental)
     Policy {
         #[command(subcommand)]
         sub: PolicyCommand,
@@ -310,7 +310,7 @@ pub enum Command {
     /// Add a recipient to the vault
     #[command(hide = true)]
     Authorize {
-        /// Public key (age1...), ssh:path, ssh: (default ~/.ssh/id_ed25519.pub), or github:username
+        /// Public key (age1...), ssh:path, ssh: (default ~/.ssh/id_ed25519.pub), or github:username (experimental)
         pubkey: String,
         /// Display name for this recipient
         #[arg(long)]
@@ -339,7 +339,7 @@ pub enum Command {
         vault: String,
     },
 
-    /// Manage recipient groups
+    /// Manage recipient groups (experimental)
     Group {
         #[command(subcommand)]
         sub: GroupCommand,
@@ -370,7 +370,7 @@ pub enum Command {
     },
 
     // Git integration
-    /// Show secret changes vs a git ref
+    /// Show secret changes vs a git ref (experimental)
     Diff {
         /// Git ref to compare against
         #[arg(default_value = "HEAD")]
@@ -386,11 +386,11 @@ pub enum Command {
         vault: String,
     },
 
-    /// Configure git to use murk's merge driver for .murk files
+    /// Configure git to use murk's merge driver for .murk files (experimental)
     #[command(name = "setup-merge-driver")]
     SetupMergeDriver,
 
-    /// Git merge driver for .murk vault files (called by git)
+    /// Git merge driver for .murk vault files (called by git; experimental)
     #[command(name = "merge-driver", hide = true)]
     MergeDriver {
         /// Path to base version (%O)
@@ -425,7 +425,7 @@ pub enum CompletionAction {
 
 #[derive(Subcommand)]
 pub enum AgentCommand {
-    /// Emit schema-only context safe to paste into an AI agent prompt
+    /// Emit schema-only context safe to paste into an AI agent prompt (experimental)
     Plan {
         /// Filter by tag (repeatable)
         #[arg(long)]
@@ -441,9 +441,9 @@ pub enum AgentCommand {
         vault: String,
     },
 
-    /// Run a command with strict agent-safe defaults (clears the inherited
-    /// environment, strips MURK_KEY, requires --only, masks injected values in
-    /// the output)
+    /// Run a command with strict agent-safe defaults (experimental; clears the
+    /// inherited environment, strips MURK_KEY, requires --only, masks injected
+    /// values in the output)
     #[command(trailing_var_arg = true)]
     Exec {
         /// Inject these specific keys (required — agent mode fails closed)
@@ -461,7 +461,7 @@ pub enum AgentCommand {
         command: Vec<String>,
     },
 
-    /// Mint a scoped ephemeral key that can read only the named secrets
+    /// Mint a scoped ephemeral key that can read only the named secrets (experimental)
     Grant {
         /// Grant name (used to revoke it later)
         #[arg(long)]
@@ -483,8 +483,8 @@ pub enum AgentCommand {
         vault: String,
     },
 
-    /// One-shot onboarding: optionally set the agent allow-list, mint a scoped
-    /// grant, and print how to run the agent safely
+    /// One-shot onboarding (experimental): optionally set the agent allow-list,
+    /// mint a scoped grant, and print how to run the agent safely
     Init {
         /// Grant name (used to revoke it later)
         #[arg(long)]
@@ -506,7 +506,7 @@ pub enum AgentCommand {
         vault: String,
     },
 
-    /// List active agent grants and their TTLs
+    /// List active agent grants and their TTLs (experimental)
     Ls {
         /// Output as JSON
         #[arg(long)]
@@ -516,7 +516,7 @@ pub enum AgentCommand {
         vault: String,
     },
 
-    /// Revoke an agent grant and rotate the keys it could read
+    /// Revoke an agent grant and rotate the keys it could read (experimental)
     Revoke {
         /// Grant name
         name: String,
@@ -528,7 +528,8 @@ pub enum AgentCommand {
         vault: String,
     },
 
-    /// Wire `murk mcp` into an AI editor's MCP config, minting a scoped grant.
+    /// Wire `murk mcp` into an AI editor's MCP config, minting a scoped grant
+    /// (experimental).
     /// No CLIENT auto-detects installed editors. Give one (claude, cursor,
     /// vscode, zed, gemini, omp, codex) to target it.
     Connect {
@@ -555,7 +556,7 @@ pub enum AgentCommand {
         vault: String,
     },
 
-    /// Remove murk's entry from an AI editor's MCP config. No CLIENT clears every
+    /// Remove murk's entry from an AI editor's MCP config (experimental). No CLIENT clears every
     /// configured editor. `--rotate` also revokes the grant and rotates its keys.
     Disconnect {
         /// Editor to disconnect. Omit for every configured editor
@@ -576,12 +577,12 @@ pub enum AgentCommand {
 pub enum CircleCommand {
     /// Add a recipient to the vault
     Authorize {
-        /// Public key (age1...), ssh:path, ssh: (default ~/.ssh/id_ed25519.pub), or github:username
+        /// Public key (age1...), ssh:path, ssh: (default ~/.ssh/id_ed25519.pub), or github:username (experimental)
         pubkey: String,
         /// Display name for this recipient
         #[arg(long)]
         name: Option<String>,
-        /// Also add the new recipient to this group
+        /// Also add the new recipient to this group (experimental)
         #[arg(long)]
         group: Option<String>,
         /// Accept changed GitHub keys without confirmation

@@ -10,7 +10,7 @@
   },
   "bb": {
     "name": "Murk",
-    "description": "Grant-scoped secrets for agent threads, backed by a murk vault. Agents see key names and tags; values arrive as short-lived 0600 dotenv files unless a grant explicitly allows reveal.",
+    "description": "Experimental. Grant-scoped secrets for agent threads, backed by a murk vault. Agents see key names and tags; values arrive as short-lived 0600 dotenv files unless a grant explicitly allows reveal.",
     "branding": {
       "icon": "./assets/icon.svg"
     },

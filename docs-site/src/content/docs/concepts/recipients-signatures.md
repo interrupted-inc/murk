@@ -5,6 +5,10 @@ sidebar:
   order: 3
 ---
 
+:::caution[Experimental]
+Signatures and signer pinning are experimental. The assurance they give is narrower than it sounds: a vault with its signature stripped still loads with a warning, and pinning trusts a signer on first use. See the [threat model](/security/threat-model/).
+:::
+
 Two separate mechanisms protect a `.murk` file: the **recipient list** controls who can decrypt it, and the **integrity MAC and signature** detect whether it's been tampered with.
 
 ## Adding and removing recipients

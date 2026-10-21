@@ -5,6 +5,10 @@ sidebar:
   order: 10
 ---
 
+:::caution[Experimental]
+Agent grants, `murk agent exec`, `murk mcp`, `murk agent connect`/`disconnect` and the agent policy are experimental. They are new and their access rules changed in 0.13.1. A running `murk mcp` server does not see a revocation or policy change until it restarts, so restart it after you revoke. Treat them as a guardrail, not a security boundary.
+:::
+
 AI coding agents need secrets to do real work: an API key to call a service, a
 database URL to run a migration. The usual way to hand them over is to paste a
 value into a prompt or point the agent at a `.env` file. Both can leak. Prompts
@@ -104,8 +108,9 @@ Set `MURK_AGENT=1` to tell murk it's running for an agent. In an agent
 context, murk **forces strict mode**: it won't fall back to your stored key
 in `~/.config/murk/keys` (the agent must present its own
 `MURK_KEY`/`MURK_KEY_FILE`, e.g. a [grant](/concepts/grants/) key, or fail
-closed), won't write plaintext secrets to a file, and requires a RAM-backed
-tmpdir for `murk edit`.
+closed), won't let `get` or `export` print plaintext to a regular file, and requires a RAM-backed
+tmpdir for `murk edit`. `murk edit` itself is experimental: its lifecycle is
+new and its process handling is Unix-only.
 
 `murk agent exec` sets `MURK_AGENT=1` and `MURK_STRICT=1` for the child, so a
 nested `murk` stays strict and won't fall back to your stored key on the
