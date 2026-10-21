@@ -2638,12 +2638,16 @@ _murk() {
             return 0
             ;;
         murk__subcmd__trust)
-            opts="-h --yes --print-key --vault --help"
+            opts="-h --yes --print-key --re-add --vault --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
+                --re-add)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 --vault)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0

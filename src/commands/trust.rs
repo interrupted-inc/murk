@@ -10,12 +10,12 @@ use murk_cli::trust::{Refusal, Verdict};
 use murk_cli::types;
 use std::io::IsTerminal;
 
-pub(crate) fn cmd_trust(yes: bool, vault_path: &str) {
+pub(crate) fn cmd_trust(yes: bool, re_add: &[String], vault_path: &str) {
     // Hold the vault lock: accepting an unsigned vault re-signs it.
     let _lock = try_or_die(
         murk_cli::vault::lock(std::path::Path::new(vault_path)).map_err(murk_cli::MurkError::Vault),
     );
-    let inspected = try_or_die(murk_cli::inspect_vault(vault_path));
+    let mut inspected = try_or_die(murk_cli::inspect_vault(vault_path));
     let pubkey = inspected
         .identity
         .pubkey_string()
@@ -39,16 +39,26 @@ pub(crate) fn cmd_trust(yes: bool, vault_path: &str) {
         );
     }
 
+    // Keys this machine recorded as removed that the vault lists or is signed
+    // by: trusted again only when named with --re-add.
+    let removed =
+        murk_cli::trust::removed_keys_in(&inspected.loaded(), inspected.assessment.pin.as_ref());
+    let readmit = readmitted_keys(re_add, &removed, &inspected.murk.recipients);
+    if !readmit.is_empty() {
+        try_or_die(inspected.readmit(vault_path, &readmit));
+    }
+
     print_summary(vault_path, &inspected);
 
     let refusal = match &inspected.assessment.verdict {
-        Verdict::Trusted => {
+        Verdict::Trusted if readmit.is_empty() => {
             eprintln!(
                 "{} {vault_path} is already trusted on this machine",
                 "ok".green().bold()
             );
             return;
         }
+        Verdict::Trusted => None,
         Verdict::UnsignedAllowed => {
             eprintln!(
                 "{} {vault_path} is unsigned and your key cannot sign it — nothing to record; rely on signed git commits",
@@ -56,7 +66,27 @@ pub(crate) fn cmd_trust(yes: bool, vault_path: &str) {
             );
             return;
         }
-        Verdict::Refused(r) => r.clone(),
+        Verdict::Refused(r) => Some(r.clone()),
+    };
+    if refusal.is_some()
+        && let Some((key, at)) = removed.iter().find(|(k, _)| !readmit.contains(*k))
+    {
+        die(
+            &format_args!(
+                "{} was removed from this vault at generation {at} on this machine, and this vault lists them or is signed by them\nrefusing to trust it; to trust them again on purpose, review it and run `murk trust --vault {vault_path} --re-add {key}`",
+                murk_cli::trust::label(&inspected.murk.recipients, key)
+            ),
+            1,
+        );
+    }
+    let Some(refusal) = refusal else {
+        // Trusted once the named keys are re-added: record that decision.
+        if !yes && !confirmed("trust this vault and re-add the named keys on this machine?") {
+            die(&"not trusted", 1);
+        }
+        try_or_die(inspected.record_trust(vault_path, false, &readmit));
+        eprintln!("{} trusted {vault_path} on this machine", "◆".magenta());
+        return;
     };
     let reason = inspected.refusal_message(vault_path).unwrap_or_default();
     eprintln!(
@@ -91,19 +121,20 @@ pub(crate) fn cmd_trust(yes: bool, vault_path: &str) {
     } else {
         "trust this vault on this machine?"
     };
-    if !yes {
-        if !std::io::stdin().is_terminal() {
-            die(
-                &"murk trust needs confirmation\nreview the output above, then rerun with --yes",
-                1,
-            );
-        }
-        if !confirm(question) {
-            die(&"not trusted", 1);
-        }
+    if !yes && !confirmed(question) {
+        die(&"not trusted", 1);
     }
 
     if resign {
+        if !readmit.is_empty() {
+            // The re-signed vault lists the named keys: they are re-added on
+            // purpose, so take them out of the removed set before the save.
+            try_or_die(murk_cli::pins::update(vault_path, |fresh| {
+                let mut pin = fresh.cloned().unwrap_or_default();
+                pin.removed.retain(|k, _| !readmit.contains(k));
+                Ok(Some(pin))
+            }));
+        }
         // Re-sign exactly the current content: save with no changes.
         let murk_cli::InspectedVault {
             mut vault, murk, ..
@@ -126,11 +157,55 @@ pub(crate) fn cmd_trust(yes: bool, vault_path: &str) {
     } else {
         let reset_counter = matches!(
             refusal,
-            Refusal::RolledBack { .. } | Refusal::OtherVault { .. }
+            Refusal::RolledBack { .. } | Refusal::OtherVault { .. } | Refusal::Forked { .. }
         );
-        try_or_die(inspected.record_trust(vault_path, reset_counter));
+        try_or_die(inspected.record_trust(vault_path, reset_counter, &readmit));
     }
     eprintln!("{} trusted {vault_path} on this machine", "◆".magenta());
+}
+
+/// Ask `question` on a terminal; without one, stop and point at `--yes`.
+fn confirmed(question: &str) -> bool {
+    if !std::io::stdin().is_terminal() {
+        die(
+            &"murk trust needs confirmation\nreview the output above, then rerun with --yes",
+            1,
+        );
+    }
+    confirm(question)
+}
+
+/// The removed keys `re_add` names — each a public key or a recipient's name
+/// in the vault — in canonical form. A name that is not a removed key this
+/// vault lists is an error, so a typo never passes silently.
+fn readmitted_keys(
+    re_add: &[String],
+    removed: &std::collections::BTreeMap<String, u64>,
+    names: &std::collections::HashMap<String, String>,
+) -> std::collections::BTreeSet<String> {
+    re_add
+        .iter()
+        .map(|arg| {
+            let canonical = murk_cli::canonical_recipient(arg).into_owned();
+            if removed.contains_key(&canonical) {
+                return canonical;
+            }
+            names
+                .iter()
+                .filter(|(_, name)| *name == arg)
+                .map(|(pk, _)| murk_cli::canonical_recipient(pk).into_owned())
+                .find(|pk| removed.contains_key(pk))
+                .unwrap_or_else(|| {
+                    die(
+                        &format_args!(
+                            "{} is not a key this machine recorded as removed that this vault lists",
+                            murk_cli::terminal_text(arg, false)
+                        ),
+                        1,
+                    )
+                })
+        })
+        .collect()
 }
 
 /// `murk trust --print-key`: this machine's own trusted-signer entry and

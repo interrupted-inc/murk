@@ -11,7 +11,7 @@ use crate::{
 };
 use age::secrecy::ExposeSecret;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use zeroize::Zeroizing;
 
 /// The non-secret state carried out of the encrypted meta blob after integrity
@@ -555,10 +555,16 @@ impl InspectedVault {
 
     /// Record this vault as accepted in the trust pin — the explicit `murk
     /// trust` decision. `reset_counter` lowers the rollback high-water mark to
-    /// this vault's counter (an older revision accepted on purpose). The pin
-    /// is re-read under its lock, so anything another process recorded since
-    /// this vault was inspected is kept.
-    pub fn record_trust(&self, vault_path: &str, reset_counter: bool) -> Result<(), String> {
+    /// this vault's counter (an older revision accepted on purpose), and
+    /// `readmit` names the removed keys the user re-adds. The pin is re-read
+    /// under its lock, so anything another process recorded since this vault
+    /// was inspected is kept.
+    pub fn record_trust(
+        &self,
+        vault_path: &str,
+        reset_counter: bool,
+        readmit: &BTreeSet<String>,
+    ) -> Result<(), String> {
         if self.grant {
             return Err(
                 "an agent grant can't record trust: its key file names the signers it trusts"
@@ -570,10 +576,25 @@ impl InspectedVault {
             Ok(Some(trust::accepted_pin(
                 &loaded,
                 fresh,
-                reset_counter,
+                trust::Acceptance::Trust {
+                    reset_counter,
+                    readmit,
+                },
                 &trust::head_of(vault_path),
             )))
         })
+    }
+
+    /// Judge this vault again as if the removed keys in `readmit` (canonical)
+    /// had never been removed: `murk trust --re-add`.
+    pub fn readmit(
+        &mut self,
+        vault_path: &str,
+        readmit: &BTreeSet<String>,
+    ) -> Result<(), MurkError> {
+        self.assessment =
+            trust::assess(vault_path, &self.loaded(), None, readmit).map_err(MurkError::Trust)?;
+        Ok(())
     }
 
     /// Refuse unless the verdict accepts the vault; on acceptance, update the
@@ -606,13 +627,19 @@ impl InspectedVault {
                         refused = Some(trust::refusal_message(vault_path, &r, &loaded, fresh));
                         return Ok(None);
                     }
-                    let mut pin =
-                        trust::accepted_pin(&loaded, fresh, false, &trust::head_of(vault_path));
+                    let mut pin = trust::accepted_pin(
+                        &loaded,
+                        fresh,
+                        trust::Acceptance::Load,
+                        &trust::head_of(vault_path),
+                    );
                     if self.assessment.env_signers.is_some() {
                         let prior = fresh.cloned().unwrap_or_default();
                         pin.trusted = prior.trusted;
                         pin.ever_trusted = prior.ever_trusted;
                         pin.signers = prior.signers;
+                        pin.added_by = prior.added_by;
+                        pin.removed = prior.removed;
                         pin.groups = prior.groups;
                     }
                     Ok((fresh != Some(&pin)).then_some(pin))
@@ -673,8 +700,8 @@ pub fn inspect_vault(vault_path: &str) -> Result<InspectedVault, MurkError> {
         signer_vk,
         grant: false,
     };
-    inspected.assessment =
-        trust::assess(vault_path, &inspected.loaded(), None).map_err(MurkError::Trust)?;
+    inspected.assessment = trust::assess(vault_path, &inspected.loaded(), None, &BTreeSet::new())
+        .map_err(MurkError::Trust)?;
     let pubkey = inspected.identity.pubkey_string()?;
     drop_ghost_grants(&inspected.vault, &mut inspected.murk, &pubkey);
     Ok(inspected)
@@ -1796,7 +1823,7 @@ mod tests {
             self.run(|| {
                 inspect_vault(path)
                     .unwrap()
-                    .record_trust(path, false)
+                    .record_trust(path, false, &std::collections::BTreeSet::new())
                     .unwrap();
             });
         }

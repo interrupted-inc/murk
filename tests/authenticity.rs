@@ -1615,3 +1615,698 @@ fn a_weak_key_in_a_grant_key_file_anchor_is_an_error() {
         }
     }
 }
+
+// ── Removal, registry adders, counters, history ──
+
+impl Machine {
+    /// `murk` run as this person in `dir` with the age key in `key` (another
+    /// machine holding a key, or an attacker's second machine).
+    fn with_key(&self, dir: &Path, key: &Path) -> assert_cmd::Command {
+        let mut cmd = self.murk(dir);
+        cmd.env("MURK_KEY_FILE", key);
+        cmd
+    }
+}
+
+/// Configure the murk merge driver in `repo` and commit everything.
+fn use_merge_driver(repo: &Path) {
+    let driver = assert_cmd::cargo::cargo_bin("murk");
+    git_ok(
+        repo,
+        &[
+            "config",
+            "merge.murk.driver",
+            &format!("'{}' merge-driver %O %A %B %P", driver.display()),
+        ],
+    );
+    fs::write(repo.join(".gitattributes"), ".murk merge=murk\n").unwrap();
+    commit(repo, "merge driver");
+}
+
+/// `git merge <branch>` in `repo` as `who` (their HOME, their stored key),
+/// with the murk driver; returns (success, stderr).
+fn git_merge(who: &Machine, repo: &Path, branch: &str) -> (bool, String) {
+    let mut merge = std::process::Command::new("git");
+    merge
+        .args(["-c", "commit.gpgsign=false", "merge", "--no-edit", branch])
+        .current_dir(repo)
+        .env("HOME", &who.home)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "t@t")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "t@t");
+    for var in common::MURK_CONTEXT_VARS {
+        merge.env_remove(var);
+    }
+    let out = merge.output().unwrap();
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// Alice authorizes `who` under `name`.
+fn authorize(alice: &Machine, repo: &Path, who: &Machine, name: &str) {
+    alice
+        .murk(repo)
+        .args(["circle", "authorize", &who.pubkey(), "--name", name])
+        .assert()
+        .success();
+}
+
+fn generation_of(vault: &[u8]) -> u64 {
+    let json: serde_json::Value = serde_json::from_slice(vault).unwrap();
+    json["generation"].as_u64().unwrap()
+}
+
+/// Change the trust pin `who` keeps for the vault in `repo` (found by its
+/// vault id): their own machine, which they control.
+fn edit_pin(who: &Machine, repo: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
+    let vault: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(repo.join(".murk")).unwrap()).unwrap();
+    let path = fs::read_dir(who.home.join(".config/murk/signer-pins"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| {
+            p.extension().is_some_and(|e| e == "json")
+                && serde_json::from_str::<serde_json::Value>(&fs::read_to_string(p).unwrap())
+                    .is_ok_and(|pin| pin["vault_id"] == vault["vault_id"])
+        })
+        .expect("a pin for the vault");
+    let mut pin: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    edit(&mut pin);
+    fs::write(&path, serde_json::to_string_pretty(&pin).unwrap()).unwrap();
+}
+
+/// Have `holder`'s machine number its next save `generation + 1`.
+fn set_pin_generation(holder: &Machine, repo: &Path, generation: u64) {
+    edit_pin(holder, repo, |pin| pin["generation"] = generation.into());
+}
+
+/// Re-sign the vault at `path` as `as_signer` with `holder`'s age signing key:
+/// a valid signature by whoever holds the verifying key the registry gives
+/// for `as_signer`.
+fn resign_as(path: &Path, as_signer: &str, holder: &Machine) {
+    let id = murk_cli::crypto::parse_identity(&holder.secret_key()).unwrap();
+    let sk = id.signing_key().unwrap();
+    let mut vault: murk_cli::types::Vault =
+        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    vault.sig = None;
+    let mut msg = b"murk.vault.sig.v2\n".to_vec();
+    msg.extend(serde_json::to_vec(&vault).unwrap());
+    vault.sig = Some(murk_cli::types::VaultSignature {
+        signer: as_signer.to_string(),
+        v: 2,
+        sig: sk.sign(&msg),
+    });
+    fs::write(path, serde_json::to_string_pretty(&vault).unwrap()).unwrap();
+}
+
+/// Rule: removal is permanent in the pin. After machine A (Alice's) accepts a
+/// vault that removes Bob, nothing re-trusts Bob there: an older revision
+/// listing him (alice-signed) loaded from a branch, his own older signed
+/// revision, a newer vault signed by his key and built from a revision older
+/// than the removal, the same arriving as a merge side, and `murk trust`
+/// that does not name him are all refused. Trust comes back only through a
+/// newer vault from a trusted signer that re-adds him, or `murk trust
+/// --re-add` naming his key.
+#[test]
+fn removal_is_permanent_on_the_machine_that_accepted_it() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo) = alice_repo(base.path());
+    use_merge_driver(&repo);
+    let bob = Machine::new(base.path(), "bob");
+    bob.init(&base.path().join("bob-scratch"), "bob");
+    let bob_key = bob.key_file();
+    authorize(&alice, &repo, &bob, "bob");
+    commit(&repo, "add bob");
+    let with_bob = fs::read(repo.join(".murk")).unwrap();
+    bob.with_key(&repo, &bob_key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    bob.with_key(&repo, &bob_key)
+        .args(["add", "FROM_BOB"])
+        .write_stdin("bob\n")
+        .assert()
+        .success();
+    alice
+        .murk(&repo)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    commit(&repo, "bob writes");
+    let by_bob = fs::read(repo.join(".murk")).unwrap();
+    // A second machine of Alice's, which trusts the vault with Bob in it.
+    let laptop = Machine::new(base.path(), "alice-laptop");
+    let alice_key = alice.key_file();
+    laptop
+        .with_key(&repo, &alice_key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+
+    // Bob's own key on a second machine of his builds a newer vault from that
+    // older revision, numbered far past anything Alice will have.
+    let bob_attack = Machine::new(base.path(), "bob-attack");
+    bob_attack
+        .with_key(&repo, &bob_key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    set_pin_generation(&bob_attack, &repo, 40);
+    bob_attack
+        .with_key(&repo, &bob_key)
+        .args(["add", "BOB_LATE"])
+        .write_stdin("bob-late\n")
+        .assert()
+        .success();
+    let bob_late = fs::read(repo.join(".murk")).unwrap();
+    git_ok(&repo, &["checkout", "--", ".murk"]);
+
+    alice
+        .murk(&repo)
+        .args(["circle", "revoke", "bob"])
+        .assert()
+        .success();
+    commit(&repo, "remove bob");
+    // The laptop accepts the removal too.
+    laptop
+        .with_key(&repo, &alice_key)
+        .args(["get", "DB_URL"])
+        .assert()
+        .success();
+
+    // An older revision listing Bob, signed by Alice, loaded from a branch.
+    git_ok(&repo, &["checkout", "-q", "-b", "replay"]);
+    fs::write(repo.join(".murk"), &with_bob).unwrap();
+    commit(&repo, "replay: bob listed");
+    assert_refused_everywhere(&alice, &repo, "prod-db", "rolled back");
+    // Bob's own older signed revision on that branch.
+    fs::write(repo.join(".murk"), &by_bob).unwrap();
+    commit(&repo, "replay: by bob");
+    assert_refused_everywhere(&alice, &repo, "prod-db", "rolled back");
+    // A newer vault signed by Bob's key, built from before the removal.
+    fs::write(repo.join(".murk"), &bob_late).unwrap();
+    commit(&repo, "replay: bob late");
+    assert_refused_everywhere(&alice, &repo, "prod-db", "removed from this vault");
+    alice
+        .murk(&repo)
+        .args(["get", "BOB_LATE"])
+        .assert()
+        .failure()
+        .stdout("");
+    // `murk trust` that does not name Bob refuses it.
+    alice
+        .murk(&repo)
+        .args(["trust", "--yes"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--re-add"));
+
+    // The same vault arriving as a merge side (main moved on, so git runs
+    // the driver rather than fast-forwarding).
+    git_ok(&repo, &["checkout", "-q", "main"]);
+    alice.add(&repo, "MAIN_LATER", "later");
+    commit(&repo, "main moves on");
+    let (merged, stderr) = git_merge(&alice, &repo, "replay");
+    assert!(!merged, "the merge must not complete: {stderr}");
+    assert!(
+        stderr.contains("failed its authenticity check")
+            && stderr.contains("removed from this vault"),
+        "{stderr}"
+    );
+    git_ok(&repo, &["merge", "--abort"]);
+    alice
+        .murk(&repo)
+        .args(["get", "DB_URL"])
+        .assert()
+        .success()
+        .stdout("prod-db\n");
+
+    // `murk trust` naming Bob re-adds him, on the machine that does so.
+    git_ok(&repo, &["checkout", "-q", "replay"]);
+    laptop
+        .with_key(&repo, &alice_key)
+        .args(["get", "BOB_LATE"])
+        .assert()
+        .failure();
+    laptop
+        .with_key(&repo, &alice_key)
+        .args(["trust", "--yes", "--re-add", "bob"])
+        .assert()
+        .success();
+    laptop
+        .with_key(&repo, &alice_key)
+        .args(["get", "BOB_LATE"])
+        .assert()
+        .success()
+        .stdout("bob-late\n");
+    git_ok(&repo, &["checkout", "-q", "main"]);
+
+    // A trusted signer re-adding Bob in a newer vault is the normal way back.
+    authorize(&alice, &repo, &bob, "bob");
+    commit(&repo, "re-add bob");
+    bob.with_key(&repo, &bob_key)
+        .args(["add", "BACK"])
+        .write_stdin("back\n")
+        .assert()
+        .success();
+    alice
+        .murk(&repo)
+        .args(["get", "BACK"])
+        .assert()
+        .success()
+        .stdout("back\n");
+}
+
+/// Rule: a key-registry entry counts only while whoever added it is trusted.
+/// Mallory, a trusted signer, registers her own signing key under Bob's name
+/// before Bob ever signs; Alice's machine pins it on Mallory's word, and even
+/// accepts a vault "signed by Bob" with it — which proves only that Mallory
+/// holds that key. Once Alice removes Mallory, the entry stops counting: a
+/// vault signed as Bob with Mallory's key is refused as unconfirmed.
+#[test]
+fn a_registry_entry_stops_counting_once_whoever_added_it_is_removed() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo) = alice_repo(base.path());
+    let bob = Machine::new(base.path(), "bob");
+    bob.init(&base.path().join("bob-scratch"), "bob");
+    let mallory = Machine::new(base.path(), "mallory");
+    mallory.init(&base.path().join("mallory-scratch"), "mallory");
+    let mallory_key = mallory.key_file();
+    authorize(&alice, &repo, &bob, "bob");
+    authorize(&alice, &repo, &mallory, "mallory");
+
+    // Mallory's machine binds her signing key to Bob; her saves vouch for it.
+    mallory
+        .with_key(&repo, &mallory_key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    let (entry, _) = mallory.signer_entry(&repo);
+    let mallory_vk = entry.rsplit_once(':').unwrap().1.to_string();
+    edit_pin(&mallory, &repo, |pin| {
+        pin["signers"][bob.pubkey()] = mallory_vk.clone().into();
+    });
+    mallory
+        .with_key(&repo, &mallory_key)
+        .args(["add", "M1"])
+        .write_stdin("m1\n")
+        .assert()
+        .success();
+    alice.murk(&repo).args(["get", "M1"]).assert().failure();
+    alice
+        .murk(&repo)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+
+    // While Mallory is trusted, a vault "by Bob" under her key loads.
+    mallory
+        .with_key(&repo, &mallory_key)
+        .args(["add", "M2"])
+        .write_stdin("m2\n")
+        .assert()
+        .success();
+    resign_as(&repo.join(".murk"), &bob.pubkey(), &mallory);
+    alice
+        .murk(&repo)
+        .args(["get", "M2"])
+        .assert()
+        .success()
+        .stdout("m2\n");
+    let accepted = fs::read(repo.join(".murk")).unwrap();
+
+    // Mallory prepares a later vault as Bob, numbered past the removal.
+    set_pin_generation(&mallory, &repo, 40);
+    mallory
+        .with_key(&repo, &mallory_key)
+        .args(["add", "EVIL"])
+        .write_stdin("evil\n")
+        .assert()
+        .success();
+    resign_as(&repo.join(".murk"), &bob.pubkey(), &mallory);
+    let forged = fs::read(repo.join(".murk")).unwrap();
+    fs::write(repo.join(".murk"), &accepted).unwrap();
+
+    alice
+        .murk(&repo)
+        .args(["circle", "revoke", "mallory"])
+        .assert()
+        .success();
+    fs::write(repo.join(".murk"), &forged).unwrap();
+    alice
+        .murk(&repo)
+        .args(["get", "EVIL"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("has not confirmed yet"));
+}
+
+/// Rule: generations advance in bounded steps. A vault numbered more than
+/// the bound above this machine's mark is refused until `murk trust`
+/// accepts it on review.
+#[test]
+fn a_generation_jump_past_the_bound_waits_for_murk_trust() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo) = alice_repo(base.path());
+    let laptop = Machine::new(base.path(), "alice-laptop");
+    let key = alice.key_file();
+    laptop
+        .with_key(&repo, &key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    let mark = generation_of(&fs::read(repo.join(".murk")).unwrap());
+    set_pin_generation(&laptop, &repo, mark + 1_000_000);
+    laptop
+        .with_key(&repo, &key)
+        .args(["add", "JUMP"])
+        .write_stdin("jump\n")
+        .assert()
+        .success();
+    alice
+        .murk(&repo)
+        .args(["get", "JUMP"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("jumps from generation"));
+    alice
+        .murk(&repo)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    alice
+        .murk(&repo)
+        .args(["get", "JUMP"])
+        .assert()
+        .success()
+        .stdout("jump\n");
+}
+
+/// Rule: no vault near the top of the counter is ever accepted, so the
+/// counter can't be pushed to where it stops increasing — not on a machine
+/// with a mark, not by `murk trust`, not on a fresh machine.
+#[test]
+fn a_generation_near_the_u64_limit_is_refused_outright() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo) = alice_repo(base.path());
+    let laptop = Machine::new(base.path(), "alice-laptop");
+    let key = alice.key_file();
+    laptop
+        .with_key(&repo, &key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    set_pin_generation(&laptop, &repo, u64::MAX - 1);
+    laptop
+        .with_key(&repo, &key)
+        .args(["add", "TOP"])
+        .write_stdin("top\n")
+        .assert()
+        .success();
+    assert_eq!(
+        generation_of(&fs::read(repo.join(".murk")).unwrap()),
+        u64::MAX
+    );
+    alice
+        .murk(&repo)
+        .args(["get", "TOP"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("above the largest murk accepts"));
+    alice
+        .murk(&repo)
+        .args(["trust", "--yes"])
+        .assert()
+        .failure();
+    let fresh = Machine::new(base.path(), "fresh");
+    fresh
+        .with_key(&repo, &key)
+        .args(["trust", "--yes"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("above the largest murk accepts"));
+}
+
+/// Rule: two different vaults with the same generation are a fork. Bob and
+/// Alice both save from the same revision; once Alice's machine accepted her
+/// save on `main`, Bob's save replacing it on `main` is refused. Merged with
+/// the murk driver, the two saves combine normally.
+#[test]
+fn a_different_vault_with_the_accepted_generation_is_a_fork() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo) = alice_repo(base.path());
+    use_merge_driver(&repo);
+    let bob = Machine::new(base.path(), "bob");
+    bob.init(&base.path().join("bob-scratch"), "bob");
+    let bob_key = bob.key_file();
+    authorize(&alice, &repo, &bob, "bob");
+    bob.with_key(&repo, &bob_key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    bob.with_key(&repo, &bob_key)
+        .args(["add", "FIRST"])
+        .write_stdin("first\n")
+        .assert()
+        .success();
+    alice
+        .murk(&repo)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    commit(&repo, "both trusted");
+
+    bob.with_key(&repo, &bob_key)
+        .args(["add", "FROM_BOB"])
+        .write_stdin("bob\n")
+        .assert()
+        .success();
+    let bobs = fs::read(repo.join(".murk")).unwrap();
+    git_ok(&repo, &["checkout", "--", ".murk"]);
+    alice.add(&repo, "FROM_ALICE", "alice");
+    commit(&repo, "alice saves");
+    assert_eq!(
+        generation_of(&bobs),
+        generation_of(&fs::read(repo.join(".murk")).unwrap())
+    );
+
+    fs::write(repo.join(".murk"), &bobs).unwrap();
+    alice
+        .murk(&repo)
+        .args(["get", "FROM_BOB"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("forked"));
+
+    git_ok(&repo, &["checkout", "--", ".murk"]);
+    git_ok(&repo, &["checkout", "-q", "-b", "bob", "HEAD~1"]);
+    fs::write(repo.join(".murk"), &bobs).unwrap();
+    commit(&repo, "bob saves");
+    git_ok(&repo, &["checkout", "-q", "main"]);
+    let (merged, stderr) = git_merge(&alice, &repo, "bob");
+    assert!(merged, "{stderr}");
+    for (k, v) in [("FROM_BOB", "bob\n"), ("FROM_ALICE", "alice\n")] {
+        alice
+            .murk(&repo)
+            .args(["get", k])
+            .assert()
+            .success()
+            .stdout(v);
+    }
+}
+
+/// Rule: reading history never adds trust. Dave was a member and was removed
+/// before Alice's laptop first trusted the vault, so the laptop never saw
+/// him. Reading the revision that lists him — on a detached HEAD, on a branch,
+/// and through `murk diff` — leaves the laptop's trust as it was, so a later
+/// vault signed by Dave is refused.
+#[test]
+fn reading_history_never_adds_trust() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo) = alice_repo(base.path());
+    let dave = Machine::new(base.path(), "dave");
+    dave.init(&base.path().join("dave-scratch"), "dave");
+    let dave_key = dave.key_file();
+    authorize(&alice, &repo, &dave, "dave");
+    dave.with_key(&repo, &dave_key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    dave.with_key(&repo, &dave_key)
+        .args(["add", "D1"])
+        .write_stdin("d1\n")
+        .assert()
+        .success();
+    alice
+        .murk(&repo)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    // Alice's write vouches for Dave's signing key.
+    alice.add(&repo, "A1", "a1");
+    commit(&repo, "dave vouched for");
+
+    // Dave builds a later vault from that revision, numbered far ahead.
+    let dave_attack = Machine::new(base.path(), "dave-attack");
+    dave_attack
+        .with_key(&repo, &dave_key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
+    set_pin_generation(&dave_attack, &repo, 49);
+    dave_attack
+        .with_key(&repo, &dave_key)
+        .args(["add", "EVIL"])
+        .write_stdin("evil\n")
+        .assert()
+        .success();
+    let forged = fs::read(repo.join(".murk")).unwrap();
+    git_ok(&repo, &["checkout", "--", ".murk"]);
+
+    alice
+        .murk(&repo)
+        .args(["circle", "revoke", "dave"])
+        .assert()
+        .success();
+    commit(&repo, "remove dave");
+
+    let laptop = Machine::new(base.path(), "alice-laptop");
+    let key = alice.key_file();
+    let on_laptop = |args: &[&str]| {
+        let mut cmd = laptop.with_key(&repo, &key);
+        cmd.args(args);
+        cmd
+    };
+    on_laptop(&["trust", "--yes"]).assert().success();
+
+    git_ok(&repo, &["checkout", "-q", "--detach", "HEAD~1"]);
+    on_laptop(&["get", "A1"]).assert().success().stdout("a1\n");
+    git_ok(&repo, &["checkout", "-q", "-b", "old"]);
+    on_laptop(&["get", "A1"]).assert().success().stdout("a1\n");
+    git_ok(&repo, &["checkout", "-q", "main"]);
+    on_laptop(&["diff", "HEAD~1"]).assert().success();
+
+    fs::write(repo.join(".murk"), &forged).unwrap();
+    on_laptop(&["get", "EVIL"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("not a trusted signer"));
+}
+
+/// Rule: merge sides follow removal. After Alice's machine accepts Bob's
+/// removal, two branches forked while Bob was a member and saved before his
+/// removal still list him; merging them with each other must not keep him,
+/// since neither re-adds him in a newer revision. And an older alice-signed
+/// revision that adds Bob, committed on a branch forked from before he was
+/// added, is refused as a rollback when merged into a branch that also
+/// added him (so the recipient merge itself sees no conflict).
+#[test]
+fn a_merge_side_never_brings_a_removed_recipient_back() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo) = alice_repo(base.path());
+    use_merge_driver(&repo);
+    let bob = Machine::new(base.path(), "bob");
+    bob.init(&base.path().join("bob-scratch"), "bob");
+    authorize(&alice, &repo, &bob, "bob");
+    commit(&repo, "add bob");
+    let with_bob = fs::read(repo.join(".murk")).unwrap();
+    for branch in ["f1", "f2"] {
+        git_ok(&repo, &["checkout", "-q", "-b", branch, "main"]);
+        alice.add(&repo, &branch.to_uppercase(), branch);
+        commit(&repo, branch);
+    }
+    git_ok(&repo, &["checkout", "-q", "main"]);
+    alice
+        .murk(&repo)
+        .args(["circle", "revoke", "bob"])
+        .assert()
+        .success();
+    commit(&repo, "remove bob");
+
+    git_ok(&repo, &["checkout", "-q", "f1"]);
+    let (merged, stderr) = git_merge(&alice, &repo, "f2");
+    assert!(!merged, "the merge must not complete: {stderr}");
+    assert!(stderr.contains("neither side re-adds them"), "{stderr}");
+    git_ok(&repo, &["merge", "--abort"]);
+
+    git_ok(&repo, &["checkout", "-q", "-b", "side", "main~2"]);
+    fs::write(repo.join(".murk"), &with_bob).unwrap();
+    commit(&repo, "replay the revision that added bob");
+    git_ok(&repo, &["checkout", "-q", "f1"]);
+    let (merged, stderr) = git_merge(&alice, &repo, "side");
+    assert!(!merged, "the merge must not complete: {stderr}");
+    // Both sides are older revisions that add Bob relative to the ancestor.
+    assert!(
+        stderr.contains("failed its authenticity check")
+            && stderr.contains("rolled back: it adds bob"),
+        "{stderr}"
+    );
+}
+
+/// Rule: a save never writes a removed recipient back. Alice's machine
+/// recorded Bob's removal; her working vault is then an older revision that
+/// still lists him — the remote tip she checked out predates the removal, on
+/// a branch this machine never saw, on a detached HEAD, or as a file. `murk
+/// add` refuses and tells her to update to the vault that removed him,
+/// writing nothing; re-authorizing Bob explicitly on the current vault works.
+#[test]
+fn a_save_over_an_older_revision_never_writes_a_removed_recipient_back() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo) = alice_repo(base.path());
+    let bob = Machine::new(base.path(), "bob");
+    bob.init(&base.path().join("bob-scratch"), "bob");
+    authorize(&alice, &repo, &bob, "bob");
+    commit(&repo, "add bob");
+    alice
+        .murk(&repo)
+        .args(["circle", "revoke", "bob"])
+        .assert()
+        .success();
+    commit(&repo, "remove bob");
+
+    let older = git(&repo, &["show", "HEAD~1:.murk"]).stdout;
+    let refuse_save = || {
+        alice
+            .murk(&repo)
+            .args(["add", "NEW"])
+            .write_stdin("new\n")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(
+                "update to the vault that removed them",
+            ));
+        assert_eq!(
+            fs::read(repo.join(".murk")).unwrap(),
+            older,
+            "nothing written"
+        );
+    };
+    git_ok(&repo, &["checkout", "-q", "-b", "pulled", "HEAD~1"]);
+    refuse_save();
+    git_ok(&repo, &["checkout", "-q", "--detach", "main~1"]);
+    refuse_save();
+    git_ok(&repo, &["checkout", "-q", "main"]);
+    git_ok(&repo, &["checkout", "HEAD~1", "--", ".murk"]);
+    refuse_save();
+
+    git_ok(&repo, &["checkout", "HEAD", "--", ".murk"]);
+    authorize(&alice, &repo, &bob, "bob");
+    let header: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(repo.join(".murk")).unwrap()).unwrap();
+    assert!(
+        header["recipients"]
+            .as_array()
+            .unwrap()
+            .contains(&bob.pubkey().into())
+    );
+}
