@@ -1635,7 +1635,9 @@ fn removal_is_permanent_on_the_machine_that_accepted_it() {
 /// before Bob ever signs; Alice's machine pins it on Mallory's word, and even
 /// accepts a vault "signed by Bob" with it — which proves only that Mallory
 /// holds that key. Once Alice removes Mallory, the entry stops counting: a
-/// vault signed as Bob with Mallory's key is refused as unconfirmed.
+/// vault signed as Bob with Mallory's key is refused as unconfirmed. Alice's
+/// own writes never vouch for the entry, so Carol, a third machine that
+/// learns keys only from Alice's writes, refuses it too.
 #[test]
 fn a_registry_entry_stops_counting_once_whoever_added_it_is_removed() {
     let base = TempDir::new().unwrap();
@@ -1645,8 +1647,18 @@ fn a_registry_entry_stops_counting_once_whoever_added_it_is_removed() {
     let mallory = Machine::new(base.path(), "mallory");
     mallory.init(&base.path().join("mallory-scratch"), "mallory");
     let mallory_key = mallory.key_file();
+    let carol = Machine::new(base.path(), "carol");
+    carol.init(&base.path().join("carol-scratch"), "carol");
+    let carol_key = carol.key_file();
     authorize(&alice, &repo, &bob, "bob");
     authorize(&alice, &repo, &mallory, "mallory");
+    authorize(&alice, &repo, &carol, "carol");
+    // Carol, a third teammate, trusts the vault as Alice left it.
+    carol
+        .with_key(&repo, &carol_key)
+        .args(["trust", "--yes"])
+        .assert()
+        .success();
 
     // Mallory's machine binds her signing key to Bob; her saves vouch for it.
     mallory
@@ -1671,6 +1683,16 @@ fn a_registry_entry_stops_counting_once_whoever_added_it_is_removed() {
         .args(["trust", "--yes"])
         .assert()
         .success();
+
+    // Alice's next write must not vouch for the key Mallory bound to Bob,
+    // or Carol would keep believing it on Alice's word after Mallory goes.
+    alice.add(&repo, "A1", "a1");
+    carol
+        .with_key(&repo, &carol_key)
+        .args(["get", "A1"])
+        .assert()
+        .success()
+        .stdout("a1\n");
 
     // While Mallory is trusted, a vault "by Bob" under her key loads.
     mallory
@@ -1705,9 +1727,25 @@ fn a_registry_entry_stops_counting_once_whoever_added_it_is_removed() {
         .args(["circle", "revoke", "mallory"])
         .assert()
         .success();
+    let revoked = fs::read(repo.join(".murk")).unwrap();
     fs::write(repo.join(".murk"), &forged).unwrap();
     alice
         .murk(&repo)
+        .args(["get", "EVIL"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("has not confirmed yet"));
+    // Carol accepts the removal, and is not fooled either.
+    fs::write(repo.join(".murk"), &revoked).unwrap();
+    carol
+        .with_key(&repo, &carol_key)
+        .args(["get", "A1"])
+        .assert()
+        .success();
+    fs::write(repo.join(".murk"), &forged).unwrap();
+    carol
+        .with_key(&repo, &carol_key)
         .args(["get", "EVIL"])
         .assert()
         .failure()
