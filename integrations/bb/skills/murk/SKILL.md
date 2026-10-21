@@ -85,9 +85,9 @@ in an agent context never falls back to the user's personal key in
 `~/.config/murk/keys`. Any `murk` command that needs a key fails closed with
 `cannot read MURK_KEY_FILE`, or with `MURK_KEY and MURK_KEY_FILE are both set`
 if something filled in `MURK_KEY`. `--allow-operator-key` does not change that:
-it only applies outside an agent context. That is by design. Do not unset or
-change those variables, and never point `MURK_KEY_FILE` at anything under
-`~/.config/murk`; that is the user's decision, not yours. `agent exec` also
-masks injected values in its output, but masking is an accident guard, not
-permission to print: an encoded or partial value gets through. Use the
-delivered dotenv file instead.
+it only lets `agent exec` use a personal key that has already resolved, and none
+does here. That is by design. Do not unset or change those variables, and never
+point `MURK_KEY_FILE` at anything under `~/.config/murk`; that is the user's
+decision, not yours. `agent exec` also masks injected values in its output, but
+masking is an accident guard, not permission to print: an encoded or partial
+value gets through. Use the delivered dotenv file instead.
