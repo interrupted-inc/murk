@@ -2642,7 +2642,22 @@ fn diff_across_a_revoke_of_the_old_signer_succeeds() {
         .success();
     commit_test_vault_again(dir.path(), "revoke bob");
 
-    // The revision verifies; only the revoke itself shows.
+    // The revision verifies; only the revoke itself shows. Reading it never
+    // records anything in the trust pin: bob stays revoked here.
+    let pins = || {
+        let mut all: Vec<(std::path::PathBuf, Vec<u8>)> =
+            fs::read_dir(dir.path().join(".config/murk/signer-pins"))
+                .unwrap()
+                .map(|e| {
+                    let path = e.unwrap().path();
+                    let bytes = fs::read(&path).unwrap();
+                    (path, bytes)
+                })
+                .collect();
+        all.sort();
+        all
+    };
+    let pinned = pins();
     murk(&dir, &key)
         .args(["diff", "HEAD~1", "--vault", "test.murk"])
         .env("NO_COLOR", "1")
@@ -2652,6 +2667,7 @@ fn diff_across_a_revoke_of_the_old_signer_succeeds() {
         .stdout(predicate::str::contains("~ signer bob ("))
         .stdout(predicate::str::contains("DB").not())
         .stderr("");
+    assert_eq!(pins(), pinned, "diff must not change the trust pin");
 }
 
 /// git runs hooks, filters and helpers with its own environment, so murk must
