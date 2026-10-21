@@ -149,6 +149,14 @@ pub struct GrantEntry {
     pub expires_at: String,
     /// Pubkey of the recipient who issued the grant (minimal accountability).
     pub issuer: String,
+    /// The trusted signers written into the grant's key file at mint
+    /// (canonical recipient keys). The grant trusts a vault signed by any of
+    /// them, so revoking one of them as a recipient revokes this grant too.
+    /// Lives in the meta, covered by the signature. Empty for a grant minted
+    /// before this was recorded: its anchor is unknown, so revoking any signer
+    /// revokes it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub anchors: Vec<String>,
 }
 
 /// What an agent grant reads instead of the meta: its own grant record, in the

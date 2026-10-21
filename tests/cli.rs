@@ -6443,6 +6443,166 @@ fn a_grant_trusts_only_the_signers_in_its_key_file() {
         .stdout(predicate::str::contains("v1"));
 }
 
+#[test]
+fn revoking_a_signer_revokes_the_grants_that_trust_it() {
+    // A grant's key file trusts the signers pinned when it was minted, and
+    // nothing updates a key file. Without this, after `circle revoke bob`, bob
+    // signs a vault from his pre-revoke copy and the agent accepts it (and
+    // `agent exec` injects his value) while every pinned machine refuses it.
+    let dir = TempDir::new().unwrap();
+    let (alice, _) = init_vault(&dir);
+    let bob_home = TempDir::new().unwrap();
+    let (bob, bob_pk) = init_vault(&bob_home);
+    let as_bob = || {
+        let mut cmd = murk_bin(bob_home.path());
+        cmd.current_dir(dir.path()).env("MURK_KEY", &bob);
+        cmd
+    };
+    murk(&dir, &alice)
+        .args(["add", "DATABASE_URL", "--vault", "test.murk"])
+        .write_stdin("real-db-pass\n")
+        .assert()
+        .success();
+    murk(&dir, &alice)
+        .args([
+            "circle",
+            "authorize",
+            &bob_pk,
+            "--name",
+            "bob",
+            "--vault",
+            "test.murk",
+        ])
+        .assert()
+        .success();
+    // Minted while only alice signs: its anchor doesn't list bob.
+    let solo = mint_exec_grant(&dir, &alice, "solo", &["DATABASE_URL"]);
+    // Bob writes, and alice confirms his key: from now on her grants trust him.
+    as_bob()
+        .args(["trust", "--yes", "--vault", "test.murk"])
+        .assert()
+        .success();
+    as_bob()
+        .args(["add", "B_MARKER", "--vault", "test.murk"])
+        .write_stdin("x\n")
+        .assert()
+        .success();
+    murk(&dir, &alice)
+        .args(["trust", "--yes", "--vault", "test.murk"])
+        .assert()
+        .success();
+    // Minted to murk's own key path, which the agent is pointed at.
+    murk(&dir, &alice)
+        .args(["agent", "grant", "--name", "bot", "--only", "DATABASE_URL"])
+        .args(["--vault", "test.murk"])
+        .assert()
+        .success();
+    let bot_file = fs::read_dir(dir.path().join(".config/murk/agent-keys"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.to_string_lossy().ends_with("-bot"))
+        .unwrap();
+    let bot = read_agent_key(&bot_file);
+    assert_eq!(bot.matches("# murk-trusted-signer: ").count(), 2, "{bot}");
+    let as_agent = || {
+        let mut cmd = murk_bin(dir.path());
+        cmd.current_dir(dir.path()).env("MURK_KEY_FILE", &bot_file);
+        cmd
+    };
+    let vault = dir.path().join("test.murk");
+    let pre_revoke = fs::read(&vault).unwrap();
+
+    let revoke = murk(&dir, &alice)
+        .args(["circle", "revoke", "bob", "--vault", "test.murk"])
+        .assert()
+        .success();
+    let stderr = String::from_utf8(revoke.get_output().stderr.clone()).unwrap();
+    assert!(stderr.contains("revoked agent grant bot"), "{stderr}");
+    assert!(!stderr.contains("revoked agent grant solo"), "{stderr}");
+    assert!(stderr.contains("--renew"), "{stderr}");
+    assert!(
+        stderr.contains("MURK_TRUSTED_SIGNERS") && stderr.contains(&bob_pk),
+        "the external-anchor warning must name bob's entry: {stderr}"
+    );
+    murk(&dir, &alice)
+        .args(["agent", "ls", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("solo").and(predicate::str::contains("bot").not()));
+    // The grant whose anchor never listed bob survives and still reads.
+    murk(&dir, &solo)
+        .args(["get", "DATABASE_URL", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("real-db-pass"));
+    assert!(
+        !bot_file.exists(),
+        "the revoked grant's key file must be gone"
+    );
+    as_agent()
+        .args(["get", "DATABASE_URL", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stdout("");
+
+    // Bob forges from his pre-revoke copy, where bot is still live.
+    let post_revoke = fs::read(&vault).unwrap();
+    fs::write(&vault, &pre_revoke).unwrap();
+    as_bob()
+        .args(["add", "DATABASE_URL", "--vault", "test.murk"])
+        .write_stdin("attacker-controlled-db\n")
+        .assert()
+        .success();
+    let forged = fs::read(&vault).unwrap();
+    let agent_refuses = || {
+        as_agent()
+            .args(["get", "DATABASE_URL", "--vault", "test.murk"])
+            .assert()
+            .failure()
+            .stdout(predicate::str::contains("attacker").not());
+        as_agent()
+            .args([
+                "agent",
+                "exec",
+                "--only",
+                "DATABASE_URL",
+                "--vault",
+                "test.murk",
+            ])
+            .args(["--", "sh", "-c", "echo \"app sees $DATABASE_URL\""])
+            .assert()
+            .failure()
+            .stdout(predicate::str::contains("app sees").not());
+    };
+    agent_refuses();
+
+    // Re-minting (on the real vault) writes a key file that no longer trusts
+    // bob, at the path the agent uses; bob's forgery is still refused.
+    fs::write(&vault, &post_revoke).unwrap();
+    murk(&dir, &alice)
+        .args([
+            "agent",
+            "grant",
+            "--name",
+            "bot",
+            "--only",
+            "DATABASE_URL",
+            "--renew",
+        ])
+        .args(["--vault", "test.murk"])
+        .assert()
+        .success();
+    let renewed = read_agent_key(&bot_file);
+    assert!(!renewed.contains(&bob_pk), "{renewed}");
+    as_agent()
+        .args(["get", "DATABASE_URL", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("real-db-pass"));
+    fs::write(&vault, &forged).unwrap();
+    agent_refuses();
+}
+
 /// Alice's trusted-signer entry, as `murk trust --print-key` prints it.
 fn alice_entry(dir: &TempDir, alice: &str) -> String {
     let out = murk(dir, alice)

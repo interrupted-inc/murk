@@ -345,6 +345,7 @@ fn agent_grant_never_reads_through_decrypt_vault() {
             // Far future: this test is about scoping; expiry has its own tests.
             expires_at: "2200-01-01T00:00:00Z".into(),
             issuer: op.pubkey.clone(),
+            anchors: Vec::new(),
         },
     );
 

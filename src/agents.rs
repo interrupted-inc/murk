@@ -41,18 +41,34 @@ pub fn anchor_from_key_text(text: &str) -> Result<TrustedSigners, String> {
     Ok(out)
 }
 
-/// The anchor lines to write above a new grant key: this machine's pinned
-/// trusted signers for `vault_path`, plus `minter` (who just signed the vault
-/// the grant first reads). Empty when nobody here can sign.
-pub fn anchor_lines(vault_path: &str, minter: &crypto::MurkIdentity) -> Result<String, String> {
+/// The trusted signers to anchor a new grant on: this machine's pinned trusted
+/// signers for `vault_path`, plus `minter` (who signs the vault the grant first
+/// reads), kept only while they are recipients of `vault`, the vault being
+/// saved with the grant. Empty when nobody here can sign.
+pub fn anchor_signers(
+    vault_path: &str,
+    vault: &types::Vault,
+    minter: &crypto::MurkIdentity,
+) -> Result<TrustedSigners, String> {
     let mut signers = crate::trust::pinned_trusted_signers(vault_path)?;
     if let (Ok(pk), Some(sk)) = (minter.pubkey_string(), minter.signing_key()) {
         let canonical = crate::recipients::canonical_recipient(&pk).into_owned();
         let vk = (!canonical.starts_with("ssh-")).then(|| sk.verifying_key());
         signers.insert(canonical, vk);
     }
+    let current: std::collections::BTreeSet<String> = vault
+        .recipients
+        .iter()
+        .map(|r| crate::recipients::canonical_recipient(r).into_owned())
+        .collect();
+    signers.retain(|key, _| current.contains(key));
+    Ok(signers)
+}
+
+/// The `# murk-trusted-signer:` lines for `signers`, to head a grant key file.
+pub fn anchor_lines(signers: &TrustedSigners) -> String {
     let mut out = String::new();
-    for (key, vk) in &signers {
+    for (key, vk) in signers {
         use std::fmt::Write as _;
         let _ = writeln!(
             out,
@@ -60,7 +76,7 @@ pub fn anchor_lines(vault_path: &str, minter: &crypto::MurkIdentity) -> Result<S
             crate::trust::format_trusted_signer(key, vk.as_deref())
         );
     }
-    Ok(out)
+    out
 }
 
 /// The `agents` entry for `pubkey`, matched canonically.

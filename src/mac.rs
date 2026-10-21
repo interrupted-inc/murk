@@ -1114,6 +1114,7 @@ mod tests {
                 issued_at: "2026-02-28T00:00:00Z".into(),
                 expires_at: "2026-02-28T02:00:00Z".into(),
                 issuer: "age1abc".into(),
+                anchors: Vec::new(),
             },
         )]);
         let v7_mac = compute_mac_v7(&vault, &no_groups, &grants, &key);
@@ -1129,6 +1130,7 @@ mod tests {
                 issued_at: "2026-02-28T00:00:00Z".into(),
                 expires_at: "2026-02-28T02:00:00Z".into(),
                 issuer: "age1abc".into(),
+                anchors: Vec::new(),
             },
         )]);
         assert!(!verify_mac(
@@ -1170,6 +1172,7 @@ mod tests {
                 issued_at: "2026-02-28T00:00:00Z".into(),
                 expires_at: "2026-02-28T02:00:00Z".into(),
                 issuer: "age1abc".into(),
+                anchors: Vec::new(),
             },
         )]);
         // A v6 MAC (no grants in the digest) must be rejected once grants exist.
