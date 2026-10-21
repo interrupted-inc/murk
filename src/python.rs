@@ -6,7 +6,7 @@
 //! ```python
 //! import murk
 //!
-//! vault = murk.load()              # reads MURK_KEY from env, .murk from cwd
+//! vault = murk.load()              # finds your key like the CLI, .murk from cwd
 //! vault.get("DATABASE_URL")        # decrypt a single value
 //! vault.export()                   # dict of all key/values
 //! murk.get("DATABASE_URL")         # one-liner convenience
@@ -131,8 +131,9 @@ impl Vault {
     }
 }
 
-/// Load a murk vault. Reads MURK_KEY from the environment. Raises
-/// `TrustError` when this machine does not trust the vault.
+/// Load a murk vault. Finds the key the same way the CLI does: `MURK_KEY`,
+/// `MURK_KEY_FILE`, or the key file `murk init` stored. Raises `TrustError`
+/// when this machine does not trust the vault.
 #[pyfunction]
 #[pyo3(signature = (vault_path=".murk"))]
 fn load(vault_path: &str) -> PyResult<Vault> {
@@ -163,9 +164,10 @@ fn export_all(vault_path: &str) -> PyResult<HashMap<String, String>> {
     v.export()
 }
 
-/// Whether a decryption identity (MURK_KEY / MURK_KEY_FILE) is available in the
-/// environment — i.e. whether load() can decrypt. This does not check whether a
-/// secret exists; use `key in vault` / Vault.keys for that.
+/// Whether murk can find a key for `./.murk`: MURK_KEY, MURK_KEY_FILE or the key
+/// file `murk init` stored. This does not read the vault, so True does not mean
+/// load() succeeds. It does not check whether a secret exists; use
+/// `key in vault` / Vault.keys for that.
 #[pyfunction]
 fn has_identity() -> bool {
     env::resolve_key().is_ok()
