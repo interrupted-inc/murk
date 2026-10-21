@@ -100,6 +100,9 @@ See [brand.md](./brand.md) for the canonical palette (ANSI slots and brand
 hex), the brand purple `#8760FF`, and the rule that the CLI stays
 theme-adaptive while fixed assets use the locked hex.
 
+Use semantic colors for new CLI output. The `murk info` nameplate currently
+uses a fixed RGB color and is an exception.
+
 ## Output examples
 
 ```rust
