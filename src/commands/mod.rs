@@ -123,20 +123,11 @@ pub(crate) fn load_vault(vault: &str) -> (types::Vault, types::Murk, MurkIdentit
     }
     // `murk_cli::load_vault` refuses a vault this machine does not trust
     // (unsigned, untrusted signer, rolled back, ...), so every caller and
-    // binding gets the same rules. What reaches here is trusted, or unsigned
-    // and loaded by a key that cannot sign.
+    // binding gets the same rules and the same warnings. What reaches here is
+    // trusted, or unsigned and loaded by a key that cannot sign.
     let result = try_or_die(murk_cli::load_vault(vault));
-    if result.1.legacy_mac {
-        eprintln!(
-            "{} vault uses legacy unkeyed MAC — run any write command to upgrade to BLAKE3",
-            "warn".yellow().bold()
-        );
-    }
-    if matches!(result.1.signature, types::SignatureState::Unsigned) {
-        eprintln!(
-            "{} vault is unsigned and your key cannot sign — nothing in the vault shows who wrote it; rely on signed git commits",
-            "warn".yellow().bold()
-        );
+    for warning in &result.1.warnings {
+        eprintln!("{} {warning}", "warn".yellow().bold());
     }
     maybe_nudge_agent_path(vault);
     result

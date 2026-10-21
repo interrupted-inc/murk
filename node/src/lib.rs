@@ -12,12 +12,39 @@
 //! get('DATABASE_URL')               // one-liner convenience
 //! vault.add('NEW_KEY', 'value')     // store a secret (encrypted to everyone)
 //! ```
+//!
+//! Every call that reads the vault applies the same trust rules as the CLI
+//! (`murk_cli::load_vault`): a vault this machine does not trust throws an
+//! `Error` with `code` `'MURK_TRUST'` and the message the CLI prints.
 
 use std::collections::HashMap;
 use std::path::Path;
 
-use murk_cli::SecretTier;
+use murk_cli::{MurkError, SecretTier};
 use napi_derive::napi;
+
+/// `code` of the error thrown when the vault itself is refused: not trusted
+/// on this machine, or tampered with.
+const TRUST_ERROR: &str = "MURK_TRUST";
+
+/// `code` of every other error (napi's default).
+const GENERIC_ERROR: &str = "GenericFailure";
+
+/// What the bindings throw: an `Error` whose `code` is a string we choose.
+type Result<T, E = napi::Error<String>> = std::result::Result<T, E>;
+
+fn fail(reason: impl std::fmt::Display) -> napi::Error<String> {
+    napi::Error::new(GENERIC_ERROR.to_string(), reason)
+}
+
+/// A refusal of the vault (trust or integrity) gets [`TRUST_ERROR`].
+fn murk_error(e: MurkError) -> napi::Error<String> {
+    let code = match e {
+        MurkError::Trust(_) | MurkError::Integrity(_) => TRUST_ERROR,
+        _ => GENERIC_ERROR,
+    };
+    napi::Error::new(code.to_string(), e)
+}
 
 /// A loaded and decrypted murk vault.
 #[napi]
@@ -67,13 +94,13 @@ impl Vault {
     /// `agent exec`. Throws if policy forbids the key. For an operator identity
     /// this is a no-op.
     #[napi]
-    pub fn get(&self, key: String) -> napi::Result<Option<String>> {
+    pub fn get(&self, key: String) -> Result<Option<String>> {
         let value = murk_cli::get_secret(&self.murk, &key, &self.pubkey).map(str::to_string);
         // Only enforce when there is a value to hand back: a key the agent
         // cannot decrypt is already inaccessible, so policy is moot.
         if value.is_some() {
             murk_cli::enforce_agent_policy(&self.vault, &self.murk, &self.pubkey, &[key])
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+                .map_err(fail)?;
         }
         Ok(value)
     }
@@ -91,11 +118,11 @@ impl Vault {
     // Controlled boundary: NAPI export hands plaintext back to JavaScript by
     // design (see the doc comment above) (murk-lints secret_uncontrolled_escape).
     #[cfg_attr(dylint_lib = "murk_lints", allow(secret_uncontrolled_escape))]
-    pub fn export(&self) -> napi::Result<HashMap<String, String>> {
+    pub fn export(&self) -> Result<HashMap<String, String>> {
         let resolved = murk_cli::resolve_secrets(&self.vault, &self.murk, &self.pubkey, &[]);
         let keys: Vec<String> = resolved.keys().cloned().collect();
         murk_cli::enforce_agent_policy(&self.vault, &self.murk, &self.pubkey, &keys)
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            .map_err(fail)?;
         Ok(resolved
             .into_iter()
             .map(|(k, v)| (k, v.to_string()))
@@ -120,6 +147,14 @@ impl Vault {
         self.vault.schema.contains_key(&key)
     }
 
+    /// Warnings about this vault that did not stop the load — the ones the
+    /// CLI prints as `warn …` (an unsigned vault read by a key that cannot
+    /// sign, a legacy MAC, a trust pin that could not be written).
+    #[napi(getter)]
+    pub fn warnings(&self) -> Vec<String> {
+        self.murk.warnings.clone()
+    }
+
     /// Store a secret. Mirrors `murk add`: the value is encrypted to the tier's
     /// recipients and the vault is re-signed and written back to disk under an
     /// exclusive lock, so it is safe against concurrent writers.
@@ -141,14 +176,9 @@ impl Vault {
     /// the write throws and nothing is saved. For a plain operator identity
     /// the policy check is a no-op.
     #[napi]
-    pub fn add(
-        &mut self,
-        key: String,
-        value: String,
-        options: Option<AddOptions>,
-    ) -> napi::Result<()> {
+    pub fn add(&mut self, key: String, value: String, options: Option<AddOptions>) -> Result<()> {
         if !murk_cli::is_valid_key_name(&key) {
-            return Err(napi::Error::from_reason(format!(
+            return Err(fail(format!(
                 "invalid key name: {key}. Keys must start with a letter or underscore and contain only [A-Za-z0-9_]"
             )));
         }
@@ -162,14 +192,10 @@ impl Vault {
 
         // Lock, then load fresh from disk so a concurrent write isn't clobbered —
         // the same read-modify-write discipline the CLI's `cmd_add` follows.
-        let _lock = murk_cli::vault::lock(Path::new(&self.path))
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-        let (mut vault, murk, identity) = murk_cli::load_vault(&self.path)
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-        murk_cli::ensure_writable(&murk).map_err(|e| napi::Error::from_reason(e.to_string()))?;
-        let pubkey = identity
-            .pubkey_string()
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        let _lock = murk_cli::vault::lock(Path::new(&self.path)).map_err(fail)?;
+        let (mut vault, murk, identity) = murk_cli::load_vault(&self.path).map_err(murk_error)?;
+        murk_cli::ensure_writable(&murk).map_err(fail)?;
+        let pubkey = identity.pubkey_string().map_err(fail)?;
         let original = murk.clone();
         let mut current = murk;
 
@@ -212,7 +238,7 @@ impl Vault {
                     &tags,
                     &pubkey,
                 )
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+                .map_err(fail)?;
             }
         }
 
@@ -220,11 +246,9 @@ impl Vault {
         // forbidden write fails closed and leaves the on-disk vault untouched. The
         // schema now carries the intended tags, so the tag check sees the real
         // post-write state.
-        murk_cli::enforce_agent_policy(&vault, &current, &pubkey, &[key])
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        murk_cli::enforce_agent_policy(&vault, &current, &pubkey, &[key]).map_err(fail)?;
 
-        murk_cli::save_vault(&self.path, &mut vault, &original, &current)
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        murk_cli::save_vault(&self.path, &mut vault, &original, &current).map_err(murk_error)?;
 
         // Refresh the in-memory snapshot so subsequent reads on this handle see
         // the write (and any concurrent changes the fresh load picked up).
@@ -245,18 +269,14 @@ impl Vault {
         key: String,
         description: String,
         options: Option<DescribeOptions>,
-    ) -> napi::Result<()> {
+    ) -> Result<()> {
         let opts = options.unwrap_or_default();
         let tags = opts.tags.unwrap_or_default();
 
-        let _lock = murk_cli::vault::lock(Path::new(&self.path))
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-        let (mut vault, murk, identity) = murk_cli::load_vault(&self.path)
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-        murk_cli::ensure_writable(&murk).map_err(|e| napi::Error::from_reason(e.to_string()))?;
-        let pubkey = identity
-            .pubkey_string()
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        let _lock = murk_cli::vault::lock(Path::new(&self.path)).map_err(fail)?;
+        let (mut vault, murk, identity) = murk_cli::load_vault(&self.path).map_err(murk_error)?;
+        murk_cli::ensure_writable(&murk).map_err(fail)?;
+        let pubkey = identity.pubkey_string().map_err(fail)?;
         let original = murk.clone();
         let current = murk;
 
@@ -270,11 +290,9 @@ impl Vault {
             None,
         );
 
-        murk_cli::enforce_agent_policy(&vault, &current, &pubkey, &[key])
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        murk_cli::enforce_agent_policy(&vault, &current, &pubkey, &[key]).map_err(fail)?;
 
-        murk_cli::save_vault(&self.path, &mut vault, &original, &current)
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        murk_cli::save_vault(&self.path, &mut vault, &original, &current).map_err(murk_error)?;
 
         self.vault = vault;
         self.murk = current;
@@ -285,13 +303,10 @@ impl Vault {
 
 /// Load a murk vault. Reads MURK_KEY from the environment.
 #[napi]
-pub fn load(vault_path: Option<String>) -> napi::Result<Vault> {
+pub fn load(vault_path: Option<String>) -> Result<Vault> {
     let path = vault_path.as_deref().unwrap_or(".murk");
-    let (vault, murk, identity) =
-        murk_cli::load_vault(path).map_err(|e| napi::Error::from_reason(e.to_string()))?;
-    let pubkey = identity
-        .pubkey_string()
-        .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+    let (vault, murk, identity) = murk_cli::load_vault(path).map_err(murk_error)?;
+    let pubkey = identity.pubkey_string().map_err(fail)?;
     Ok(Vault {
         vault,
         murk,
@@ -302,13 +317,13 @@ pub fn load(vault_path: Option<String>) -> napi::Result<Vault> {
 
 /// One-liner: load the vault and get a single key.
 #[napi]
-pub fn get(key: String, vault_path: Option<String>) -> napi::Result<Option<String>> {
+pub fn get(key: String, vault_path: Option<String>) -> Result<Option<String>> {
     load(vault_path)?.get(key)
 }
 
 /// One-liner: load the vault and export all secrets as an object.
 #[napi]
-pub fn export_all(vault_path: Option<String>) -> napi::Result<HashMap<String, String>> {
+pub fn export_all(vault_path: Option<String>) -> Result<HashMap<String, String>> {
     load(vault_path)?.export()
 }
 
@@ -319,7 +334,7 @@ pub fn add(
     value: String,
     options: Option<AddOptions>,
     vault_path: Option<String>,
-) -> napi::Result<()> {
+) -> Result<()> {
     load(vault_path)?.add(key, value, options)
 }
 

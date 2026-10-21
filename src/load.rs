@@ -355,7 +355,7 @@ fn decrypt_vault_with_signature(
     // still encrypted its meta to grants; a grant key reading one has no trust
     // anchor, so it is refused until the operator re-saves.
     if vault.version.starts_with("2.") && grants.values().any(|g| g.pubkey == pubkey) {
-        return Err(MurkError::Grant(
+        return Err(MurkError::Trust(
             "this vault predates murk 0.14's agent records, so an agent grant can't read \
              it: ask the operator to save it with murk 0.14 or later and re-mint the grant"
                 .into(),
@@ -410,6 +410,7 @@ fn decrypt_vault_with_signature(
             signature,
             loaded_by: Some(pubkey),
             loaded_as_grant: false,
+            warnings: Vec::new(),
         },
         signer_vk,
     ))
@@ -458,7 +459,7 @@ fn inspect_as_grant(
         anchor.extend(env);
     }
     if anchor.is_empty() {
-        return Err(MurkError::Grant(
+        return Err(MurkError::Trust(
             "this grant key names no trusted signers, so murk can't check the vault it reads: \
              ask the operator to re-mint the grant (`murk agent grant --renew`), or set \
              MURK_TRUSTED_SIGNERS"
@@ -581,7 +582,8 @@ impl InspectedVault {
     /// pin. The acceptance is confirmed against the pin as it is now, re-read
     /// under its lock: if another process accepted a newer revision since, the
     /// vault is refused rather than recorded over it. Writing is best-effort —
-    /// a pin that cannot be written (read-only home) only warns. When the
+    /// a pin that cannot be written (read-only home) only warns. Warnings about
+    /// the accepted vault land in [`types::Murk::warnings`]. When the
     /// trust came from `MURK_TRUSTED_SIGNERS`, the pin's trusted set is left
     /// as it was, so the environment variable never widens trust that
     /// outlives it.
@@ -589,6 +591,7 @@ impl InspectedVault {
         self,
         vault_path: &str,
     ) -> Result<(types::Vault, types::Murk, crypto::MurkIdentity), MurkError> {
+        let mut warnings = Vec::new();
         match &self.assessment.verdict {
             trust::Verdict::Refused(_) => {
                 let msg = self.refusal_message(vault_path).unwrap_or_default();
@@ -620,12 +623,25 @@ impl InspectedVault {
                     return Err(MurkError::Trust(msg));
                 }
                 if let Err(e) = written {
-                    eprintln!("warn {e}");
+                    warnings.push(e);
                 }
             }
             trust::Verdict::Trusted | trust::Verdict::UnsignedAllowed => {}
         }
-        Ok((self.vault, self.murk, self.identity))
+        let (vault, mut murk, identity) = (self.vault, self.murk, self.identity);
+        if murk.legacy_mac {
+            warnings.push(
+                "vault uses legacy unkeyed MAC — run any write command to upgrade to BLAKE3".into(),
+            );
+        }
+        if matches!(murk.signature, types::SignatureState::Unsigned) {
+            warnings.push(
+                "vault is unsigned and your key cannot sign — nothing in the vault shows who wrote it; rely on signed git commits"
+                    .into(),
+            );
+        }
+        murk.warnings = warnings;
+        Ok((vault, murk, identity))
     }
 }
 

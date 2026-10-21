@@ -37,6 +37,12 @@ export declare class Vault {
   /** Check if a key exists. */
   has(key: string): boolean
   /**
+   * Warnings about this vault that did not stop the load — the ones the
+   * CLI prints as `warn …` (an unsigned vault read by a key that cannot
+   * sign, a legacy MAC, a trust pin that could not be written).
+   */
+  get warnings(): Array<string>
+  /**
    * Store a secret. Mirrors `murk add`: the value is encrypted to the tier's
    * recipients and the vault is re-signed and written back to disk under an
    * exclusive lock, so it is safe against concurrent writers.

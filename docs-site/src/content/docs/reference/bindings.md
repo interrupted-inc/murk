@@ -79,6 +79,7 @@ The module is imported as `murk` even though the package is `murk-secrets`.
 | `vault[key]` | `str` | Dict-style access. Raises `RuntimeError` if absent |
 | `key in vault` | `bool` | Membership test |
 | `len(vault)` | `int` | Number of secrets |
+| `vault.warnings` | `list[str]` | Warnings about a vault murk accepted, the ones the CLI prints as `warn …` |
 
 ## Node.js
 
@@ -138,6 +139,7 @@ add("NEW_TOKEN", "value");
 | `vault.add(key, value, options?)` | `void` | Store a secret (see [Writing secrets](#writing-secrets-node)) |
 | `vault.describe(key, description, options?)` | `void` | Set a key's description, tags, or example |
 | `vault.length` | `number` | Number of secrets |
+| `vault.warnings` | `string[]` | Warnings about a vault murk accepted, the ones the CLI prints as `warn …` |
 
 ### Writing secrets (Node)
 
@@ -178,18 +180,35 @@ keys your identity is a recipient of.
 
 Both bindings load a vault through the same check as the CLI, so they hold
 the same line: a vault murk doesn't trust on this machine never decrypts.
-`load()` fails (Python raises `RuntimeError`, Node throws) with the CLI's
-message when the vault is unsigned and your key could have signed it, is
-signed by a key this machine hasn't accepted, has been rolled back, or is
-another vault's file. A bare "not trusted on this machine yet" means nobody
-has run [`murk trust`](/concepts/recipients-signatures/#murk-trust) for this
+Every call that reads the vault fails with the CLI's message when the vault
+is unsigned and your key could have signed it, is signed by a key this
+machine hasn't accepted, has been rolled back, is another vault's file, or
+has been tampered with (a bad MAC or signature, or an agent grant bound to a
+teammate's key). A bare "not trusted on this machine yet" means nobody has
+run [`murk trust`](/concepts/recipients-signatures/#murk-trust) for this
 vault here.
 
-A binding can't ask you. Run `murk trust` once from a shell, or, in CI and
-other environments with no pin, set [`MURK_TRUSTED_SIGNERS`](/concepts/env-vars/)
-to the entries of the signers you allow (`murk trust --print-key` prints one
-per key). `vault.add()` in Node loads through the same
-check first, so it never re-signs content the machine doesn't trust.
+- **Python** raises `murk.TrustError`, a subclass of `RuntimeError`.
+- **Node** throws an `Error` whose `code` is `'MURK_TRUST'`. Other errors keep
+  `code` `'GenericFailure'`.
+
+A binding can't ask you, and has no way around the check. Run `murk trust`
+once from a shell, or, in CI and other environments with no pin, set
+[`MURK_TRUSTED_SIGNERS`](/concepts/env-vars/) to the entries of the signers
+you allow (`murk trust --print-key` prints one per key). A load updates this
+machine's trust pin exactly as the same CLI command would. `vault.add()` and
+`vault.describe()` in Node load through the same check first, so they never
+re-sign content the machine doesn't trust.
+
+An agent grant key reads only through the trusted signers in its key file
+(the `# murk-trusted-signer:` lines `murk agent grant` writes) or
+`MURK_TRUSTED_SIGNERS`, and never reads or writes the pin. A grant key with
+neither is refused with a message asking the operator to re-mint the grant.
+
+Some vaults load with a warning instead: an unsigned vault read by a key
+that cannot sign (ssh-rsa, hardware or plugin keys), a legacy MAC, or a trust
+pin that could not be written. The CLI prints these as `warn …`; the bindings
+put the same text in `vault.warnings`, which is empty for a clean load.
 
 ## Agent policy is enforced on read and write
 
