@@ -56,7 +56,6 @@ const ALLOWLIST = {
   mcp: "long-running stdio server; tests/mcp_interop.rs (no finite tape)",
   diff: "git-ref secret diff; tests/cli.rs",
   "setup-merge-driver": "one-time git config; tests/cli.rs",
-  import: "reverse of export; tests/cli.rs + tests/adversarial.rs",
 };
 
 // --- Command tree from the generated CLI reference ---------------------------

@@ -159,14 +159,16 @@ murk circle revoke carol --rotate   # remove carol, then rotate what she could r
 git commit -am "revoke carol, rotate secrets" && git push
 ```
 
-Revocation re-encrypts the vault going forward, but old versions remain in git history. The revoked user can still decrypt any version they previously had access to. Always rotate secrets after revocation.
+Revocation re-encrypts the vault going forward, but old versions remain in git history. The revoked user can still decrypt any version they previously had access to. Always rotate secrets after revocation. murk only stores the replacement values: create new credentials at each provider and invalidate the old ones there.
 
-If you already have new values in a file, import them directly:
+If you already have the new values in a file, rotate from it in the same step:
 
 ```bash
-murk circle revoke carol
-murk import --force .env.rotated  # overwrite the existing values from a file
+murk circle revoke carol --rotate --values-from .env.rotated
+rm .env.rotated               # it holds plaintext secrets
 ```
+
+Values are matched by name and each stays in its tier. If the file names a key that cannot be rotated, nothing is written and carol is not revoked. Keys it leaves out stay listed by `murk rotate --list`.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/interrupted-sh/murk/demo/offboard.gif" alt="murk offboarding demo" width="900">
@@ -221,7 +223,7 @@ steps:
 
 A CI runner has no trust pin and nobody to run `murk trust`. `MURK_TRUSTED_SIGNERS` lists the people who write the vault, separated by commas or newlines. An age signer is `age1...:<verifying key>` and an `ssh-ed25519` signer is its public key line; each signer runs `murk trust --print-key` to get their entry (it goes to stdout, the fingerprint to stderr). A bare `age1...` key without its verifying key is an error. Store it as a secret next to `MURK_KEY`. With it set, an unsigned vault is refused even for a key that can't sign, and the variable never adds to what the machine's own pin trusts. The action has to pass the variable through to `murk`; if yours doesn't, run `murk exec` yourself with both variables in the step's `env:`.
 
-Workflows that still reference `interrupted-inc/murk-action` must switch to `interrupted-sh/murk-action`: GitHub does not redirect action references after an organization rename.
+The organization was renamed from `interrupted-inc` to `interrupted-sh`. Change any workflow that still uses `interrupted-inc/murk-action` to `interrupted-sh/murk-action`.
 
 Store your `MURK_KEY` as a GitHub Actions secret. Decrypted values are registered with GitHub's log masking, but masking depends on GitHub's runner behavior and is not a hard security boundary.
 
@@ -230,8 +232,10 @@ Store your `MURK_KEY` as a GitHub Actions secret. Decrypted values are registere
 When `murk init` generates a key, it prints a 24-word recovery phrase that encodes that key. Write it down.
 
 ```bash
-# Lost your key? Enter the phrase at the hidden prompt. murk prints the key.
-murk restore
+# Lost your key? Print it from the phrase (prompts, hidden input) and save it
+mkdir -p -m 700 ~/.config/murk
+(umask 077 && murk restore > ~/.config/murk/restored.key)
+export MURK_KEY_FILE=~/.config/murk/restored.key
 ```
 
 `murk restore` only prints the key. It writes no file. Save the output to a file with mode 600 and point `MURK_KEY_FILE` at it. The phrase covers age keys only, not SSH or hardware keys.

@@ -24,9 +24,19 @@ direnv allow
 requires this explicit opt-in per directory, as a safety measure against
 untrusted repos setting arbitrary environment variables on `cd`).
 
-From then on, every secret in the vault (shared and any scoped overrides
-you've added) is exported into your shell automatically when you're inside
-the project directory, and unset again when you leave it.
+From then on, direnv exports every secret you can read (shared, group, and
+your own `me` overrides) when you enter the project and unsets them when you
+leave.
+
+## Keeping up with vault changes
+
+direnv reloads when `.envrc` changes, not when `.murk` does. After `git pull`
+or `murk rotate`, run `direnv reload`. To make direnv watch the vault, add
+this line above the `eval` line in `.envrc`:
+
+```bash
+watch_file .murk
+```
 
 Before the first load on a machine, murk may stop with "not trusted on this
 machine yet". Review the vault and run `murk trust` once, as described in
@@ -65,8 +75,8 @@ hook into.
 
 ## Related
 
-- [Quick start](/quick-start/) walks through `murk init` → `murk add` →
-  `murk env` end to end.
+- [Quick start](/quick-start/) covers `murk init`, getting authorized, and
+  `murk env`.
 - [Environment variables](/concepts/env-vars/) documents every variable murk
   reads and writes, including `MURK_KEY_FILE`, `MURK_VAULT`, and `MURK_KEY`.
 - [Shared vs scoped secrets](/guides/shared-vs-scoped/) covers how scoped
