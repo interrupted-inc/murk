@@ -1001,15 +1001,12 @@ pub fn regenerate_meta(
     }
 
     let pin = crate::pins::read(vault_path)?;
-    // Removals apply as they do to a load of the branch being merged into.
-    let checkout = crate::trust::Checkout::of(vault_path, pin.as_ref());
-    let scoped = pin.as_ref().map(|p| crate::trust::scoped_pin(p, &checkout));
     if let Some(conflict) = result_conflict(
         &identity,
         merged,
         &meta,
         &ours_meta,
-        scoped.as_ref(),
+        pin.as_ref(),
         ours,
         theirs,
     ) {

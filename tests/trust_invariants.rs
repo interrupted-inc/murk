@@ -9,12 +9,13 @@
 //! `MURK_TRUSTED_SIGNERS`, and an agent grant loads with its key-file anchor.
 //! Each case runs a random sequence of: saves, `circle authorize` / `revoke`,
 //! vouching (a member registers a signing key they control for another
-//! recipient), `git merge` through the murk driver, `murk trust`, loads of the
-//! branch tip, an older revision, a new branch or detached HEAD, `murk diff`
-//! against an older revision, an agent grant, forgeries (a vault rebuilt from
-//! any revision the attacker could open, with a chosen generation, signed by
-//! their own key or as a recipient whose key they vouched for), and replays of
-//! old revisions.
+//! recipient), `git merge` through the murk driver, `murk trust`, pushes of a
+//! branch, loads of the branch tip, an older revision, a new branch, a pushed
+//! branch or a detached HEAD, `murk diff` against an older revision, an agent
+//! grant, forgeries (a vault rebuilt from any revision the attacker could
+//! open, with a chosen generation, signed by their own key or as a recipient
+//! whose registry entry holds a key they control), and replays of old
+//! revisions.
 //!
 //! Every vault in the run is traced to who produced it and when. After every
 //! step the harness checks:
@@ -22,15 +23,24 @@
 //! - **Revoked signers stay out.** Once an observer (a machine, CI, the agent,
 //!   which follows the machine that minted it) has accepted a vault that
 //!   removes X, it never accepts (by a load, `murk trust`, `murk diff` or the
-//!   merge driver) a vault X produced after that revoke, whichever key signed
-//!   it, nor a vault produced after the revoke that lists X again without a
-//!   `circle authorize` of X since.
+//!   merge driver), at a commit whose history contains that vault, a vault X
+//!   produced after that revoke, whichever key signed it, nor a vault
+//!   produced after the revoke that lists X again without a `circle
+//!   authorize` of X since. Until the removal reaches a branch, X is still a
+//!   member there.
 //! - **No reads after removal.** X never decrypts a value first written in a
 //!   vault that did not list X, unless X was authorized again afterwards.
 //! - The access invariants for the commands a member runs: a refused command
 //!   leaves the vault byte-for-byte unchanged; a saved value is readable by
 //!   exactly the vault's recipients (no widening, no drop); and after an
 //!   accepted write the writer's machine loads the vault again.
+//! - **A revoke takes its grants with it.** The vault a revoke of X writes
+//!   keeps no agent grant whose anchor trusts X.
+//!
+//! Stored sequences run first. Each is scripted: every step must run, a load
+//! of an honest vault must be accepted before the decisive step, and the
+//! decisive step must be accepted or refused as the scenario requires, so a
+//! sequence cannot pass without making its attack.
 //!
 //! `MURK_TRUST_CASES` sets the number of cases (default 8, sized for CI);
 //! `.github/workflows/invariants.yaml` runs a nightly soak with many more.
@@ -94,8 +104,11 @@ enum At {
     Detached(usize),
     /// A new branch at the n-th commit it knows.
     NewBranch(usize),
-    /// A detached HEAD at the n-th branch an attacker pushed.
+    /// A detached HEAD at the n-th pushed branch.
     Pushed(usize),
+    /// A local branch named after the n-th pushed branch, at its tip: a pull
+    /// request checked out for review.
+    PushedBranch(usize),
     /// A detached HEAD at the remote's `main`, as a fresh pull would see it.
     OriginMain,
 }
@@ -134,6 +147,10 @@ enum Sign {
     Own,
     /// As a recipient whose registry entry is the planted key.
     AsPlanted(Planted),
+    /// As another recipient the base lists, after setting their registry
+    /// entry to the planted key in the forgery itself. A weak key can only
+    /// arrive this way: no vault murk opens carries one.
+    Plants(Planted),
 }
 
 /// The identity point, compressed: a weak verifying key.
@@ -223,9 +240,12 @@ enum Op {
         m: M,
     },
     /// `murk trust --yes`, run only where a person reviewing it would accept:
-    /// a vault no observer rule forbids.
+    /// a vault no observer rule forbids. With `forgery`, that includes a
+    /// vault a member wrote with their own code, as a reviewer who takes the
+    /// hint to override a refusal would (only stored sequences set it).
     Trust {
         m: M,
+        forgery: bool,
     },
     /// Check out and load (`murk export`).
     Load {
@@ -269,11 +289,16 @@ enum Op {
         rev: Old,
         to: Dest,
     },
-    /// Merge the n-th branch an attacker pushed into the machine's current
-    /// checkout (the murk driver runs on a conflict).
+    /// Merge the n-th pushed branch into the machine's current checkout (the
+    /// murk driver runs on a conflict).
     MergeBranch {
         m: M,
         branch: usize,
+    },
+    /// Push the machine's current checkout to a new branch on the remote,
+    /// as a pull request would.
+    Push {
+        m: M,
     },
 }
 
@@ -297,6 +322,7 @@ fn at() -> impl Strategy<Value = At> {
         2 => (0..8usize).prop_map(At::Detached),
         2 => (0..8usize).prop_map(At::NewBranch),
         1 => (0..4usize).prop_map(At::Pushed),
+        1 => (0..4usize).prop_map(At::PushedBranch),
         3 => Just(At::OriginMain),
     ]
 }
@@ -321,7 +347,7 @@ fn op() -> impl Strategy<Value = Op> {
         1 => (m(), p(), prop_oneof![2 => Just(Planted::Sock), 1 => Just(Planted::Weak)])
             .prop_map(|(m, who, key)| Op::Vouch { m, who, key }),
         3 => m().prop_map(|m| Op::Sync { m }),
-        1 => m().prop_map(|m| Op::Trust { m }),
+        1 => m().prop_map(|m| Op::Trust { m, forgery: false }),
         3 => (m(), at()).prop_map(|(m, at)| Op::Load { m, at }),
         1 => (m(), 0..8usize).prop_map(|(m, rev)| Op::Diff { m, rev }),
         1 => m().prop_map(|m| Op::Grant { m }),
@@ -340,6 +366,8 @@ fn op() -> impl Strategy<Value = Op> {
                 3 => Just(Sign::Own),
                 1 => Just(Sign::AsPlanted(Planted::Sock)),
                 1 => Just(Sign::AsPlanted(Planted::Weak)),
+                1 => Just(Sign::Plants(Planted::Sock)),
+                1 => Just(Sign::Plants(Planted::Weak)),
             ],
             dest(),
         )
@@ -356,6 +384,7 @@ fn op() -> impl Strategy<Value = Op> {
         )
             .prop_map(|(rev, to)| Op::Replay { rev, to }),
         1 => (m(), 0..4usize).prop_map(|(m, branch)| Op::MergeBranch { m, branch }),
+        1 => m().prop_map(|m| Op::Push { m }),
     ]
 }
 
@@ -576,14 +605,17 @@ struct World<'f> {
     /// Accepted `circle revoke` / `authorize` (and vouch) steps, per person.
     revokes: Vec<(usize, usize)>,
     authorizes: Vec<(usize, usize)>,
-    /// Per observer: person → the revoke step whose removal it accepted.
-    removed: BTreeMap<Obs, BTreeMap<usize, usize>>,
+    /// Per observer: person → the revoke step whose removal it accepted, and
+    /// the commit holding the vault it accepted it in.
+    removed: BTreeMap<Obs, BTreeMap<usize, (usize, String)>>,
     /// People whose entries the CI secret lists.
     ci_signers: BTreeSet<usize>,
     agent: Option<Agent>,
     /// Plaintext → (step written, people the writing vault did not list).
     written: HashMap<String, (usize, BTreeSet<usize>)>,
     branches: Vec<String>,
+    /// Grants the last revoke had to take with it.
+    last_cascade: usize,
 }
 
 impl<'f> World<'f> {
@@ -604,6 +636,7 @@ impl<'f> World<'f> {
             agent: None,
             written: fixture_values.into_iter().collect(),
             branches: Vec::new(),
+            last_cascade: 0,
         }
     }
 
@@ -654,7 +687,7 @@ impl<'f> World<'f> {
 
     /// The removals `obs` has accepted (the agent follows the machine that
     /// minted it, and its own loads).
-    fn removals(&self, obs: &Obs) -> BTreeMap<usize, usize> {
+    fn removals(&self, obs: &Obs) -> BTreeMap<usize, (usize, String)> {
         let mut all = self.removed.get(obs).cloned().unwrap_or_default();
         if let (Obs::Agent, Some(agent)) = (obs, &self.agent) {
             for (who, v) in self
@@ -669,8 +702,31 @@ impl<'f> World<'f> {
         all
     }
 
-    /// Whether accepting `bytes` on `obs` breaks the revoked-signer invariant.
-    fn check_accept(&self, obs: &Obs, bytes: &[u8], how: &str) -> Result<(), String> {
+    /// The clone `obs` loads in.
+    fn clone_of(&self, obs: &Obs) -> Machine {
+        match obs {
+            Obs::Machine(i) => self.machine(*i),
+            Obs::Ci => bystander(&self.root, "ci-runner"),
+            Obs::Agent => bystander(&self.root, "agent"),
+        }
+    }
+
+    /// Whether the removal `obs` accepted in commit `removal` has reached
+    /// commit `at`: `at`'s history contains it.
+    fn reaches(&self, obs: &Obs, removal: &str, at: &str) -> bool {
+        self.clone_of(obs)
+            .git(&["merge-base", "--is-ancestor", removal, at])
+            .status
+            .success()
+    }
+
+    /// Whether accepting `bytes`, the vault at commit `at`, on `obs` breaks
+    /// the revoked-signer invariant.
+    ///
+    /// A removal binds a branch once its history contains the commit in which
+    /// `obs` accepted it. Until an offboarding change reaches a branch, the
+    /// person is still a member there, and their vaults on it may load.
+    fn check_accept(&self, obs: &Obs, bytes: &[u8], how: &str, at: &str) -> Result<(), String> {
         let Some(origin) = self.origins.get(&blob_id(bytes)) else {
             return Ok(());
         };
@@ -700,11 +756,16 @@ impl<'f> World<'f> {
                 PEOPLE[p], origin.step
             ));
         }
-        let removals = self.removals(obs);
+        let removals: BTreeMap<usize, usize> = self
+            .removals(obs)
+            .into_iter()
+            .filter(|(_, (_, commit))| self.reaches(obs, commit, at))
+            .map(|(who, (v, _))| (who, v))
+            .collect();
         // A member this observer still trusts may list anyone with their own
         // code: they could have run `circle authorize` instead.
         let insider = origin.custom && origin.producer.is_some_and(|p| !removals.contains_key(&p));
-        for (who, v) in removals.clone() {
+        for (who, v) in removals {
             if origin.step <= v {
                 continue;
             }
@@ -726,9 +787,9 @@ impl<'f> World<'f> {
         Ok(())
     }
 
-    /// Record that `obs` accepted `bytes`: removals it now knows, and
-    /// re-authorizations that undo them.
-    fn note_accept(&mut self, obs: Obs, bytes: &[u8]) {
+    /// Record that `obs` accepted `bytes`, the vault at commit `at`: removals
+    /// it now knows, and re-authorizations that undo them.
+    fn note_accept(&mut self, obs: Obs, bytes: &[u8], at: &str) {
         let Some(origin) = self.origins.get(&blob_id(bytes)).copied() else {
             return;
         };
@@ -736,7 +797,7 @@ impl<'f> World<'f> {
         for who in 0..PEOPLE.len() {
             let removed = self.removed.entry(obs.clone()).or_default();
             if listed.contains(&who) {
-                if let Some(&v) = removed.get(&who)
+                if let Some(&(v, _)) = removed.get(&who)
                     && self.authorized_between(who, v, origin.step)
                 {
                     self.removed.entry(obs.clone()).or_default().remove(&who);
@@ -753,15 +814,17 @@ impl<'f> World<'f> {
                 && !self.authorized_between(who, v, origin.step)
             {
                 let removed = self.removed.entry(obs.clone()).or_default();
-                let at = removed.entry(who).or_insert(v);
-                *at = (*at).max(v);
+                let known = removed.entry(who).or_insert_with(|| (v, at.to_string()));
+                if v > known.0 {
+                    *known = (v, at.to_string());
+                }
             }
         }
     }
 
-    fn accept(&mut self, obs: Obs, bytes: &[u8], how: &str) -> Result<(), String> {
-        self.check_accept(&obs, bytes, how)?;
-        self.note_accept(obs, bytes);
+    fn accept(&mut self, obs: Obs, bytes: &[u8], how: &str, at: &str) -> Result<(), String> {
+        self.check_accept(&obs, bytes, how, at)?;
+        self.note_accept(obs, bytes, at);
         Ok(())
     }
 
@@ -903,7 +966,7 @@ impl<'f> World<'f> {
     }
 
     /// A step's result: `None` when it does not apply and did not run.
-    fn step(&mut self, step: usize, op: &Op) -> Option<Result<(), String>> {
+    fn step(&mut self, step: usize, op: &Op) -> Option<Result<Ran, String>> {
         let value = |key: &str| format!("s{step}-{key}");
         match op {
             Op::Save { m, key } => {
@@ -954,6 +1017,9 @@ impl<'f> World<'f> {
                         *others.get(n % others.len().max(1))?
                     }
                 };
+                let revoker = MACHINES[m.0].1;
+                let cascaded = self.grants_anchored_on(&before, revoker, who);
+                self.last_cascade = cascaded.len();
                 let out = mach
                     .murk()
                     .args(["circle", "revoke", &self.fx.people[who].pubkey])
@@ -966,7 +1032,9 @@ impl<'f> World<'f> {
                     // The operator drops them from the CI secret too.
                     self.ci_signers.remove(&who);
                 }
-                Some(self.after_write(step, m.0, &before, out, |_, _| Ok(())))
+                Some(self.after_write(step, m.0, &before, out, |world, bytes| {
+                    world.check_cascade(bytes, revoker, &cascaded, who)
+                }))
             }
             Op::Vouch { m, who, key } => {
                 let mach = self.machine(m.0);
@@ -979,14 +1047,7 @@ impl<'f> World<'f> {
                         ("FORGE_AUTHORIZE", format!("{} {}", w.pubkey, w.label)),
                         (
                             "FORGE_REGISTRY",
-                            format!(
-                                "{}={}",
-                                w.pubkey,
-                                match key {
-                                    Planted::Sock => verifying_key(&self.fx.socks[person]),
-                                    Planted::Weak => weak_vk_b64(),
-                                }
-                            ),
+                            format!("{}={}", w.pubkey, self.planted_vk(*key, person)),
                         ),
                     ],
                 )?;
@@ -998,28 +1059,35 @@ impl<'f> World<'f> {
                     self.authorizes.push((who.0, step));
                     self.ci_signers.insert(who.0);
                 }
-                Some(self.accept(Obs::Machine(m.0), &forged, "wrote"))
+                Some(
+                    self.accept(Obs::Machine(m.0), &forged, "wrote", &head(&mach))
+                        .map(|()| Ran::Accepted),
+                )
             }
             Op::Sync { m } => Some(self.sync(step, m.0)),
             Op::MergeBranch { m, branch } => {
                 let branch = format!("origin/{}", self.pushed(*branch)?);
                 Some(self.merge(step, m.0, &branch, false))
             }
-            Op::Trust { m } => {
+            Op::Trust { m, forgery } => {
                 let mach = self.machine(m.0);
                 let bytes = mach.vault();
                 let origin = self.origins.get(&blob_id(&bytes)).copied()?;
                 // A reviewer accepts only what no rule here forbids.
-                if origin.forged || self.check_accept(&Obs::Machine(m.0), &bytes, "").is_err() {
+                if (origin.forged && !forgery)
+                    || self
+                        .check_accept(&Obs::Machine(m.0), &bytes, "", &head(&mach))
+                        .is_err()
+                {
                     return None;
                 }
                 let out = mach.murk().args(["trust", "--yes"]).output().unwrap();
                 if !out.status.success() {
-                    return Some(unchanged(&bytes, &mach.vault(), "murk trust"));
+                    return Some(refused(&bytes, &mach.vault(), "murk trust", &out));
                 }
                 let now = mach.vault();
                 self.record(&now, MACHINES[m.0].1.into(), step, false);
-                Some(self.accept(Obs::Machine(m.0), &now, "trusted"))
+                Some(self.accepted(Obs::Machine(m.0), &now, "trusted"))
             }
             Op::Load { m, at } => {
                 let mach = self.machine(m.0);
@@ -1038,6 +1106,10 @@ impl<'f> World<'f> {
                     At::Pushed(i) => {
                         vec!["--detach".into(), format!("origin/{}", self.pushed(*i)?)]
                     }
+                    At::PushedBranch(i) => {
+                        let name = self.pushed(*i)?;
+                        vec!["-B".into(), name.clone(), format!("origin/{name}")]
+                    }
                     At::OriginMain => vec!["--detach".into(), "origin/main".into()],
                 };
                 let mut args = vec!["checkout", "-q", "-f"];
@@ -1046,9 +1118,9 @@ impl<'f> World<'f> {
                 let bytes = mach.vault();
                 let out = mach.murk().args(["export", "--json"]).output().unwrap();
                 if !out.status.success() {
-                    return Some(unchanged(&bytes, &mach.vault(), "murk export"));
+                    return Some(refused(&bytes, &mach.vault(), "murk export", &out));
                 }
-                Some(self.accept(Obs::Machine(m.0), &bytes, "loaded"))
+                Some(self.accepted(Obs::Machine(m.0), &bytes, "loaded"))
             }
             Op::Diff { m, rev } => {
                 let mach = self.machine(m.0);
@@ -1061,10 +1133,13 @@ impl<'f> World<'f> {
                     .output()
                     .unwrap();
                 if !out.status.success() {
-                    return Some(Ok(()));
+                    return Some(Ok(Ran::Refused(stderr(&out))));
                 }
                 // diff never extends the pin: check, but note nothing.
-                Some(self.check_accept(&Obs::Machine(m.0), &at_rev, "showed (murk diff)"))
+                Some(
+                    self.check_accept(&Obs::Machine(m.0), &at_rev, "showed (murk diff)", &rev)
+                        .map(|()| Ran::Accepted),
+                )
             }
             Op::Grant { m } => {
                 let mach = self.machine(m.0);
@@ -1109,9 +1184,9 @@ impl<'f> World<'f> {
                     .output()
                     .unwrap();
                 if !out.status.success() {
-                    return Some(Ok(()));
+                    return Some(Ok(Ran::Refused(stderr(&out))));
                 }
-                Some(self.accept(Obs::Agent, &bytes, "loaded"))
+                Some(self.accepted(Obs::Agent, &bytes, "loaded"))
             }
             Op::CiLoad { at } => {
                 let clone = bystander(&self.root, "ci-runner");
@@ -1133,9 +1208,9 @@ impl<'f> World<'f> {
                     .output()
                     .unwrap();
                 if !out.status.success() {
-                    return Some(Ok(()));
+                    return Some(Ok(Ran::Refused(stderr(&out))));
                 }
-                Some(self.accept(Obs::Ci, &bytes, "loaded"))
+                Some(self.accepted(Obs::Ci, &bytes, "loaded"))
             }
             Op::Forge {
                 by,
@@ -1156,7 +1231,7 @@ impl<'f> World<'f> {
                     Base::NewestOpenable => revs
                         .iter()
                         .map(|r| attacker.vault_at(r))
-                        .find(|v| self.listed(v).contains(&by))?,
+                        .find(|v| self.listed(v).contains(&by) && self.opens(v, by))?,
                 };
                 let base_gen =
                     serde_json::from_slice::<serde_json::Value>(&base).ok()?["generation"]
@@ -1174,20 +1249,35 @@ impl<'f> World<'f> {
                     ("FORGE_VALUE", format!("K1=forged-s{step}")),
                     ("FORGE_GEN", claimed.to_string()),
                 ];
-                match sign {
-                    Sign::Own => {}
-                    Sign::AsPlanted(Planted::Sock) => {
+                let (planted, plants) = match *sign {
+                    Sign::Own => (None, false),
+                    Sign::AsPlanted(key) => (Some(key), false),
+                    Sign::Plants(key) => (Some(key), true),
+                };
+                if let Some(key) = planted {
+                    if plants {
+                        let as_whom = self.listed(&base).into_iter().find(|&p| p != by)?;
                         vars.push((
-                            "FORGE_SIGN_AS",
-                            format!("sock:{}", self.fx.socks[by].secret),
+                            "FORGE_REGISTRY",
+                            format!(
+                                "{}={}",
+                                self.fx.people[as_whom].pubkey,
+                                self.planted_vk(key, by)
+                            ),
                         ));
                     }
-                    Sign::AsPlanted(Planted::Weak) => vars.push(("FORGE_SIGN_AS", "weak".into())),
+                    vars.push((
+                        "FORGE_SIGN_AS",
+                        match key {
+                            Planted::Sock => format!("sock:{}", self.fx.socks[by].secret),
+                            Planted::Weak => "weak".into(),
+                        },
+                    ));
                 }
                 let forged = self.forge(&base, &vars)?;
                 self.record(&forged, Some(by), step, true);
                 self.push_as_attacker(&forged, *to, step);
-                Some(Ok(()))
+                Some(Ok(Ran::Accepted))
             }
             Op::Replay { rev, to } => {
                 let attacker = bystander(&self.root, "attacker");
@@ -1206,9 +1296,110 @@ impl<'f> World<'f> {
                     return None;
                 }
                 self.push_as_attacker(&old, *to, step);
-                Some(Ok(()))
+                Some(Ok(Ran::Accepted))
+            }
+            Op::Push { m } => {
+                let mach = self.machine(m.0);
+                let name = format!("push-{step}");
+                mach.git_ok(&["push", "-q", "origin", &format!("HEAD:refs/heads/{name}")]);
+                self.branches.push(name);
+                Some(Ok(Ran::Accepted))
             }
         }
+    }
+
+    /// The grant keys in `before` that a revoke of `who` must revoke with
+    /// them: grants whose anchor names `who`, or that have no anchor.
+    fn grants_anchored_on(&self, before: &[u8], revoker: usize, who: usize) -> Vec<String> {
+        self.meta(before, revoker)
+            .map(|meta| {
+                meta.grants
+                    .values()
+                    .filter(|g| self.anchored_on(g, who))
+                    .map(|g| g.pubkey.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn anchored_on(&self, grant: &murk_cli::types::GrantEntry, who: usize) -> bool {
+        grant.anchors.is_empty() || grant.anchors.contains(&self.fx.people[who].pubkey)
+    }
+
+    /// The revoke cascade: the vault a revoke of `who` wrote keeps no grant
+    /// that trusts them, as a grant record or as a recipient.
+    ///
+    /// This checks the vault, not the grant's key file. murk deletes the key
+    /// file in its default slot on this machine, but a copy handed off with
+    /// `--out` survives and still trusts the revoked signer until its TTL
+    /// ends: an accepted, documented limit that this harness does not hold.
+    fn check_cascade(
+        &self,
+        bytes: &[u8],
+        revoker: usize,
+        cascaded: &[String],
+        who: usize,
+    ) -> Result<(), String> {
+        let meta = self
+            .meta(bytes, revoker)
+            .ok_or("the revoker cannot open the meta it wrote")?;
+        let vault: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        let recipients: BTreeSet<&str> = vault["recipients"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        let mut kept = meta
+            .grants
+            .values()
+            .filter(|g| self.anchored_on(g, who))
+            .map(|g| &g.pubkey)
+            .chain(
+                cascaded
+                    .iter()
+                    .filter(|pk| recipients.contains(pk.as_str())),
+            );
+        if let Some(pubkey) = kept.next() {
+            return Err(format!(
+                "the revoke of {} kept the grant {pubkey} that trusts them in the vault",
+                PEOPLE[who]
+            ));
+        }
+        Ok(())
+    }
+
+    /// Whether person `who` can open a vault file with murk's library.
+    fn opens(&self, bytes: &[u8], who: usize) -> bool {
+        let path = self.root.join("opens.murk");
+        fs::write(&path, bytes).unwrap();
+        let Ok(vault) = murk_cli::read_vault(path.to_str().unwrap()) else {
+            return false;
+        };
+        let identity = murk_cli::crypto::parse_identity(&self.fx.people[who].secret).unwrap();
+        murk_cli::decrypt_vault(&vault, &identity).is_ok()
+    }
+
+    /// The verifying key a `key` plant registers, for person `holder`.
+    fn planted_vk(&self, key: Planted, holder: usize) -> String {
+        match key {
+            Planted::Sock => verifying_key(&self.fx.socks[holder]),
+            Planted::Weak => weak_vk_b64(),
+        }
+    }
+
+    /// The meta of a vault file, as person `reader` opens it.
+    fn meta(&self, bytes: &[u8], reader: usize) -> Option<murk_cli::types::Meta> {
+        let path = self.root.join("meta.murk");
+        fs::write(&path, bytes).ok()?;
+        let vault = murk_cli::read_vault(path.to_str()?).ok()?;
+        let identity = murk_cli::crypto::parse_identity(&self.fx.people[reader].secret).ok()?;
+        murk_cli::decrypt_meta(&vault, &identity).ok()?
+    }
+
+    /// Accept `bytes`, the vault checked out in `obs`'s clone, as a step's
+    /// outcome.
+    fn accepted(&mut self, obs: Obs, bytes: &[u8], how: &str) -> Result<Ran, String> {
+        let at = head(&self.clone_of(&obs));
+        self.accept(obs, bytes, how, &at).map(|()| Ran::Accepted)
     }
 
     /// After a member's write: a refusal changed nothing; an accepted write
@@ -1221,16 +1412,16 @@ impl<'f> World<'f> {
         before: &[u8],
         out: std::process::Output,
         extra: impl FnOnce(&mut Self, &[u8]) -> Result<(), String>,
-    ) -> Result<(), String> {
+    ) -> Result<Ran, String> {
         let mach = self.machine(m);
         let now = mach.vault();
         if !out.status.success() {
-            return unchanged(before, &now, "refused write");
+            return refused(before, &now, "refused write", &out);
         }
         mach.commit(&format!("s{step} p{}", MACHINES[m].1));
         self.record(&now, Some(MACHINES[m].1), step, false);
         extra(self, &now)?;
-        self.accept(Obs::Machine(m), &now, "wrote")?;
+        self.accept(Obs::Machine(m), &now, "wrote", &head(&mach))?;
         let reload = mach.murk().args(["export", "--json"]).output().unwrap();
         if !reload.status.success() {
             return Err(format!(
@@ -1238,11 +1429,11 @@ impl<'f> World<'f> {
                 String::from_utf8_lossy(&reload.stderr)
             ));
         }
-        Ok(())
+        Ok(Ran::Accepted)
     }
 
     /// Fetch, merge `origin/main` into `main`, push.
-    fn sync(&mut self, step: usize, m: usize) -> Result<(), String> {
+    fn sync(&mut self, step: usize, m: usize) -> Result<Ran, String> {
         let mach = self.machine(m);
         mach.git_ok(&["checkout", "-q", "-f", "main"]);
         self.merge(step, m, "origin/main", true)
@@ -1250,10 +1441,17 @@ impl<'f> World<'f> {
 
     /// Merge `theirs` into the current checkout. When both sides changed the
     /// vault, the murk driver accepted `theirs` and produced the result.
-    fn merge(&mut self, step: usize, m: usize, theirs_ref: &str, push: bool) -> Result<(), String> {
+    fn merge(
+        &mut self,
+        step: usize,
+        m: usize,
+        theirs_ref: &str,
+        push: bool,
+    ) -> Result<Ran, String> {
         let mach = self.machine(m);
         mach.git_ok(&["fetch", "-q", "origin"]);
         let ours = mach.vault();
+        let ours_head = head(&mach);
         let theirs = mach.vault_at(theirs_ref);
         let base_rev = mach.git(&["merge-base", "HEAD", theirs_ref]);
         let base = String::from_utf8_lossy(&base_rev.stdout).trim().to_string();
@@ -1262,19 +1460,25 @@ impl<'f> World<'f> {
         if !merged.status.success() {
             let _ = mach.git(&["merge", "--abort"]);
             let _ = mach.git(&["reset", "-q", "--hard", "HEAD"]);
-            return unchanged(&ours, &mach.vault(), "refused merge");
+            return refused(&ours, &mach.vault(), "refused merge", &merged);
         }
         let driver_ran = ours != ancestor && theirs != ancestor && ours != theirs;
         if driver_ran {
-            self.check_accept(&Obs::Machine(m), &theirs, "merged (driver)")?;
+            // The driver judges theirs on this branch, as it was.
+            self.check_accept(&Obs::Machine(m), &theirs, "merged (driver)", &ours_head)?;
             let result = mach.vault();
             self.record(&result, Some(MACHINES[m].1), step, false);
-            self.accept(Obs::Machine(m), &result, "wrote (merge result)")?;
+            self.accept(
+                Obs::Machine(m),
+                &result,
+                "wrote (merge result)",
+                &head(&mach),
+            )?;
         }
         if push {
             let _ = mach.git(&["push", "-q", "origin", "main"]);
         }
-        Ok(())
+        Ok(Ran::Accepted)
     }
 
     /// The no-reads check over every working vault and the remote tip.
@@ -1286,6 +1490,11 @@ impl<'f> World<'f> {
     }
 }
 
+/// The commit checked out in `clone`.
+fn head(clone: &Machine) -> String {
+    clone.git_ok(&["rev-parse", "HEAD"]).trim().to_string()
+}
+
 fn unchanged(before: &[u8], after: &[u8], what: &str) -> Result<(), String> {
     if before == after {
         Ok(())
@@ -1294,25 +1503,157 @@ fn unchanged(before: &[u8], after: &[u8], what: &str) -> Result<(), String> {
     }
 }
 
-fn run_sequence(ops: &[Op]) -> Result<(), TestCaseError> {
+/// What a step that ran did.
+#[derive(Debug)]
+enum Ran {
+    Accepted,
+    /// Refused, with the command's error output.
+    Refused(String),
+}
+
+fn stderr(out: &std::process::Output) -> String {
+    String::from_utf8_lossy(&out.stderr).trim().to_string()
+}
+
+/// A refused command: it must have left the working vault unchanged.
+fn refused(
+    before: &[u8],
+    after: &[u8],
+    what: &str,
+    out: &std::process::Output,
+) -> Result<Ran, String> {
+    unchanged(before, after, what).map(|()| Ran::Refused(stderr(out)))
+}
+
+/// What a stored sequence requires of one of its steps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Expect {
+    /// It runs; either outcome.
+    Runs,
+    /// It runs and is accepted.
+    Accepts,
+    /// It runs and is refused.
+    Refuses,
+}
+
+/// A step of a stored sequence.
+#[derive(Clone, Debug)]
+struct Scripted {
+    op: Op,
+    expect: Expect,
+    /// The step the sequence exists to exercise.
+    decisive: bool,
+}
+
+fn runs(op: Op) -> Scripted {
+    Scripted {
+        op,
+        expect: Expect::Runs,
+        decisive: false,
+    }
+}
+
+fn accepts(op: Op) -> Scripted {
+    Scripted {
+        expect: Expect::Accepts,
+        ..runs(op)
+    }
+}
+
+fn refuses(op: Op) -> Scripted {
+    Scripted {
+        expect: Expect::Refuses,
+        ..runs(op)
+    }
+}
+
+impl Scripted {
+    fn decisive(self) -> Self {
+        Self {
+            decisive: true,
+            ..self
+        }
+    }
+}
+
+fn is_load(op: &Op) -> bool {
+    matches!(
+        op,
+        Op::Load { .. } | Op::AgentLoad { .. } | Op::CiLoad { .. }
+    )
+}
+
+/// Run `ops`, checking the invariants after every step. With `script`, every
+/// step must run and meet its expectation; without, a step that does not
+/// apply is skipped.
+fn run_sequence(ops: &[Op], script: Option<&[Scripted]>) -> Result<(), TestCaseError> {
     let mut world = World::new(&FIXTURE);
     for (i, op) in ops.iter().enumerate() {
         let step = i + 1;
+        let fail = |e: String| TestCaseError::fail(format!("step {step} {op:?}: {e}"));
+        let expect = script.map(|s| s[i].expect);
         let Some(result) = world.step(step, op) else {
+            if expect.is_some() {
+                return Err(fail("did not run: it could not be built here".into()));
+            }
             continue;
         };
-        result
-            .and_then(|()| world.check_all_reads())
-            .map_err(|e| TestCaseError::fail(format!("step {step} {op:?}: {e}")))?;
+        let ran = result.map_err(fail)?;
+        // A decisive revoke is there for its cascade: it must have had a
+        // grant to take with it, or the cascade check proved nothing.
+        if script.is_some_and(|s| s[i].decisive)
+            && matches!(op, Op::Revoke { .. })
+            && world.last_cascade == 0
+        {
+            return Err(fail(
+                "no grant trusted the revoked signer: nothing to cascade".into(),
+            ));
+        }
+        match (expect, &ran) {
+            (Some(Expect::Accepts), Ran::Refused(why)) => {
+                return Err(fail(format!("expected it to be accepted, refused: {why}")));
+            }
+            (Some(Expect::Refuses), Ran::Accepted) => {
+                return Err(fail("expected it to be refused, accepted".into()));
+            }
+            _ => {}
+        }
+        world.check_all_reads().map_err(fail)?;
     }
     Ok(())
 }
 
-/// Shrunk counterexamples found by this harness, replayed before the random
-/// cases (like a fuzz corpus) so a regression fails every run, not only the
-/// runs that happen to find it again.
-fn known_sequences() -> Vec<(&'static str, Vec<Op>)> {
-    let (alice, bob_m) = (M(0), M(2));
+/// Run a stored sequence. Its decisive steps must run and meet their
+/// expectations, and a load before the first of them must be accepted, so a
+/// refusal there comes from the rule under test and not a broken setup.
+fn run_scripted(script: &[Scripted]) -> Result<(), TestCaseError> {
+    let first = script
+        .iter()
+        .position(|s| s.decisive)
+        .expect("a stored sequence names its decisive step");
+    assert!(
+        script
+            .iter()
+            .all(|s| !s.decisive || s.expect != Expect::Runs),
+        "a decisive step expects an outcome"
+    );
+    assert!(
+        script[..first]
+            .iter()
+            .any(|s| s.expect == Expect::Accepts && is_load(&s.op)),
+        "a stored sequence loads an honest vault before its decisive step"
+    );
+    let ops: Vec<Op> = script.iter().map(|s| s.op.clone()).collect();
+    run_sequence(&ops, Some(script))
+}
+
+/// Shrunk counterexamples found by this harness, and scenarios a fix must
+/// keep, replayed before the random cases (like a fuzz corpus) so a
+/// regression fails every run, not only the runs that happen to find it
+/// again. Each is scripted: every step must run, and the decisive one must
+/// end as expected.
+fn known_sequences() -> Vec<(&'static str, Vec<Scripted>)> {
+    let (alice, bob_m, carol_m) = (M(0), M(2), M(3));
     let (bob, dave) = (P(1), P(3));
     let forge = |sign| Op::Forge {
         by: Attacker::Revoked,
@@ -1330,21 +1671,40 @@ fn known_sequences() -> Vec<(&'static str, Vec<Op>)> {
         m: alice,
         at: At::Main,
     };
+    let revoke_bob = Op::Revoke {
+        m: alice,
+        who: Target::Person(bob),
+    };
+    let forge_max = Op::Forge {
+        by: Attacker::Person(bob),
+        base: Base::NewestOpenable,
+        generation: Gen::Max,
+        sign: Sign::Own,
+        to: Dest::Main,
+    };
     let vouched = |key| {
         vec![
-            Op::Vouch {
+            accepts(Op::Vouch {
                 m: bob_m,
                 who: dave,
                 key,
-            },
-            Op::Sync { m: bob_m },
-            Op::Sync { m: alice },
-            Op::Revoke {
-                m: alice,
-                who: Target::Person(bob),
-            },
-            forge(Sign::AsPlanted(key)),
-            load_tip.clone(),
+            }),
+            accepts(Op::Sync { m: bob_m }),
+            accepts(Op::Sync { m: alice }),
+            runs(load_main.clone()),
+            accepts(revoke_bob.clone()),
+            accepts(load_main.clone()),
+            runs(forge(Sign::AsPlanted(key))),
+            refuses(load_tip.clone()).decisive(),
+        ]
+    };
+    let older_revision = |at| {
+        vec![
+            accepts(revoke_bob.clone()),
+            runs(Op::Load { m: alice, at }),
+            accepts(load_main.clone()),
+            runs(forge(Sign::Own)),
+            refuses(load_tip.clone()).decisive(),
         ]
     };
     vec![
@@ -1353,146 +1713,209 @@ fn known_sequences() -> Vec<(&'static str, Vec<Op>)> {
             vouched(Planted::Sock),
         ),
         (
+            // No vault murk opens carries a weak key: alice refuses bob's
+            // vouch, so she revokes him on the vault before it, and his
+            // forgery plants the weak key again itself.
             "a revoked member signs under a weak key they vouched for",
-            vouched(Planted::Weak),
+            vec![
+                accepts(Op::Vouch {
+                    m: bob_m,
+                    who: dave,
+                    key: Planted::Weak,
+                }),
+                accepts(Op::Sync { m: bob_m }),
+                accepts(revoke_bob.clone()),
+                accepts(load_main.clone()),
+                refuses(load_tip.clone()),
+                runs(forge(Sign::Plants(Planted::Weak))),
+                refuses(load_tip.clone()).decisive(),
+            ],
         ),
         (
             "an older revision on a detached HEAD trusts a revoked member again",
-            vec![
-                Op::Revoke {
-                    m: alice,
-                    who: Target::Person(bob),
-                },
-                Op::Load {
-                    m: alice,
-                    at: At::Detached(1),
-                },
-                forge(Sign::Own),
-                load_tip.clone(),
-            ],
+            older_revision(At::Detached(1)),
         ),
         (
             "an older revision on a new branch trusts a revoked member again",
-            vec![
-                Op::Revoke {
-                    m: alice,
-                    who: Target::Person(bob),
-                },
-                Op::Load {
-                    m: alice,
-                    at: At::NewBranch(1),
-                },
-                forge(Sign::Own),
-                load_tip.clone(),
-            ],
+            older_revision(At::NewBranch(1)),
         ),
         (
+            // The jump to the cap is refused. A reviewer who overrides that
+            // with `murk trust` leaves the counter at the cap, where every
+            // new vault has the same generation: another vault there, or an
+            // older revision, is still refused.
             "a saturated generation lets a replayed revision through",
             vec![
-                Op::Forge {
-                    by: Attacker::Person(bob),
-                    base: Base::NewestOpenable,
-                    generation: Gen::Max,
-                    sign: Sign::Own,
-                    to: Dest::Main,
-                },
-                Op::Sync { m: alice },
-                Op::Load {
+                accepts(load_main.clone()),
+                runs(forge_max.clone()),
+                accepts(Op::Sync { m: alice }),
+                refuses(load_main.clone()).decisive(),
+                accepts(Op::Trust {
                     m: alice,
-                    at: At::Main,
-                },
-                Op::Save {
-                    m: alice,
-                    key: K(1),
-                },
-                Op::Sync { m: alice },
-                Op::Revoke {
-                    m: alice,
-                    who: Target::Person(bob),
-                },
-                Op::Sync { m: alice },
-                Op::Replay {
-                    rev: Old::ListingRevoked,
+                    forgery: true,
+                }),
+                accepts(load_main.clone()),
+                runs(forge_max),
+                accepts(Op::Sync { m: alice }),
+                refuses(load_main.clone()).decisive(),
+                runs(Op::Replay {
+                    rev: Old::Nth(3),
                     to: Dest::Main,
-                },
-                Op::Sync { m: alice },
-                load_main.clone(),
-                Op::Forge {
-                    by: Attacker::Revoked,
-                    base: Base::NewestOpenable,
-                    generation: Gen::Max,
-                    sign: Sign::Own,
-                    to: Dest::Main,
-                },
-                Op::Sync { m: alice },
-                load_main.clone(),
+                }),
+                accepts(Op::Sync { m: alice }),
+                refuses(load_main.clone()).decisive(),
             ],
         ),
         (
+            // CI keeps no counter, so only the cap refuses there; on a
+            // machine the jump bound refuses it too.
             "a generation above the cap is accepted",
             vec![
-                Op::Forge {
+                accepts(load_main.clone()),
+                accepts(Op::CiLoad { at: Ref::Main }),
+                runs(Op::Forge {
                     by: Attacker::Person(bob),
                     base: Base::NewestOpenable,
                     generation: Gen::AboveCap,
                     sign: Sign::Own,
                     to: Dest::Main,
-                },
-                Op::Sync { m: alice },
-                load_main.clone(),
+                }),
+                refuses(Op::CiLoad { at: Ref::Main }).decisive(),
+                accepts(Op::Sync { m: alice }),
+                refuses(load_main.clone()).decisive(),
             ],
         ),
         (
             "a save on an older revision writes a revoked member back",
             vec![
-                Op::Revoke {
-                    m: alice,
-                    who: Target::Person(bob),
-                },
-                Op::Load {
-                    m: alice,
-                    at: At::OriginMain,
-                },
-                Op::Save {
+                accepts(revoke_bob.clone()),
+                accepts(load_main.clone()),
+                runs(load_tip.clone()),
+                refuses(Op::Save {
                     m: alice,
                     key: K(1),
-                },
+                })
+                .decisive(),
             ],
         ),
         (
             "CI keeps trusting a signer dropped from its secret",
             vec![
-                Op::Revoke {
-                    m: alice,
-                    who: Target::Person(bob),
-                },
-                Op::Forge {
+                accepts(revoke_bob.clone()),
+                accepts(Op::CiLoad { at: Ref::Main }),
+                runs(Op::Forge {
                     by: Attacker::Revoked,
                     base: Base::NewestOpenable,
                     generation: Gen::Jump,
                     sign: Sign::Own,
                     to: Dest::Main,
-                },
-                Op::CiLoad { at: Ref::Main },
+                }),
+                refuses(Op::CiLoad { at: Ref::Main }).decisive(),
             ],
         ),
         (
+            // The decisive check is the revoke cascade in the vault (see
+            // `check_cascade`). The agent's last load is refused because the
+            // revoke deleted the key file in murk's default slot; a copy
+            // handed off with `--out` would still accept the forgery until
+            // its TTL ends, an accepted, documented limit left out here.
             "an agent grant keeps trusting a revoked member",
             vec![
-                Op::Grant { m: alice },
-                Op::Sync { m: alice },
-                Op::Revoke {
-                    m: alice,
-                    who: Target::Person(bob),
-                },
-                Op::Forge {
+                accepts(Op::Grant { m: alice }),
+                accepts(Op::Sync { m: alice }),
+                accepts(Op::AgentLoad { at: Ref::Main }),
+                accepts(revoke_bob.clone()).decisive(),
+                runs(Op::Forge {
                     by: Attacker::Revoked,
                     base: Base::NewestOpenable,
                     generation: Gen::Jump,
                     sign: Sign::Own,
                     to: Dest::Main,
-                },
-                Op::AgentLoad { at: Ref::Main },
+                }),
+                runs(Op::AgentLoad { at: Ref::Main }),
+            ],
+        ),
+        (
+            "loading an unmerged branch trusts the signer it adds on main",
+            vec![
+                // bob, a trusted signer, opens a pull request that adds dave
+                // and vouches for a signing key as dave's.
+                accepts(Op::Load {
+                    m: bob_m,
+                    at: At::NewBranch(0),
+                }),
+                accepts(Op::Vouch {
+                    m: bob_m,
+                    who: dave,
+                    key: Planted::Sock,
+                }),
+                accepts(Op::Push { m: bob_m }),
+                // alice checks it out to review it, then goes back to main.
+                accepts(Op::Load {
+                    m: alice,
+                    at: At::PushedBranch(0),
+                }),
+                accepts(load_main.clone()),
+                // The pull request is never merged; a vault signed as dave
+                // lands on main.
+                runs(Op::Forge {
+                    by: Attacker::Person(bob),
+                    base: Base::NewestOpenable,
+                    generation: Gen::Next,
+                    sign: Sign::AsPlanted(Planted::Sock),
+                    to: Dest::Main,
+                }),
+                accepts(Op::Sync { m: alice }),
+                refuses(load_main.clone()).decisive(),
+            ],
+        ),
+        (
+            // Until the removal merges, bob is still a member of main: alice
+            // can read it. Once it merges, every machine that accepted the
+            // merged main refuses a vault bob signs there, and a save on main
+            // cannot keep him. Bob's forgery claims a generation newer than
+            // the removal, so only the removal refuses it.
+            "a removal saved on a feature branch locks this machine out of main",
+            vec![
+                accepts(Op::Load {
+                    m: alice,
+                    at: At::NewBranch(0),
+                }),
+                accepts(revoke_bob.clone()),
+                accepts(Op::Push { m: alice }),
+                accepts(load_main.clone()).decisive(),
+                // The removal merges into main.
+                accepts(Op::MergeBranch {
+                    m: alice,
+                    branch: 0,
+                }),
+                accepts(Op::Sync { m: alice }),
+                accepts(load_main.clone()),
+                accepts(Op::Sync { m: carol_m }),
+                accepts(Op::Load {
+                    m: carol_m,
+                    at: At::Main,
+                }),
+                runs(Op::Forge {
+                    by: Attacker::Revoked,
+                    base: Base::NewestOpenable,
+                    generation: Gen::Jump,
+                    sign: Sign::Own,
+                    to: Dest::Main,
+                }),
+                accepts(Op::Sync { m: alice }),
+                refuses(load_main.clone()).decisive(),
+                refuses(Op::Save {
+                    m: alice,
+                    key: K(1),
+                })
+                .decisive(),
+                accepts(Op::Sync { m: carol_m }),
+                refuses(Op::Load {
+                    m: carol_m,
+                    at: At::Main,
+                })
+                .decisive(),
             ],
         ),
     ]
@@ -1521,15 +1944,17 @@ fn trust_invariants_hold_across_machines() {
     std::sync::LazyLock::force(&FIXTURE);
     let failures: Vec<String> = known_sequences()
         .into_iter()
-        .filter_map(|(name, ops)| {
-            let result = run_sequence(&ops);
+        .filter_map(|(name, script)| {
+            let result = run_scripted(&script);
             println!("known sequence: {name}: {result:?}");
-            result.err().map(|e| format!("{name}:\n  {ops:?}\n  {e}"))
+            result
+                .err()
+                .map(|e| format!("{name}:\n  {script:?}\n  {e}"))
         })
         .collect();
     let mut runner = TestRunner::new(config);
     let result = runner.run(&proptest::collection::vec(op(), 1..=12), |ops| {
-        run_sequence(&ops)
+        run_sequence(&ops, None)
     });
     let mut report = failures;
     if let Err(e) = result {
