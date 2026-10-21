@@ -150,6 +150,7 @@ A `.murk` file arrives through git and is untrusted. Every reader (the working v
 - `created` and the schema `created`/`updated`/`expires_at`/`revoked_at`: RFC 3339 timestamps.
 - Key names in `schema`, `secrets`, and grant scopes: `[A-Za-z_][A-Za-z0-9_]*`.
 - `recipients`, `scoped` keys, `agents` keys, the `sig` signer, and every pubkey in the meta: a public key that murk can encrypt to (age X25519, `ssh-ed25519`/`ssh-rsa`, or an age plugin recipient).
+- `recipients`: each key once, compared by canonical spelling (lowercase for age, `type blob` for SSH). murk ≤ 0.13 compared exact strings and could list one key twice (an SSH key with and without its comment), so a 2.x header may repeat a key: it loads, `murk verify` reports it, `murk circle revoke` by either spelling removes every copy, and every save writes each recipient once in its canonical spelling. In a 3.x header a repeated key fails the load.
 - `grouped` keys and meta group names: 1–64 characters of `[A-Za-z0-9_-]`, and not a reserved tier alias (`everyone`, `all`, `shared`, `me`, `self`, `mine`). Meta grant names: the same character rule.
 - `rotation_interval_days`: at least 1.
 - Ciphertexts (`shared`, `scoped`/`grouped` values, `agents` values, `meta`, signer keys, signature): standard base64 with padding. `shared` and `meta` may be empty.

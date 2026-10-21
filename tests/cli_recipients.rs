@@ -352,93 +352,6 @@ fn hand_added_low_order_recipient_is_refused_cleanly() {
     }
 }
 
-/// An older murk stored an SSH key as typed, comment included, and keyed the
-/// holder's `me` override by that same string. Revoking the key by its bare
-/// form removes the header entry and the override, so the leaver keeps no
-/// access. (Two spellings in the header are refused at load, so a single
-/// commented entry is the legacy state that can still occur.)
-#[test]
-fn revoke_by_bare_key_removes_a_commented_legacy_entry_and_its_override() {
-    let dir = TempDir::new().unwrap();
-    let (key, _) = init_vault(&dir);
-    murk(&dir, &key)
-        .args(["add", "TOKEN", "--vault", "test.murk"])
-        .write_stdin("shared\n")
-        .assert()
-        .success();
-    let bob = ssh_pubkey(1);
-    let legacy = format!("{bob} bob@laptop");
-    write_legacy_ssh_entry(&dir, &key, &legacy);
-    let json = vault_json(&dir);
-    assert!(
-        json["recipients"].to_string().contains("bob@laptop"),
-        "{json}"
-    );
-    assert!(
-        json["secrets"]["TOKEN"]["scoped"][&legacy].is_string(),
-        "{json}"
-    );
-
-    murk(&dir, &key)
-        .args(["circle", "revoke", &bob, "--vault", "test.murk"])
-        .assert()
-        .success();
-
-    let json = vault_json(&dir);
-    let blob = bob.split(' ').nth(1).unwrap();
-    assert!(!json["recipients"].to_string().contains(blob), "{json}");
-    assert!(!json["secrets"].to_string().contains(blob), "{json}");
-    murk(&dir, &key)
-        .args(["verify", "--vault", "test.murk"])
-        .assert()
-        .success();
-}
-
-/// Add `legacy` (an ssh key with a comment) to the header, named bob, with an
-/// override for TOKEN keyed by that exact string. save_vault signs with
-/// MURK_KEY from the environment, so the write runs in a child process.
-fn write_legacy_ssh_entry(dir: &TempDir, key: &str, legacy: &str) {
-    let out = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "write_legacy_ssh_entry_child",
-            "--nocapture",
-            "--ignored",
-        ])
-        .env("MURK_KEY", key)
-        .env("HOME", dir.path())
-        .env("LEGACY_VAULT", dir.path().join("test.murk"))
-        .env("LEGACY_KEY", legacy)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-/// The library write for [`write_legacy_ssh_entry`].
-#[test]
-#[ignore = "run by write_legacy_ssh_entry"]
-fn write_legacy_ssh_entry_child() {
-    let path = std::env::var("LEGACY_VAULT").unwrap();
-    let legacy = std::env::var("LEGACY_KEY").unwrap();
-    let key = std::env::var("MURK_KEY").unwrap();
-    let identity = murk_cli::crypto::parse_identity(&key).unwrap();
-    let mut vault = murk_cli::vault::read(Path::new(&path)).unwrap();
-    let original = murk_cli::decrypt_vault(&vault, &identity).unwrap();
-    let mut current = original.clone();
-    vault.recipients.push(legacy.clone());
-    current.recipients.insert(legacy.clone(), "bob".into());
-    current.private.insert(
-        "TOKEN".into(),
-        std::collections::HashMap::from([(legacy, "bob's override".to_string().into())]),
-    );
-    murk_cli::save_vault(&path, &mut vault, &original, &current).unwrap();
-}
-
 /// A GitHub user's keys all carry `<user>@github`. Revoking that name (or
 /// `github:<user>`) lists the keys and, without a TTY to confirm on, needs
 /// `--force`; with it, every key goes and other recipients stay.
@@ -475,6 +388,135 @@ fn revoke_github_user_by_name_removes_every_key() {
         .assert()
         .success();
     assert_eq!(recipients(), serde_json::json!([alice, carol]));
+}
+
+/// A vault murk 0.13.0 wrote listing bob's SSH key twice (with and without
+/// its comment: 0.13 compared keys as exact strings), with an override bob
+/// wrote for himself. See tests/fixtures/README.md.
+const V0_13_DUPLICATE_SSH: &str = include_str!("fixtures/v0_13_duplicate_ssh.murk");
+const V0_13_DUPLICATE_SSH_ALICE: &str = include_str!("fixtures/v0_13_duplicate_ssh.test-only.key");
+const V0_13_DUPLICATE_SSH_BOB: &str =
+    include_str!("fixtures/v0_13_duplicate_ssh_bob.test-only.key");
+const BOB_SSH: &str =
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFFMXjwwBOjk5V0rYD2Di9tLG0xGudp2h/CJHkhIPi6Y";
+
+/// The 0.13 vault in a fresh dir, trusted by alice; returns alice's key.
+fn duplicate_ssh_vault(dir: &TempDir) -> String {
+    let path = dir.path().join("test.murk");
+    fs::write(&path, V0_13_DUPLICATE_SSH).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    let alice = V0_13_DUPLICATE_SSH_ALICE.trim().to_string();
+    murk(dir, &alice)
+        .args(["trust", "--yes", "--vault", "test.murk"])
+        .assert()
+        .success();
+    alice
+}
+
+/// `murk` as bob, with his SSH key file.
+fn as_bob(dir: &TempDir) -> assert_cmd::Command {
+    let key = dir.path().join("bob_ed25519");
+    if !key.exists() {
+        fs::write(&key, V0_13_DUPLICATE_SSH_BOB).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+    let mut cmd = murk_bin(dir.path());
+    cmd.current_dir(dir.path()).env("MURK_KEY_FILE", &key);
+    cmd
+}
+
+fn header_recipients(dir: &TempDir) -> Vec<String> {
+    serde_json::from_value(vault_json(dir)["recipients"].clone()).unwrap()
+}
+
+/// Upgrading must not lock out a team whose 0.13 vault lists one SSH key
+/// twice: it loads, `verify` reports the duplicate, and the next save writes
+/// the key once, keeping bob's access and his own override.
+#[test]
+fn a_0_13_vault_listing_an_ssh_key_twice_loads_and_the_next_save_lists_it_once() {
+    let dir = TempDir::new().unwrap();
+    let alice = duplicate_ssh_vault(&dir);
+    assert_eq!(header_recipients(&dir).len(), 3);
+
+    murk(&dir, &alice)
+        .args(["get", "API_KEY", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with("fixture-shared-value"));
+    murk(&dir, &alice)
+        .args(["verify", "--vault", "test.murk"])
+        .assert()
+        .stderr(predicate::str::contains("listed 2 times as a recipient"));
+
+    murk(&dir, &alice)
+        .args(["add", "THIRD", "--vault", "test.murk"])
+        .write_stdin("third-value\n")
+        .assert()
+        .success();
+    let recipients = header_recipients(&dir);
+    assert_eq!(recipients.len(), 2, "{recipients:?}");
+    assert!(recipients.contains(&BOB_SSH.to_string()), "{recipients:?}");
+    assert_eq!(vault_json(&dir)["version"], "3.0");
+    murk(&dir, &alice)
+        .args(["verify", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("times as a recipient").not());
+
+    // Bob still reads the shared values and his own override.
+    as_bob(&dir)
+        .args(["get", "SECOND", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with("fixture-second-value"));
+    as_bob(&dir)
+        .args(["get", "API_KEY", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with("bob-override"));
+}
+
+/// Revoking bob by either spelling of his key removes every copy of it and
+/// his override.
+#[test]
+fn revoking_a_key_a_0_13_vault_lists_twice_removes_every_copy() {
+    let blob = BOB_SSH.split(' ').nth(1).unwrap();
+    for spelling in [format!("{BOB_SSH} bob@laptop"), BOB_SSH.to_string()] {
+        let dir = TempDir::new().unwrap();
+        let alice = duplicate_ssh_vault(&dir);
+        murk(&dir, &alice)
+            .args(["circle", "revoke", &spelling, "--vault", "test.murk"])
+            .assert()
+            .success();
+
+        let json = vault_json(&dir);
+        assert!(
+            !json["recipients"].to_string().contains(blob),
+            "every copy of the key must go: {}",
+            json["recipients"]
+        );
+        assert!(
+            !json["secrets"].to_string().contains(blob),
+            "bob's override must go: {}",
+            json["secrets"]
+        );
+        murk(&dir, &alice)
+            .args(["verify", "--vault", "test.murk"])
+            .assert()
+            .success();
+        as_bob(&dir)
+            .args(["get", "API_KEY", "--vault", "test.murk"])
+            .assert()
+            .failure();
+    }
 }
 
 // ── group ──

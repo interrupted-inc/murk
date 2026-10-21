@@ -137,7 +137,7 @@ fn rebuild_private(
         }
     }
 
-    Ok(scoped)
+    Ok(canonical_keys(scoped).into_iter().collect())
 }
 
 /// Re-encrypt a key's named-group ciphertexts to each group's current members.
@@ -388,6 +388,39 @@ fn meta_recipients(
     ))
 }
 
+/// Write each recipient once, in its canonical spelling. murk ≤ 0.13 compared
+/// keys as exact strings, so a 2.x header can list one key twice (an SSH key
+/// with and without its comment); a 3.x header never does.
+fn canonicalise_recipients(vault: &mut types::Vault) {
+    let mut seen = BTreeSet::new();
+    vault.recipients = std::mem::take(&mut vault.recipients)
+        .into_iter()
+        .filter_map(|r| {
+            let canonical = crate::recipients::canonical_recipient(&r).into_owned();
+            seen.insert(canonical.clone()).then_some(canonical)
+        })
+        .collect();
+}
+
+/// `map` with every key in its canonical spelling. Where two spellings of one
+/// key both have an entry, the one already spelled canonically wins.
+fn canonical_keys<V>(map: impl IntoIterator<Item = (String, V)>) -> Vec<(String, V)> {
+    let mut out: BTreeMap<String, (bool, V)> = BTreeMap::new();
+    for (k, v) in map {
+        let canonical = crate::recipients::canonical_recipient(&k);
+        let exact = canonical == k.as_str();
+        let canonical = canonical.into_owned();
+        match out.get(&canonical) {
+            Some((true, _)) => {}
+            Some((false, _)) if !exact => {}
+            _ => {
+                out.insert(canonical, (exact, v));
+            }
+        }
+    }
+    out.into_iter().map(|(k, (_, v))| (k, v)).collect()
+}
+
 /// Refuse to save to a vault listing an unsafe (low-order or torsion)
 /// recipient. age panics when encrypting to a low-order point, and an
 /// unchanged save may not encrypt at all, so check every recipient up front.
@@ -424,6 +457,7 @@ pub fn save_vault(
     let saver = saving_identity(vault_path, vault)?;
     // This build MACs and signs in the 3.x format, so the header says so.
     types::VAULT_VERSION.clone_into(&mut vault.version);
+    canonicalise_recipients(vault);
     let pruned = prune_grants(vault, original, current, chrono::Utc::now())?;
     let current = pruned.as_ref().unwrap_or(current);
 
@@ -660,7 +694,9 @@ fn build_meta(
     let mac = compute_mac(vault, &current.groups, &current.grants, Some(&mac_key));
 
     types::Meta {
-        recipients: current.recipients.clone(),
+        recipients: canonical_keys(current.recipients.clone())
+            .into_iter()
+            .collect(),
         mac,
         mac_key: Some(mac_key_hex),
         github_pins: current.github_pins.clone(),

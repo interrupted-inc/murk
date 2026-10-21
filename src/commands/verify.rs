@@ -153,7 +153,7 @@ pub(crate) fn cmd_verify(vault_path: &str) {
                 entries.len()
             ),
             fix: Some(format!(
-                "`murk circle revoke \"{}\"` removes every copy; then re-authorize the key once",
+                "written by murk 0.13 or older; the next save lists it once. To remove the key, `murk circle revoke \"{}\"` removes every copy",
                 murk_cli::canonical_recipient(entries[0])
             )),
         });

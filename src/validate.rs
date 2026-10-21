@@ -34,12 +34,16 @@ pub(crate) fn vault(v: &Vault) -> Result<(), String> {
     timestamp("created", &v.created)?;
     free_text("vault_name", &v.vault_name)?;
     free_text("repo", &v.repo)?;
+    // murk ≤ 0.13 (header 2.x) compared keys as exact strings, so it could
+    // list one key under two spellings; such a vault still loads, `verify`
+    // reports it, and the next save writes the header canonical. murk 0.14
+    // never writes one, so in a 3.x header a second spelling is tampering:
+    // an alias that would survive `circle revoke`.
+    let legacy = v.version.starts_with("2.");
     let mut seen = std::collections::BTreeSet::new();
     for (i, r) in v.recipients.iter().enumerate() {
         recipient(&format!("recipients[{i}]"), r)?;
-        // Two spellings of one key (bech32 case, ssh comment) would let an
-        // alias survive `circle revoke`.
-        if !seen.insert(crate::recipients::canonical_recipient(r).into_owned()) {
+        if !seen.insert(crate::recipients::canonical_recipient(r).into_owned()) && !legacy {
             return Err(format!(
                 "recipients[{i}]: duplicate of an earlier recipient {}",
                 show(r)
