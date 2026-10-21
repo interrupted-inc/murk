@@ -94,10 +94,10 @@ This confirms the artifact was produced by this repository's release
 workflow: a builder you can inspect, with a signing identity an attacker
 cannot forge.
 
-Releases up to and including 0.11.0 were signed as `interrupted-inc/murk`,
-before the organization rename; see
+Releases 0.11.0 and earlier name an older repository in their provenance
+(`interrupted-inc/murk` or `iicky/murk`). See
 [Verifying releases](/security/verifying/#github-release-binaries) for the
-command that verifies them.
+commands that verify them.
 
 npm, PyPI, and crates.io releases each have their own verification path (npm
 provenance, PEP 740 attestations, and an attested `.crate` respectively), and

@@ -9,14 +9,14 @@ murk is pre-1.0. This covers direction, not commitments — priorities shift wit
 - **Vault-format stability** — 1.x reads every 0.x vault; any format change ships with a documented, tested migration.
 - **External security review** — an independent review of the age recipient management and grant-scope enforcement, with findings published and addressed. Planned; not yet started.
 - **Continuous fuzzing** — OSS-Fuzz onboarding, beyond the current nightly in-repo fuzz run. Planned.
-- **SLSA Build L3 provenance** — up from the current attested (L2) releases. Today every GitHub release archive carries Sigstore build provenance, and the crates.io package is attested for releases after 0.12.0 (see [VERIFYING.md](VERIFYING.md)).
+- **SLSA Build L3 provenance** — up from the current attested (L2) releases. Today every GitHub release archive from 0.3.1 on carries Sigstore build provenance, and the crates.io package is attested from 0.13.0 (see [VERIFYING.md](VERIFYING.md)).
 - **Soak** — several months of the current 0.x line in real use with no vault-format change and no critical security fix.
 - **Migration & policy docs** — an upgrade guide, an MSRV policy, and a deprecation policy.
 
 ## Later
 
 - Secret versioning (`murk history`, `murk rollback`)
-- Per-key timestamps and access logging
+- Access logging
 - First-class environment separation (dev/staging/prod)
 - Nix flake, Debian packages
 
