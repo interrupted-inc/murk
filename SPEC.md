@@ -39,7 +39,7 @@ Existing secrets tools are either too complex (SOPS, Vault), tied to a runtime (
 | `MURK_KEY`     | No       | Raw age private key (`AGE-SECRET-KEY-1...`). Dev-mode convenience — the key is plaintext on disk. |
 | `MURK_KEY_FILE`| Yes      | Path to a private key file. Set by `murk init`. May be a raw age key, an SSH PEM key, or an age plugin identity file with a `# Recipient: age1...` (or `# public key: age1...`) header. |
 | `MURK_VAULT`   | No       | Vault filename. Defaults to `.murk`.                    |
-| `MURK_STRICT`  | No       | When `1`/`true`/`yes`, fail closed rather than let a secret touch disk: requires `murk edit`'s scratch file to live on a RAM-backed filesystem, and refuses `export`/`get` when stdout is a regular file (plaintext to disk). |
+| `MURK_STRICT`  | No       | When `1`/`true`/`yes`, fail closed rather than let a secret touch disk: requires `murk edit`'s scratch file to live on a RAM-backed filesystem, and refuses `export`/`get`/`diff --show-values` when stdout is a regular file (plaintext to disk). |
 | `MURK_TRUSTED_SIGNERS` | No | Signers trusted to sign the vault, separated by commas or newlines, replacing the local trust pin's set: `age1…:<verifying key>` for an age signer, the public key line for an ssh-ed25519 signer (`murk trust --print-key` prints the entry). For CI runners and other machines without a pin. See Trust. |
 | `MURK_NO_SIGNER_PIN` | No | When present, murk neither reads nor writes the local trust pin; trust then comes only from `MURK_TRUSTED_SIGNERS`. |
 
@@ -143,7 +143,7 @@ The `version` field is `MAJOR.MINOR` or `MAJOR.MINOR.PATCH` (decimal, no leading
 
 ### Load-time validation
 
-A `.murk` file arrives through git and is untrusted. Every reader (the working vault, `git show` revisions for `diff`, and all three merge-driver inputs) checks each field against an allowlist and refuses the whole vault on the first failure, naming the field. `murk` applies the same checks before it writes, so it never commits a vault it cannot load.
+A `.murk` file arrives through git and is untrusted. Every reader (the working vault, git revisions read by `diff`, and all three merge-driver inputs) checks each field against an allowlist and refuses the whole vault on the first failure, naming the field. `murk` applies the same checks before it writes, so it never commits a vault it cannot load.
 
 - File size: at most 64 MiB, checked before parsing.
 - `version`: as above.
@@ -432,7 +432,7 @@ Prints all secrets as `export KEY=VALUE` statements to stdout. Scoped values ove
 
 **Reserved names.** A key named like a variable that changes how a program, its loader, its shell, git or murk runs is refused — the whole export fails before anything is printed — unless `--allow-reserved` is passed: `PATH`, `HOME`, `IFS`, `SHELL`, `ENV`, `BASH_ENV`, `ZDOTDIR`, `SHELLOPTS`, `BASHOPTS`, `CDPATH`, `PS0`–`PS4`, `PROMPT_COMMAND`, `XDG_CONFIG_HOME`, `EDITOR`, `VISUAL`, `PAGER`, `MANPAGER`, `LESSOPEN`, `LESSCLOSE`, `BROWSER`, `SSH_ASKPASS`, `SUDO_ASKPASS`, `NODE_OPTIONS`, `NODE_PATH`, `NODE_EXTRA_CA_CERTS`, `CLASSPATH`, `GCONV_PATH`, `GLIBC_TUNABLES`, `OPENSSL_CONF`, `OPENSSL_ENGINES`, `RUSTFLAGS`, `RUSTDOCFLAGS`, `GOFLAGS`, `MAVEN_OPTS`, `GRADLE_OPTS`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`; every name starting with `LD_`, `DYLD_`, `GIT_`, `BASH_FUNC_`, `PYTHON`, `PERL`, `RUBY`, `JAVA_`, `_JAVA_`, `JDK_`, `DOTNET_`, `CARGO_`, `RUSTC`, `SSL_`, `PIP_`, `GEM_`, `BUNDLE_`, `NPM_CONFIG_` or `MURK_`; and every name ending in `_PROXY` (all compared case-insensitively; `NODE_ENV` is not reserved). Whoever can write the vault must not get to run code in the shell that evaluates it, redirect its traffic, or switch off murk's own settings there. `exec`, `agent exec` and the MCP `murk_exec` tool apply the same list; `murk_exec` has no override.
 
-When `MURK_STRICT` is set, `export` refuses to run if stdout is a regular file (e.g. `murk export > .env`), since that persists plaintext secrets to disk; piping to a process (the direnv flow) and printing to a terminal are still allowed. `get` is guarded the same way. This is a guardrail against accidental redirects, not an airtight control — an explicit `murk export | tee .env` still writes the file.
+When `MURK_STRICT` is set, `export` refuses to run if stdout is a regular file (e.g. `murk export > .env`), since that persists plaintext secrets to disk; piping to a process (the direnv flow) and printing to a terminal are still allowed. `get` and `diff --show-values` are guarded the same way. This is a guardrail against accidental redirects, not an airtight control — an explicit `murk export | tee .env` still writes the file.
 
 Primary usage via direnv:
 
@@ -593,7 +593,24 @@ Lists the secrets the revoked recipient had access to. With `--rotate`, prompts 
 
 ### `murk diff [REF] [--show-values] [--json] [--vault NAME]`
 
-Shows which secrets changed between the current vault and a git ref (defaults to `HEAD`), and which recipients were added or removed and whether the signer changed. `--show-values` prints the actual values, not just key names. `--json` outputs JSON (secret changes only). It runs on a vault this machine does not trust yet — it is the review step before `murk trust` — and says so on stderr; it still fails on a broken MAC or signature.
+Shows which secrets changed between the current vault and a git ref (defaults to `HEAD`), and what changed in who can read or sign it: recipients added or removed, a changed signer, a changed signing key for a recipient, the policy, agent grants and group members. `--show-values` prints the actual values, not just key names. Structural lines come before value lines, and every warning goes to stderr before either. Every vault-supplied string (key and group names, display names, grant names, values) is escaped before it reaches the terminal.
+
+`--json` prints one object, `{"secrets": [...], "changes": [...]}`; both arrays are always present. Each `secrets` entry has `key` and `kind` (`added`, `removed`, `changed`), plus `old_value` and `new_value` only with `--show-values`; entries are sorted by key. Each `changes` entry has `kind` and `op` (`added`, `removed`, `changed`) and never carries a secret value:
+
+| `kind` | Fields |
+|--------|--------|
+| `recipient` | `key`, `name` |
+| `signer` | `from`, `to` (public keys; `null` for unsigned) |
+| `signing_key` | `key`, `name`, `to` (the new verifying key's `SHA256:` fingerprint) |
+| `policy` | none |
+| `grant` | `name`, `key` (`null` when removed) |
+| `group_member` | `group`, `key`, `name` |
+
+JSON strings are exact (JSON escapes control characters); escaping for the terminal applies only to the human output.
+
+`diff` runs on a working vault this machine does not trust yet — it is the review step before `murk trust` — and says so on stderr; it still fails on a broken MAC or signature. The vault at the ref is verified before anything in it is decrypted: its MAC and signature as a load checks them, then its signer against the local trust pin, which is read and never extended. The signer must be one this machine ever trusted, with its pinned verifying key, so a teammate revoked since still verifies for the revisions they signed. When this machine has a trust pin for the vault or `MURK_TRUSTED_SIGNERS` is set, `diff` exits non-zero rather than show a revision that is refused, that fails verification, or that your key cannot decrypt. With neither, the revision is shown under the same "not trusted on this machine" warning as the working vault. An unsigned revision written by a key that cannot sign, or from before 0.14 (no vault id), is shown with a warning that its integrity rests on git. Under `MURK_STRICT` both warning cases are refused instead.
+
+`diff` also exits non-zero when the ref does not name a commit or git fails. The vault path is resolved inside the repository that holds it, so `diff` works from a subdirectory. Only a vault that git shows is absent from the ref (or a repository with no commits yet) counts as empty, and then every secret shows as added. A ref that starts with `-` is refused, so it can never reach git as an option.
 
 ---
 

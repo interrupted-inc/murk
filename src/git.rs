@@ -134,6 +134,131 @@ pub fn last_commit_signature(path: &str) -> Option<CommitSignature> {
     }
 }
 
+/// Read the vault file at `vault_path` as it was in git revision `git_ref`.
+///
+/// Returns `Ok(None)` only when git proves the file is absent from that
+/// revision; every other failure (not a repository, unknown revision, a
+/// non-file entry, a git error) is an `Err`, so a caller never mistakes a
+/// failed lookup for an empty vault.
+///
+/// `git_ref` is untrusted input. It is refused if it starts with `-`, resolved
+/// to a commit id with `rev-parse --verify --end-of-options` first, and only
+/// that hex id reaches the later commands, so it can never be read as a git
+/// option. The path is resolved against the repository that holds the vault
+/// file, so it works from a subdirectory and with a vault outside the current
+/// directory.
+pub fn vault_at_revision(git_ref: &str, vault_path: &str) -> Result<Option<String>, String> {
+    if git_ref.is_empty() || git_ref.starts_with('-') {
+        return Err(format!("invalid git revision {git_ref:?}"));
+    }
+    let path = Path::new(vault_path);
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("invalid vault path {vault_path}"))?;
+    let dir = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let git = |args: &[&str]| {
+        git_command()
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .map_err(|e| format!("running git: {e}"))
+    };
+
+    let out = git(&["rev-parse", "--show-prefix"])?;
+    if !out.status.success() {
+        return Err(format!("{} is not inside a git repository", dir.display()));
+    }
+    let prefix = String::from_utf8(out.stdout)
+        .map_err(|_| format!("{} has a non-UTF-8 path", dir.display()))?;
+    let tree_path = format!("{}{file_name}", prefix.trim_end_matches('\n'));
+
+    let out = git(&[
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        "--end-of-options",
+        &format!("{git_ref}^{{commit}}"),
+    ])?;
+    let commit = String::from_utf8(out.stdout).unwrap_or_default();
+    let commit = commit.trim_end_matches('\n');
+    if !out.status.success() || commit.is_empty() || !commit.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        if git_ref == "HEAD" && head_is_unborn(&git)? {
+            return Ok(None);
+        }
+        return Err(format!("{git_ref} does not name a git commit"));
+    }
+
+    // `ls-tree` exits 0 with no output when the path is absent: that is the
+    // only outcome treated as "no vault at this revision".
+    let out = git(&[
+        "--literal-pathspecs",
+        "ls-tree",
+        "-z",
+        "--full-tree",
+        commit,
+        "--",
+        &tree_path,
+    ])?;
+    if !out.status.success() {
+        return Err(format!(
+            "git ls-tree {git_ref} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    if out.stdout.is_empty() {
+        return Ok(None);
+    }
+    // One entry: "<mode> <type> <id>\t<path>\0".
+    let entry = String::from_utf8_lossy(&out.stdout);
+    let mut fields = entry.split(['\t', '\0']).next().unwrap_or("").split(' ');
+    let (mode, kind, id) = (fields.next(), fields.next(), fields.next());
+    let id = match (mode, kind, id) {
+        (Some("100644" | "100755"), Some("blob"), Some(id))
+            if id.bytes().all(|b| b.is_ascii_hexdigit()) =>
+        {
+            id
+        }
+        _ => return Err(format!("{tree_path} at {git_ref} is not a regular file")),
+    };
+
+    let out = git(&["cat-file", "blob", id])?;
+    if !out.status.success() {
+        return Err(format!(
+            "reading {tree_path} at {git_ref}: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    String::from_utf8(out.stdout)
+        .map(Some)
+        .map_err(|_| format!("{tree_path} at {git_ref} is not UTF-8"))
+}
+
+/// Whether HEAD is unborn: it names a branch that does not exist at all, as in
+/// a repository with no commits yet. A branch that exists but points at a
+/// missing or corrupt object is not unborn, so a broken repository never reads
+/// as "no vault here". `for-each-ref` lists a broken ref (and exits 0), and
+/// prints nothing only when no such ref exists.
+fn head_is_unborn(
+    git: &impl Fn(&[&str]) -> Result<std::process::Output, String>,
+) -> Result<bool, String> {
+    let out = git(&["symbolic-ref", "--quiet", "HEAD"])?;
+    if !out.status.success() {
+        return Ok(false);
+    }
+    let target = String::from_utf8(out.stdout).unwrap_or_default();
+    let target = target.trim_end_matches('\n');
+    if !target.starts_with("refs/") {
+        return Ok(false);
+    }
+    let out = git(&["for-each-ref", "--format=%(refname)", target])?;
+    Ok(out.status.success() && out.stdout.is_empty())
+}
+
 /// The working tree containing `path`: the nearest ancestor holding a `.git`
 /// entry. `None` when `path` is not inside a checkout.
 ///

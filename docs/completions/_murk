@@ -648,9 +648,9 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '--vault=[Vault filename]:VAULT:_default' \
 '--show-values[Show actual values (not just key names)]' \
-'--json[Output as JSON]' \
-'-h[Print help]' \
-'--help[Print help]' \
+'--json[Output JSON\: {"secrets"\: \[...\], "changes"\: \[...\]} (values only with --show-values)]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
 '::git_ref -- Git ref to compare against:_default' \
 && ret=0
 ;;
@@ -1050,7 +1050,7 @@ _murk_commands() {
 'trust:Review who signed the vault and what changed, then trust it on this machine' \
 'doctor:Check the surrounding repo for hygiene issues' \
 'scan:Scan files for leaked secret values' \
-'diff:Show secret changes vs a git ref' \
+'diff:Show secret and access changes vs a git ref' \
 'setup-merge-driver:Configure git to use murk'\''s merge driver for .murk files' \
 'merge-driver:Git merge driver for .murk vault files (called by git)' \
 'completion:Generate or install shell completions' \
@@ -1412,7 +1412,7 @@ _murk__subcmd__help_commands() {
 'trust:Review who signed the vault and what changed, then trust it on this machine' \
 'doctor:Check the surrounding repo for hygiene issues' \
 'scan:Scan files for leaked secret values' \
-'diff:Show secret changes vs a git ref' \
+'diff:Show secret and access changes vs a git ref' \
 'setup-merge-driver:Configure git to use murk'\''s merge driver for .murk files' \
 'merge-driver:Git merge driver for .murk vault files (called by git)' \
 'completion:Generate or install shell completions' \

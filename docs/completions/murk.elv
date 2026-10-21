@@ -48,7 +48,7 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand trust 'Review who signed the vault and what changed, then trust it on this machine'
             cand doctor 'Check the surrounding repo for hygiene issues'
             cand scan 'Scan files for leaked secret values'
-            cand diff 'Show secret changes vs a git ref'
+            cand diff 'Show secret and access changes vs a git ref'
             cand setup-merge-driver 'Configure git to use murk''s merge driver for .murk files'
             cand merge-driver 'Git merge driver for .murk vault files (called by git)'
             cand completion 'Generate or install shell completions'
@@ -459,9 +459,9 @@ set edit:completion:arg-completer[murk] = {|@words|
         &'murk;diff'= {
             cand --vault 'Vault filename'
             cand --show-values 'Show actual values (not just key names)'
-            cand --json 'Output as JSON'
-            cand -h 'Print help'
-            cand --help 'Print help'
+            cand --json 'Output JSON: {"secrets": [...], "changes": [...]} (values only with --show-values)'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
         }
         &'murk;setup-merge-driver'= {
             cand -h 'Print help'
@@ -526,7 +526,7 @@ set edit:completion:arg-completer[murk] = {|@words|
             cand trust 'Review who signed the vault and what changed, then trust it on this machine'
             cand doctor 'Check the surrounding repo for hygiene issues'
             cand scan 'Scan files for leaked secret values'
-            cand diff 'Show secret changes vs a git ref'
+            cand diff 'Show secret and access changes vs a git ref'
             cand setup-merge-driver 'Configure git to use murk''s merge driver for .murk files'
             cand merge-driver 'Git merge driver for .murk vault files (called by git)'
             cand completion 'Generate or install shell completions'

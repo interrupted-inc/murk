@@ -90,7 +90,7 @@ Encrypted secrets manager for developers — one file, age encryption, git-frien
 * `trust` — Review who signed the vault and what changed, then trust it on this machine
 * `doctor` — Check the surrounding repo for hygiene issues
 * `scan` — Scan files for leaked secret values
-* `diff` — Show secret changes vs a git ref
+* `diff` — Show secret and access changes vs a git ref
 * `setup-merge-driver` — Configure git to use murk's merge driver for .murk files
 * `completion` — Generate or install shell completions
 
@@ -880,7 +880,9 @@ Scan files for leaked secret values
 
 ## `murk diff`
 
-Show secret changes vs a git ref
+Show secret and access changes vs a git ref
+
+Lists recipients, signer, signing keys, policy, grants and group members that changed, then the secrets. The vault at the ref is verified first; a revision this machine's trust pin refuses is never shown.
 
 **Usage:** `murk diff [OPTIONS] [GIT_REF]`
 
@@ -893,7 +895,7 @@ Show secret changes vs a git ref
 ###### **Options:**
 
 * `--show-values` — Show actual values (not just key names)
-* `--json` — Output as JSON
+* `--json` — Output JSON: {"secrets": [...], "changes": [...]} (values only with --show-values)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`

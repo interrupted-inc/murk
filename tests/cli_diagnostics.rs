@@ -334,31 +334,53 @@ fn diff_hides_values_unless_asked_and_reports_each_change_kind() {
         assert!(with_values.contains(line), "missing {line}:\n{with_values}");
     }
 
-    let json: serde_json::Value = serde_json::from_str(&diff(&["--json"])).unwrap();
-    let entry = |k: &str| {
-        json.as_array()
-            .unwrap()
-            .iter()
-            .find(|e| e["key"] == k)
-            .unwrap_or_else(|| panic!("no {k} in {json}"))
-            .clone()
-    };
+    // --json is one object: value changes and structural changes. Values
+    // appear only with --show-values, and never in a change entry.
+    murk(&dir, &key)
+        .args([
+            "circle",
+            "authorize",
+            FOREIGN_PK,
+            "--name",
+            "bob",
+            "--vault",
+            "test.murk",
+        ])
+        .assert()
+        .success();
+    let bob = serde_json::json!({
+        "kind": "recipient", "op": "added", "key": FOREIGN_PK, "name": "bob",
+    });
+    let names_json: serde_json::Value = serde_json::from_str(&diff(&["--json"])).unwrap();
     assert_eq!(
-        entry("CHANGED"),
-        serde_json::json!({"key": "CHANGED", "kind": "changed", "old_value": "old-value", "new_value": "new-value"})
+        names_json,
+        serde_json::json!({
+            "secrets": [
+                {"key": "ADDED", "kind": "added"},
+                {"key": "CHANGED", "kind": "changed"},
+                {"key": "REMOVED", "kind": "removed"},
+            ],
+            "changes": [bob],
+        })
     );
+
+    let json: serde_json::Value =
+        serde_json::from_str(&diff(&["--json", "--show-values"])).unwrap();
     assert_eq!(
-        entry("REMOVED"),
-        serde_json::json!({"key": "REMOVED", "kind": "removed", "old_value": "gone-value", "new_value": null})
-    );
-    assert_eq!(
-        entry("ADDED"),
-        serde_json::json!({"key": "ADDED", "kind": "added", "old_value": null, "new_value": "fresh-value"})
+        json,
+        serde_json::json!({
+            "secrets": [
+                {"key": "ADDED", "kind": "added", "old_value": null, "new_value": "fresh-value"},
+                {"key": "CHANGED", "kind": "changed", "old_value": "old-value", "new_value": "new-value"},
+                {"key": "REMOVED", "kind": "removed", "old_value": "gone-value", "new_value": null},
+            ],
+            "changes": [bob],
+        })
     );
 }
 
 #[test]
-fn diff_warns_when_old_vault_is_not_decryptable() {
+fn diff_fails_when_old_vault_is_not_decryptable() {
     let dir = TempDir::new().unwrap();
     let (key, _) = init_vault(&dir);
     add_secret(dir.path(), &key, "MINE", "v");
@@ -373,14 +395,14 @@ fn diff_warns_when_old_vault_is_not_decryptable() {
     commit_vault(dir.path());
     fs::write(dir.path().join("test.murk"), &mine).unwrap();
 
+    // Unreadable is not empty: reporting every current secret as added would
+    // misstate what changed.
     murk(&dir, &key)
         .args(["diff", "--vault", "test.murk"])
         .assert()
-        .success()
-        .stderr(predicate::str::contains(
-            "cannot decrypt vault at HEAD — you may not have been a recipient",
-        ))
-        .stdout(predicate::str::contains("MINE"));
+        .code(1)
+        .stdout("")
+        .stderr(predicate::str::contains("cannot decrypt vault at HEAD"));
 }
 
 #[test]

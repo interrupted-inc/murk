@@ -676,6 +676,86 @@ pub fn load_vault(
     inspect_vault(vault_path)?.into_trusted(vault_path)
 }
 
+/// How far this machine trusts a git revision that [`decrypt_vault_revision`]
+/// verified and decrypted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RevisionTrust {
+    /// Signed by a signer this machine ever trusted, with its pinned key.
+    Trusted,
+    /// Unsigned: written by a key that cannot sign, or pre-0.14 history with
+    /// no vault id. Its integrity rests on git.
+    Unsigned,
+    /// This machine has no trust decision for the vault yet (no pin and no
+    /// `MURK_TRUSTED_SIGNERS`), so the revision is as untrusted as the
+    /// working vault: the reason, for the warning.
+    NotTrustedHere(String),
+}
+
+/// Verify and decrypt vault contents that are not the working file, such as a
+/// git revision read by `murk diff`.
+///
+/// The revision's MAC and signature are verified as a load does
+/// ([`verify_side`]), then its signer is judged against this machine's trust
+/// pin ([`trust::assess_revision`]: a signer ever trusted here, with its pinned
+/// key; the pin is only read). Only then is anything decrypted. Any failure is
+/// an error, so a forged revision is never decrypted. Where this machine has
+/// nothing to judge by (no pin, no `MURK_TRUSTED_SIGNERS`), or the revision is
+/// unsigned without that being a downgrade, the result says so instead; under
+/// `MURK_STRICT` those are refused too.
+pub fn decrypt_vault_revision(
+    vault_path: &str,
+    contents: &str,
+    identity: &crypto::MurkIdentity,
+) -> Result<(types::Vault, types::Murk, RevisionTrust), MurkError> {
+    let vault = crate::vault::parse(contents)?;
+    let side = verify_side(&vault, identity)?;
+    let loaded = trust::Loaded {
+        vault: &vault,
+        signature: &side.signature,
+        signer_vk: side.signer_vk.as_deref(),
+        registry: &side.registry,
+        names: &side.names,
+        groups: &side.groups,
+        grants: &side.grants,
+        loader_can_sign: identity.is_signing_capable(),
+        operator_key: crypto::operator_key(identity),
+    };
+    let pin = crate::pins::read(vault_path).map_err(MurkError::Trust)?;
+    let anchored = pin.as_ref().is_some_and(crate::pins::TrustPin::has_trust)
+        || trust::env_trusted_signers()
+            .map_err(MurkError::Trust)?
+            .is_some();
+    let refused = |r: &trust::Refusal| {
+        let msg = trust::refusal_message(vault_path, r, &loaded, pin.as_ref());
+        msg.lines().next().unwrap_or_default().to_string()
+    };
+    // Pre-0.14 history and a vault nobody here has decided on are shown with a
+    // warning instead of refused; `MURK_STRICT` refuses them as well.
+    let (standing, lenient) =
+        match trust::assess_revision(vault_path, &loaded).map_err(MurkError::Trust)? {
+            trust::Verdict::Trusted => (RevisionTrust::Trusted, None),
+            trust::Verdict::UnsignedAllowed => (RevisionTrust::Unsigned, None),
+            trust::Verdict::Refused(trust::Refusal::Unsigned) if vault.vault_id.is_empty() => (
+                RevisionTrust::Unsigned,
+                Some("this revision is unsigned".to_string()),
+            ),
+            trust::Verdict::Refused(r) if !anchored => {
+                let why = refused(&r);
+                (RevisionTrust::NotTrustedHere(why.clone()), Some(why))
+            }
+            trust::Verdict::Refused(r) => return Err(MurkError::Trust(refused(&r))),
+        };
+    if let Some(why) = lenient
+        && crate::hardening::strict_mode()
+    {
+        return Err(MurkError::Trust(format!(
+            "{why}. Refusing under MURK_STRICT"
+        )));
+    }
+    let murk = decrypt_vault(&vault, identity)?;
+    Ok((vault, murk, standing))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

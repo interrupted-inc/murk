@@ -51,7 +51,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             [CompletionResult]::new('trust', 'trust', [CompletionResultType]::ParameterValue, 'Review who signed the vault and what changed, then trust it on this machine')
             [CompletionResult]::new('doctor', 'doctor', [CompletionResultType]::ParameterValue, 'Check the surrounding repo for hygiene issues')
             [CompletionResult]::new('scan', 'scan', [CompletionResultType]::ParameterValue, 'Scan files for leaked secret values')
-            [CompletionResult]::new('diff', 'diff', [CompletionResultType]::ParameterValue, 'Show secret changes vs a git ref')
+            [CompletionResult]::new('diff', 'diff', [CompletionResultType]::ParameterValue, 'Show secret and access changes vs a git ref')
             [CompletionResult]::new('setup-merge-driver', 'setup-merge-driver', [CompletionResultType]::ParameterValue, 'Configure git to use murk''s merge driver for .murk files')
             [CompletionResult]::new('merge-driver', 'merge-driver', [CompletionResultType]::ParameterValue, 'Git merge driver for .murk vault files (called by git)')
             [CompletionResult]::new('completion', 'completion', [CompletionResultType]::ParameterValue, 'Generate or install shell completions')
@@ -533,9 +533,9 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
         'murk;diff' {
             [CompletionResult]::new('--vault', '--vault', [CompletionResultType]::ParameterName, 'Vault filename')
             [CompletionResult]::new('--show-values', '--show-values', [CompletionResultType]::ParameterName, 'Show actual values (not just key names)')
-            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Output as JSON')
-            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
-            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Output JSON: {"secrets": [...], "changes": [...]} (values only with --show-values)')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
             break
         }
         'murk;setup-merge-driver' {
@@ -610,7 +610,7 @@ Register-ArgumentCompleter -Native -CommandName 'murk' -ScriptBlock {
             [CompletionResult]::new('trust', 'trust', [CompletionResultType]::ParameterValue, 'Review who signed the vault and what changed, then trust it on this machine')
             [CompletionResult]::new('doctor', 'doctor', [CompletionResultType]::ParameterValue, 'Check the surrounding repo for hygiene issues')
             [CompletionResult]::new('scan', 'scan', [CompletionResultType]::ParameterValue, 'Scan files for leaked secret values')
-            [CompletionResult]::new('diff', 'diff', [CompletionResultType]::ParameterValue, 'Show secret changes vs a git ref')
+            [CompletionResult]::new('diff', 'diff', [CompletionResultType]::ParameterValue, 'Show secret and access changes vs a git ref')
             [CompletionResult]::new('setup-merge-driver', 'setup-merge-driver', [CompletionResultType]::ParameterValue, 'Configure git to use murk''s merge driver for .murk files')
             [CompletionResult]::new('merge-driver', 'merge-driver', [CompletionResultType]::ParameterValue, 'Git merge driver for .murk vault files (called by git)')
             [CompletionResult]::new('completion', 'completion', [CompletionResultType]::ParameterValue, 'Generate or install shell completions')

@@ -678,6 +678,40 @@ fn diff_shows_the_added_recipient_and_the_new_signer() {
         .stderr(predicate::str::contains("not trusted on this machine"));
 }
 
+/// A forged revision in history is never decrypted or shown: Alice's machine
+/// has a pin, so a revision signed by a stranger fails like a forged working
+/// vault would, instead of being diffed against.
+#[test]
+fn diff_refuses_a_forged_revision() {
+    let base = TempDir::new().unwrap();
+    let (alice, repo) = alice_repo(base.path());
+    let genuine = fs::read(repo.join(".murk")).unwrap();
+    let forged = mallory_vault(
+        base.path(),
+        &[("alice", alice.pubkey())],
+        &[("DB_URL", "postgres://attacker")],
+    );
+    fs::copy(&forged, repo.join(".murk")).unwrap();
+    commit(&repo, "forged");
+    fs::write(repo.join(".murk"), genuine).unwrap();
+
+    for args in [
+        &["diff", "HEAD"][..],
+        &["diff", "HEAD", "--show-values", "--json"][..],
+    ] {
+        alice
+            .murk(&repo)
+            .args(args)
+            .assert()
+            .failure()
+            .stdout("")
+            .stderr(predicate::str::contains(
+                "failed verification, so it is not shown",
+            ))
+            .stderr(predicate::str::contains("attacker").not());
+    }
+}
+
 // ── Legitimate flows ──
 
 /// An ssh-rsa key (like a hardware/plugin key) cannot sign. Its user still

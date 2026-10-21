@@ -410,7 +410,11 @@ pub enum Command {
     },
 
     // Git integration
-    /// Show secret changes vs a git ref
+    /// Show secret and access changes vs a git ref
+    ///
+    /// Lists recipients, signer, signing keys, policy, grants and group members
+    /// that changed, then the secrets. The vault at the ref is verified first;
+    /// a revision this machine's trust pin refuses is never shown.
     Diff {
         /// Git ref to compare against
         #[arg(default_value = "HEAD")]
@@ -418,7 +422,7 @@ pub enum Command {
         /// Show actual values (not just key names)
         #[arg(long)]
         show_values: bool,
-        /// Output as JSON
+        /// Output JSON: {"secrets": [...], "changes": [...]} (values only with --show-values)
         #[arg(long)]
         json: bool,
         /// Vault filename

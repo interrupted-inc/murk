@@ -71,12 +71,10 @@ pub use env::{
     strip_key_env, write_envrc, write_key_ref_to_dotenv, write_key_to_dotenv, write_key_to_file,
 };
 pub use error::MurkError;
-pub use export::{
-    DiffEntry, DiffKind, decrypt_vault_values, diff_secrets, export_secrets,
-    parse_and_decrypt_values, resolve_secrets,
-};
+pub use export::{DiffEntry, DiffKind, diff_secrets, export_secrets, resolve_secrets};
 pub use git::{
     CommitSignature, MergeDriverSetupStep, git_command, last_commit_signature, setup_merge_driver,
+    vault_at_revision,
 };
 pub use github::{GitHubError, fetch_keys};
 pub use grants::{create_grant, parse_ttl, remove_grant, validate_grant_name};
@@ -112,7 +110,9 @@ mod mac;
 mod save;
 mod signature;
 
-pub use load::{InspectedVault, decrypt_vault, inspect_vault, load_vault};
+pub use load::{
+    InspectedVault, RevisionTrust, decrypt_vault, decrypt_vault_revision, inspect_vault, load_vault,
+};
 pub(crate) use mac::{compute_mac, decode_mac_key, generate_mac_key, verify_mac};
 pub use save::save_vault;
 pub(crate) use signature::{register_signer, sign_vault, signing_identity, verify_vault_signature};

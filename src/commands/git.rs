@@ -126,6 +126,11 @@ pub(crate) fn cmd_setup_merge_driver() {
 }
 
 pub(crate) fn cmd_diff(git_ref: &str, show_values: bool, json: bool, vault_path: &str) {
+    if show_values {
+        super::secrets::strict_guard_plaintext_stdout(
+            "pipe the output to a program instead of redirecting it to a file",
+        );
+    }
     // `diff` is the review step before `murk trust`, so it must run on a vault
     // this machine does not trust yet. It still fails on a broken MAC or
     // signature; trust is reported, not enforced.
@@ -138,255 +143,388 @@ pub(crate) fn cmd_diff(git_ref: &str, show_values: bool, json: bool, vault_path:
         );
     }
     let murk_cli::InspectedVault {
-        vault: _vault,
-        murk: current_murk,
+        vault,
+        murk,
         identity,
         ..
     } = inspected;
+    let pubkey = identity.pubkey_string().unwrap_or_else(|e| die(&e, 1));
 
-    // Get the old vault contents from git.
-    let output = murk_cli::git_command()
-        .args(["show", &format!("{git_ref}:{vault_path}")])
-        .output()
-        .unwrap_or_else(|e| die(&format_args!("running git: {e}"), 1));
-
-    let mut old_values: HashMap<String, zeroize::Zeroizing<String>> = if output.status.success() {
-        let old_contents = String::from_utf8_lossy(&output.stdout);
-        match murk_cli::parse_and_decrypt_values(&old_contents, &identity) {
-            Ok(values) => {
-                if values.is_empty() {
-                    // Check if the old vault had secrets — if so, we couldn't decrypt.
-                    if let Ok(old_vault) = vault::parse(&old_contents)
-                        && !old_vault.secrets.is_empty()
-                    {
-                        eprintln!(
-                            "{} cannot decrypt vault at {git_ref} — you may not have been a recipient",
-                            "⚠".yellow()
-                        );
-                    }
-                }
-                values
-            }
-            Err(e) => die(&format_args!("parsing vault at {git_ref}: {e}"), 1),
+    let old = match murk_cli::vault_at_revision(git_ref, vault_path).unwrap_or_else(|e| die(&e, 1))
+    {
+        None => {
+            eprintln!(
+                "{} {vault_path} does not exist at {git_ref} — every secret shows as added",
+                "◆".magenta()
+            );
+            None
         }
-    } else {
-        HashMap::<String, zeroize::Zeroizing<String>>::new()
+        Some(contents) => Some(revision(git_ref, vault_path, &contents, &identity)),
     };
 
-    let pubkey = identity.pubkey_string().unwrap_or_else(|e| die(&e, 1));
-    let mut current_values: HashMap<String, zeroize::Zeroizing<String>> =
-        murk_cli::resolve_secrets(&_vault, &current_murk, &pubkey, &[])
+    let old_values: HashMap<String, zeroize::Zeroizing<String>> =
+        old.as_ref()
+            .map_or_else(HashMap::new, |(old_vault, old_murk)| {
+                murk_cli::resolve_secrets(old_vault, old_murk, &pubkey, &[])
+                    .into_iter()
+                    .collect()
+            });
+    let current_values: HashMap<String, zeroize::Zeroizing<String>> =
+        murk_cli::resolve_secrets(&vault, &murk, &pubkey, &[])
             .into_iter()
             .collect();
-    // `--show-values` prints values, so an agent grant (or self-scope) only
-    // diffs keys the current policy allows.
-    if murk_cli::agent_policy_applies(&current_murk, &pubkey) && _vault.policy.is_some() {
-        old_values.retain(|k, _| murk_cli::is_agent_key_allowed(&_vault, k));
-        current_values.retain(|k, _| murk_cli::is_agent_key_allowed(&_vault, k));
-    }
-    let entries = murk_cli::diff_secrets(&old_values, &current_values);
+    let mut entries = murk_cli::diff_secrets(&old_values, &current_values);
+    entries.sort_by(|a, b| a.key.cmp(&b.key));
+    let changes = old.as_ref().map_or_else(Vec::new, |(old_vault, old_murk)| {
+        structural_changes((old_vault, old_murk), (&vault, &murk))
+    });
+    // Display names: the current ones, and for keys gone since the ref (a
+    // revoked recipient, a former signer) the names they had there.
+    let mut names = old
+        .as_ref()
+        .map(|(_, old_murk)| old_murk.recipients.clone())
+        .unwrap_or_default();
+    names.extend(murk.recipients.iter().map(|(k, v)| (k.clone(), v.clone())));
 
     if json {
-        // serde_json copies into its own owned String; zeroization ends at this boundary.
-        let list: Vec<serde_json::Value> = entries
+        // Values only with --show-values, as in the human output; a change
+        // entry never carries one. serde_json copies into its own owned
+        // String; zeroization ends at this boundary.
+        let secrets: Vec<serde_json::Value> = entries
             .iter()
             .map(|e| {
-                serde_json::json!({
+                let mut obj = serde_json::json!({
                     "key": e.key,
-                    "kind": format!("{:?}", e.kind).to_lowercase(),
-                    "old_value": e.old_value.as_ref().map(|v| v.as_str()),
-                    "new_value": e.new_value.as_ref().map(|v| v.as_str()),
-                })
+                    "kind": diff_kind(&e.kind),
+                });
+                if show_values {
+                    obj["old_value"] = e.old_value.as_ref().map(|v| v.as_str()).into();
+                    obj["new_value"] = e.new_value.as_ref().map(|v| v.as_str()).into();
+                }
+                obj
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&list).unwrap());
+        let changes: Vec<serde_json::Value> = changes.iter().map(|c| c.to_json(&names)).collect();
+        let out = serde_json::json!({ "secrets": secrets, "changes": changes });
+        println!("{}", serde_json::to_string_pretty(&out).unwrap());
         return;
     }
 
-    // Who can read and who signed matter as much as the values: a forged vault
-    // that lists its author as a recipient shows up here, not in the values.
-    let old_vault = output
-        .status
-        .success()
-        .then(|| vault::parse(&String::from_utf8_lossy(&output.stdout)).ok())
-        .flatten();
-    let mut header_changes = 0;
-    if let Some(old) = &old_vault {
-        let canon = |v: &murk_cli::types::Vault| -> std::collections::BTreeMap<String, String> {
-            v.recipients
-                .iter()
-                .map(|r| (murk_cli::canonical_recipient(r).into_owned(), r.clone()))
-                .collect()
-        };
-        let (before, after) = (canon(old), canon(&_vault));
-        for (k, r) in &after {
-            if !before.contains_key(k) {
-                header_changes += 1;
-                println!(
-                    "{} recipient {}",
-                    "+".magenta().bold(),
-                    murk_cli::trust::label(&current_murk.recipients, r)
-                );
-            }
-        }
-        for (k, r) in &before {
-            if !after.contains_key(k) {
-                header_changes += 1;
-                println!(
-                    "{} recipient {}",
-                    "-".red().bold(),
-                    murk_cli::truncate_pubkey(r)
-                );
-            }
-        }
-        let old_meta = murk_cli::decrypt_meta(old, &identity).ok().flatten();
-        let old_signer = old.sig.as_ref().map(|s| s.signer.clone()).or_else(|| {
-            old_meta
-                .as_ref()
-                .and_then(|m| m.sig.as_ref().map(|s| s.signer.clone()))
-        });
-        // A changed signing key for an existing recipient: the signer
-        // registry claims a different key for them than before.
-        if let Some(old_meta) = &old_meta {
-            let keys = |m: &std::collections::BTreeMap<String, String>| {
-                m.iter()
-                    .map(|(pk, vk)| (murk_cli::canonical_recipient(pk).into_owned(), vk.clone()))
-                    .collect::<std::collections::BTreeMap<_, _>>()
-            };
-            let (was, now) = (keys(&old_meta.signers), keys(&current_murk.signers));
-            for (pk, vk) in &now {
-                if was.get(pk).is_some_and(|old_vk| old_vk != vk) {
-                    header_changes += 1;
-                    println!(
-                        "{} signing key of {} {} {}",
-                        "~".yellow().bold(),
-                        murk_cli::trust::label(&current_murk.recipients, pk),
-                        "→".dimmed(),
-                        murk_cli::signing::fingerprint(vk).unwrap_or_default()
-                    );
-                }
-            }
-        }
-        let new_signer = match &current_murk.signature {
-            murk_cli::types::SignatureState::Signed { signer, .. } => Some(signer.clone()),
-            murk_cli::types::SignatureState::Unsigned => None,
-        };
-        let canon_opt = |s: &Option<String>| {
-            s.as_deref()
-                .map(|k| murk_cli::canonical_recipient(k).into_owned())
-        };
-        if canon_opt(&old_signer) != canon_opt(&new_signer) {
-            header_changes += 1;
-            let show = |s: &Option<String>| {
-                s.as_deref().map_or_else(
-                    || "unsigned".to_string(),
-                    |k| murk_cli::trust::label(&current_murk.recipients, k),
-                )
-            };
-            println!(
-                "{} signer {} {} {}",
-                "~".yellow().bold(),
-                show(&old_signer),
-                "→".dimmed(),
-                show(&new_signer)
-            );
-        }
-        if old.policy != _vault.policy {
-            header_changes += 1;
-            println!("{} policy", "~".yellow().bold());
-        }
-        if let Some(old_meta) = &old_meta {
-            let label = |k: &str| murk_cli::trust::label(&current_murk.recipients, k);
-            for (name, grant) in &current_murk.grants {
-                if old_meta.grants.get(name) != Some(grant) {
-                    header_changes += 1;
-                    println!(
-                        "{} grant {} ({})",
-                        "~".yellow().bold(),
-                        murk_cli::show_untrusted(name),
-                        label(&grant.pubkey)
-                    );
-                }
-            }
-            for name in old_meta.grants.keys() {
-                if !current_murk.grants.contains_key(name) {
-                    header_changes += 1;
-                    println!(
-                        "{} grant {}",
-                        "-".red().bold(),
-                        murk_cli::show_untrusted(name)
-                    );
-                }
-            }
-            let groups: std::collections::BTreeSet<&String> = current_murk
-                .groups
-                .keys()
-                .chain(old_meta.groups.keys())
-                .collect();
-            for group in groups {
-                let before = old_meta.groups.get(group).cloned().unwrap_or_default();
-                let after = current_murk.groups.get(group).cloned().unwrap_or_default();
-                for m in after.iter().filter(|m| !before.contains(m)) {
-                    header_changes += 1;
-                    println!(
-                        "{} group {} member {}",
-                        "+".magenta().bold(),
-                        murk_cli::show_untrusted(group),
-                        label(m)
-                    );
-                }
-                for m in before.iter().filter(|m| !after.contains(m)) {
-                    header_changes += 1;
-                    println!(
-                        "{} group {} member {}",
-                        "-".red().bold(),
-                        murk_cli::show_untrusted(group),
-                        label(m)
-                    );
-                }
-            }
-        }
+    for change in &changes {
+        println!("{}", change.line(&names));
     }
-
     if entries.is_empty() {
-        if header_changes == 0 {
+        if changes.is_empty() {
             eprintln!("{}", "no changes".dimmed());
         }
         return;
     }
-
     for entry in &entries {
+        let key = murk_cli::show_untrusted(&entry.key);
         let old = entry.old_value.as_ref().map_or("", |v| v.as_str());
         let new = entry.new_value.as_ref().map_or("", |v| v.as_str());
+        let (old, new) = (value_text(old), value_text(new));
         match entry.kind {
-            DiffKind::Added => {
-                if show_values {
-                    println!("{} {} = {}", "+".magenta().bold(), entry.key.bold(), new);
-                } else {
-                    println!("{} {}", "+".magenta().bold(), entry.key.bold());
-                }
+            DiffKind::Added if show_values => {
+                println!("{} {} = {}", "+".magenta().bold(), key.bold(), new);
             }
-            DiffKind::Removed => {
-                if show_values {
-                    println!("{} {} = {}", "-".red().bold(), entry.key.bold(), old);
-                } else {
-                    println!("{} {}", "-".red().bold(), entry.key.bold());
-                }
+            DiffKind::Added => println!("{} {}", "+".magenta().bold(), key.bold()),
+            DiffKind::Removed if show_values => {
+                println!("{} {} = {}", "-".red().bold(), key.bold(), old);
             }
-            DiffKind::Changed => {
-                if show_values {
-                    println!(
-                        "{} {} {} {} {}",
-                        "~".yellow().bold(),
-                        entry.key.bold(),
-                        old,
-                        "→".dimmed(),
-                        new
-                    );
-                } else {
-                    println!("{} {}", "~".yellow().bold(), entry.key.bold());
-                }
-            }
+            DiffKind::Removed => println!("{} {}", "-".red().bold(), key.bold()),
+            DiffKind::Changed if show_values => println!(
+                "{} {} {} {} {}",
+                "~".yellow().bold(),
+                key.bold(),
+                old,
+                "→".dimmed(),
+                new
+            ),
+            DiffKind::Changed => println!("{} {}", "~".yellow().bold(), key.bold()),
         }
     }
+}
+
+/// Verify and decrypt the vault at `git_ref`, or exit. A revision that fails
+/// verification, or that this machine's trust pin refuses, is never shown.
+fn revision(
+    git_ref: &str,
+    vault_path: &str,
+    contents: &str,
+    identity: &murk_cli::crypto::MurkIdentity,
+) -> (murk_cli::types::Vault, murk_cli::types::Murk) {
+    let (old_vault, old_murk, standing) = murk_cli::decrypt_vault_revision(
+        vault_path, contents, identity,
+    )
+    .unwrap_or_else(|e| match e {
+        murk_cli::MurkError::Vault(_) => die(&format_args!("parsing vault at {git_ref}: {e}"), 1),
+        murk_cli::MurkError::Integrity(_) | murk_cli::MurkError::Trust(_) => die(
+            &format_args!("vault at {git_ref} failed verification, so it is not shown: {e}"),
+            1,
+        ),
+        _ => die(&format_args!("cannot decrypt vault at {git_ref}: {e}"), 1),
+    });
+    match standing {
+        murk_cli::RevisionTrust::Trusted => {}
+        murk_cli::RevisionTrust::Unsigned => eprintln!(
+            "{} vault at {git_ref} is unsigned — its integrity rests on git",
+            "warn".yellow().bold()
+        ),
+        murk_cli::RevisionTrust::NotTrustedHere(why) => eprintln!(
+            "{} vault at {git_ref} not trusted on this machine: {why}",
+            "warn".yellow().bold()
+        ),
+    }
+    (old_vault, old_murk)
+}
+
+fn diff_kind(kind: &DiffKind) -> &'static str {
+    match kind {
+        DiffKind::Added => "added",
+        DiffKind::Removed => "removed",
+        DiffKind::Changed => "changed",
+    }
+}
+
+/// A secret value for a terminal line: escaped, never truncated.
+fn value_text(v: &str) -> String {
+    v.chars().flat_map(char::escape_debug).collect()
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Op {
+    Added,
+    Removed,
+    Changed,
+}
+
+/// One change to who can read or sign the vault, or to its policy, grants or
+/// groups. Every field is vault-supplied; none is a secret value.
+enum Change {
+    Recipient {
+        op: Op,
+        key: String,
+        name: Option<String>,
+    },
+    Signer {
+        from: Option<String>,
+        to: Option<String>,
+    },
+    SigningKey {
+        key: String,
+        fingerprint: String,
+    },
+    Policy,
+    Grant {
+        op: Op,
+        name: String,
+        key: Option<String>,
+    },
+    GroupMember {
+        op: Op,
+        group: String,
+        key: String,
+    },
+}
+
+impl Change {
+    fn to_json(&self, names: &HashMap<String, String>) -> serde_json::Value {
+        let name = |k: &str| name_of(names, k);
+        let op = |op: &Op| match op {
+            Op::Added => "added",
+            Op::Removed => "removed",
+            Op::Changed => "changed",
+        };
+        match self {
+            Change::Recipient { op: o, key, name } => serde_json::json!({
+                "kind": "recipient", "op": op(o), "key": key, "name": name,
+            }),
+            Change::Signer { from, to } => serde_json::json!({
+                "kind": "signer", "op": "changed", "from": from, "to": to,
+            }),
+            Change::SigningKey { key, fingerprint } => serde_json::json!({
+                "kind": "signing_key", "op": "changed", "key": key, "name": name(key),
+                "to": fingerprint,
+            }),
+            Change::Policy => serde_json::json!({ "kind": "policy", "op": "changed" }),
+            Change::Grant { op: o, name, key } => serde_json::json!({
+                "kind": "grant", "op": op(o), "name": name, "key": key,
+            }),
+            Change::GroupMember { op: o, group, key } => serde_json::json!({
+                "kind": "group_member", "op": op(o), "group": group, "key": key,
+                "name": name(key),
+            }),
+        }
+    }
+
+    /// The terminal line, with every vault-supplied string escaped. Keys are
+    /// labelled with their display name (see `trust::label`).
+    fn line(&self, names: &HashMap<String, String>) -> String {
+        let label = |k: &str| murk_cli::trust::label(names, k);
+        let sign = |op: &Op| match op {
+            Op::Added => "+".magenta().bold(),
+            Op::Removed => "-".red().bold(),
+            Op::Changed => "~".yellow().bold(),
+        };
+        match self {
+            Change::Recipient { op, key, .. } => format!("{} recipient {}", sign(op), label(key)),
+            Change::Signer { from, to } => {
+                let show =
+                    |s: &Option<String>| s.as_deref().map_or_else(|| "unsigned".into(), label);
+                format!(
+                    "{} signer {} {} {}",
+                    sign(&Op::Changed),
+                    show(from),
+                    "→".dimmed(),
+                    show(to)
+                )
+            }
+            Change::SigningKey { key, fingerprint } => format!(
+                "{} signing key of {} {} {}",
+                sign(&Op::Changed),
+                label(key),
+                "→".dimmed(),
+                fingerprint
+            ),
+            Change::Policy => format!("{} policy", sign(&Op::Changed)),
+            Change::Grant {
+                op: Op::Removed,
+                name,
+                ..
+            } => format!(
+                "{} grant {}",
+                sign(&Op::Removed),
+                murk_cli::show_untrusted(name)
+            ),
+            Change::Grant { name, key, .. } => format!(
+                "{} grant {} ({})",
+                sign(&Op::Changed),
+                murk_cli::show_untrusted(name),
+                key.as_deref().map(label).unwrap_or_default()
+            ),
+            Change::GroupMember { op, group, key } => format!(
+                "{} group {} member {}",
+                sign(op),
+                murk_cli::show_untrusted(group),
+                label(key)
+            ),
+        }
+    }
+}
+
+/// `k`'s display name in `names`, matched by canonical key.
+fn name_of(names: &HashMap<String, String>, k: &str) -> Option<String> {
+    names
+        .iter()
+        .find(|(pk, _)| murk_cli::same_recipient(pk, k))
+        .map(|(_, n)| n.clone())
+        .filter(|n| !n.is_empty())
+}
+
+/// Who can read and who signed matter as much as the values: a forged vault
+/// that lists its author as a recipient shows up here, not in the values.
+fn structural_changes(
+    (old_vault, old): (&murk_cli::types::Vault, &murk_cli::types::Murk),
+    (new_vault, new): (&murk_cli::types::Vault, &murk_cli::types::Murk),
+) -> Vec<Change> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let canon = |k: &str| murk_cli::canonical_recipient(k).into_owned();
+    let mut changes = Vec::new();
+
+    let keys = |v: &murk_cli::types::Vault| -> BTreeMap<String, String> {
+        v.recipients.iter().map(|r| (canon(r), r.clone())).collect()
+    };
+    let (before, after) = (keys(old_vault), keys(new_vault));
+    for (k, r) in &after {
+        if !before.contains_key(k) {
+            changes.push(Change::Recipient {
+                op: Op::Added,
+                key: r.clone(),
+                name: name_of(&new.recipients, r),
+            });
+        }
+    }
+    for (k, r) in &before {
+        if !after.contains_key(k) {
+            changes.push(Change::Recipient {
+                op: Op::Removed,
+                key: r.clone(),
+                name: name_of(&old.recipients, r),
+            });
+        }
+    }
+
+    // A changed signing key for an existing recipient: the signer registry
+    // claims a different key for them than before.
+    let registry = |m: &BTreeMap<String, String>| -> BTreeMap<String, String> {
+        m.iter().map(|(pk, vk)| (canon(pk), vk.clone())).collect()
+    };
+    let (was, now) = (registry(&old.signers), registry(&new.signers));
+    for (pk, vk) in &now {
+        if was.get(pk).is_some_and(|old_vk| old_vk != vk) {
+            changes.push(Change::SigningKey {
+                key: pk.clone(),
+                fingerprint: murk_cli::signing::fingerprint(vk).unwrap_or_default(),
+            });
+        }
+    }
+
+    let signer = |m: &murk_cli::types::Murk| match &m.signature {
+        murk_cli::types::SignatureState::Signed { signer, .. } => Some(signer.clone()),
+        murk_cli::types::SignatureState::Unsigned => None,
+    };
+    let (from, to) = (signer(old), signer(new));
+    if from.as_deref().map(canon) != to.as_deref().map(canon) {
+        changes.push(Change::Signer { from, to });
+    }
+
+    if old_vault.policy != new_vault.policy {
+        changes.push(Change::Policy);
+    }
+
+    for (name, grant) in &new.grants {
+        match old.grants.get(name) {
+            Some(g) if g == grant => {}
+            was => changes.push(Change::Grant {
+                op: if was.is_some() {
+                    Op::Changed
+                } else {
+                    Op::Added
+                },
+                name: name.clone(),
+                key: Some(grant.pubkey.clone()),
+            }),
+        }
+    }
+    for name in old.grants.keys() {
+        if !new.grants.contains_key(name) {
+            changes.push(Change::Grant {
+                op: Op::Removed,
+                name: name.clone(),
+                key: None,
+            });
+        }
+    }
+
+    let groups: BTreeSet<&String> = new.groups.keys().chain(old.groups.keys()).collect();
+    for group in groups {
+        let before = old.groups.get(group).cloned().unwrap_or_default();
+        let after = new.groups.get(group).cloned().unwrap_or_default();
+        for m in after.iter().filter(|m| !before.contains(m)) {
+            changes.push(Change::GroupMember {
+                op: Op::Added,
+                group: group.clone(),
+                key: m.clone(),
+            });
+        }
+        for m in before.iter().filter(|m| !after.contains(m)) {
+            changes.push(Change::GroupMember {
+                op: Op::Removed,
+                group: group.clone(),
+                key: m.clone(),
+            });
+        }
+    }
+    changes
 }
