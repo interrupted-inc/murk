@@ -466,10 +466,12 @@ fn build_meta(
 }
 
 /// The signer registry (age pubkey → verifying key) a writer signs for
-/// `vault`'s current recipients: the loaded entries, overridden by the keys
-/// this machine pinned, plus the writer's own (see [`register_signer`]).
-/// Signing vouches for every entry, so a pinned key wins over whatever the
-/// loaded file claimed.
+/// `vault`'s current recipients. Signing vouches for every entry, so with a
+/// trust pin only the keys this machine pinned are written — an entry the
+/// loaded file claimed but this machine never confirmed (one another signer
+/// was not entitled to vouch for, say) is dropped rather than re-signed —
+/// plus the writer's own (see [`register_signer`]). Without a pin (trust from
+/// `MURK_TRUSTED_SIGNERS`) the loaded entries are carried forward as they are.
 pub(crate) fn vouched_registry(
     vault: &types::Vault,
     loaded: &BTreeMap<String, String>,
@@ -481,18 +483,19 @@ pub(crate) fn vouched_registry(
         .iter()
         .map(|r| crypto::canonical_recipient(r))
         .collect();
-    let mut signers: BTreeMap<String, String> = loaded
-        .iter()
-        .map(|(pk, vk)| (crypto::canonical_recipient(pk), vk.clone()))
+    let source = pin.map_or_else(
+        || {
+            loaded
+                .iter()
+                .map(|(pk, vk)| (crypto::canonical_recipient(pk), vk.clone()))
+                .collect()
+        },
+        |pin| pin.signers.clone(),
+    );
+    let mut signers: BTreeMap<String, String> = source
+        .into_iter()
         .filter(|(pk, _)| recipients.contains(pk))
         .collect();
-    if let Some(pin) = pin {
-        for (pk, vk) in &pin.signers {
-            if recipients.contains(pk) {
-                signers.insert(pk.clone(), vk.clone());
-            }
-        }
-    }
     register_signer(vault, &mut signers, writer);
     signers
 }
@@ -540,6 +543,34 @@ mod tests {
         );
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_save_never_re_signs_a_key_binding_this_machine_did_not_confirm() {
+        // Mallory's accepted vault claimed Bob → her own key, but this
+        // machine refused to pin it (she may not vouch for Bob). A routine
+        // save by a teammate must not sign that entry, or every machine that
+        // trusts the teammate would then believe it.
+        let (writer_secret, writer) = generate_keypair();
+        let (_, bob) = generate_keypair();
+        let writer_id = make_identity(&writer_secret);
+        let mut vault = signed_test_vault(&writer, &make_recipient(&writer));
+        vault.recipients.push(bob.clone());
+        let mallory_vk = make_identity(&generate_keypair().0)
+            .signing_key()
+            .unwrap()
+            .verifying_key();
+        let loaded = BTreeMap::from([(bob.clone(), mallory_vk)]);
+        let pin = crate::pins::TrustPin {
+            trusted: [writer.clone(), bob.clone()].into(),
+            ..Default::default()
+        };
+        let registry = vouched_registry(&vault, &loaded, Some(&pin), &writer_id);
+        assert!(!registry.contains_key(&bob), "{registry:?}");
+        assert!(
+            registry.contains_key(&writer),
+            "the writer's own key is registered"
+        );
     }
 
     #[test]

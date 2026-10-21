@@ -692,17 +692,30 @@ pub fn accepted_pin(
     // vault carrying them is accepted. A pinned key is never replaced, and is
     // kept after its owner is revoked so their old revisions still verify.
     let mut signers = prior_v2.map(|p| p.signers.clone()).unwrap_or_default();
-    if let (types::SignatureState::Signed { signer, .. }, Some(vk)) =
-        (loaded.signature, loaded.signer_vk)
-    {
-        signers
-            .entry(canonical_recipient(signer))
-            .or_insert_with(|| vk.to_string());
-    }
-    if signed {
+    if let types::SignatureState::Signed { signer, .. } = loaded.signature {
+        let signer = canonical_recipient(signer);
+        if let Some(vk) = loaded.signer_vk {
+            signers
+                .entry(signer.clone())
+                .or_insert_with(|| vk.to_string());
+        }
+        // Binding another recipient's key lets the signer speak as them, so
+        // it must not reach further than the signer could itself: an entry
+        // for a member of a group (as pinned, or in this vault) is believed
+        // only from a member of that group. Otherwise a trusted non-member
+        // could bind a member's name to their own key, then sign as that
+        // member to change the group.
+        let groups = canonical_groups(loaded.groups);
+        let pinned_groups = prior_v2.map(|p| &p.groups);
+        let may_bind = |pk: &str| {
+            groups
+                .values()
+                .chain(pinned_groups.into_iter().flat_map(BTreeMap::values))
+                .all(|members| !members.contains(pk) || members.contains(&signer))
+        };
         for (pk, vk) in loaded.registry {
             let pk = canonical_recipient(pk);
-            if trusted.contains(&pk) {
+            if trusted.contains(&pk) && (pk == signer || may_bind(&pk)) {
                 signers.entry(pk).or_insert_with(|| vk.clone());
             }
         }
@@ -1340,6 +1353,55 @@ mod tests {
         rewrite.registry = BTreeMap::from([(B.into(), vk_a.clone())]);
         let pin = accepted_pin(&rewrite.loaded(), Some(&pin), false);
         assert_eq!(pin.signers.get(B), Some(&vk_b));
+    }
+
+    #[test]
+    fn a_non_member_cannot_bind_a_group_members_key_then_sign_as_them() {
+        // Pinned: ops = [bob], Alice and Mallory trusted with confirmed keys,
+        // Bob has never signed. Revision 1 by Mallory changes no group but
+        // registers her own key under Bob's name; revision 2 is "signed by
+        // Bob" with that key and adds Mallory to ops.
+        let (vk_a, vk_m) = vks();
+        let ops = |members: &[&str]| {
+            BTreeMap::from([(
+                "ops".to_string(),
+                members.iter().map(|m| (*m).to_string()).collect::<Vec<_>>(),
+            )])
+        };
+        let mut start = Case::new(&[A, B, M], 1, A).with_vk(&vk_a);
+        start.groups = ops(&[B]);
+        start.registry = BTreeMap::from([(A.into(), vk_a.clone()), (M.into(), vk_m.clone())]);
+        let pin = pin_for(&start);
+
+        let mut bind = Case::new(&[A, B, M], 2, M).with_vk(&vk_m);
+        bind.groups = ops(&[B]);
+        bind.registry = BTreeMap::from([(M.into(), vk_m.clone()), (B.into(), vk_m.clone())]);
+        assert_eq!(verdict(&bind.loaded(), Some(&pin), None), Verdict::Trusted);
+        let pin = accepted_pin(&bind.loaded(), Some(&pin), false);
+        assert_eq!(pin.signers.get(B), None, "Mallory may not bind Bob's key");
+
+        // The self-add is refused, so nothing of it reaches the pin: the
+        // pinned membership stays ops = [bob].
+        let mut self_add = Case::new(&[A, B, M], 3, B).with_vk(&vk_m);
+        self_add.groups = ops(&[B, M]);
+        assert_eq!(
+            verdict(&self_add.loaded(), Some(&pin), None),
+            Verdict::Refused(Refusal::UnconfirmedSignerKey {
+                signer: B.into(),
+                vk: vk_m.clone()
+            })
+        );
+        assert_eq!(pin.groups, canonical_groups(&ops(&[B])));
+
+        // A member of ops may vouch for Bob's key.
+        let vk_b = crate::signing::age_signing_key(&[3u8; 32]).verifying_key();
+        let mut by_member = Case::new(&[A, B, M], 2, A).with_vk(&vk_a);
+        by_member.groups = ops(&[A, B]);
+        by_member.registry = BTreeMap::from([(B.into(), vk_b.clone())]);
+        let mut member_pin = pin_for(&start);
+        member_pin.groups = canonical_groups(&ops(&[A, B]));
+        let member_pin = accepted_pin(&by_member.loaded(), Some(&member_pin), false);
+        assert_eq!(member_pin.signers.get(B), Some(&vk_b));
     }
 
     #[test]
