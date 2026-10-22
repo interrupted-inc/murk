@@ -215,10 +215,10 @@ Three things to keep in mind:
   expiry too (`# murk-grant-expires:`, next to its trusted-signer lines), and
   murk enforces the earlier of the key file's and the vault's, so a copy of
   the key file stops working when its TTL ends whatever a later vault says. A
-  key file without that line (minted by an older murk, or a bare key line like
-  murk-action's `murk-key`) falls back to the vault's record, and murk warns
-  once that it should be re-minted with `--renew`; murk-action users bound CI
-  with its trusted-signers input. Age keys can't self-destruct, and old vault
+  key file without that line (minted by an older murk, or passed as a bare key
+  line) falls back to the vault's record, and murk warns once that it should
+  be re-minted with `--renew`. Pass the whole key file to murk-action (v1.2.0
+  and later) to keep its expiry in CI. Age keys can't self-destruct, and old vault
   versions stay readable in git, so a leaked grant key still decrypts history
   with raw age. Revoke the grant and rotate its secrets to close the exposure.
 - **The key is a bearer credential.** Whoever holds the key file has the

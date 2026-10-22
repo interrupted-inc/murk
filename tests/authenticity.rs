@@ -758,10 +758,10 @@ fn renewing_a_grant_extends_its_key_files_expiry() {
         .stdout("prod-db\n");
 }
 
-/// A key file without an expiry line (minted before murk wrote one, or the
-/// bare key line murk-action passes with its signers in
-/// MURK_TRUSTED_SIGNERS) still reads under the vault's record, warning once
-/// that the key file doesn't bound the grant.
+/// A key file without an expiry line (minted before murk wrote one, or a bare
+/// key line with its signers in MURK_TRUSTED_SIGNERS, as murk-action before
+/// v1.2.0 takes it) still reads under the vault's record, warning once that
+/// the key file doesn't bound the grant.
 #[test]
 fn a_grant_key_file_without_an_expiry_reads_with_one_warning() {
     let base = TempDir::new().unwrap();

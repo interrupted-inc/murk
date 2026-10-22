@@ -2,15 +2,14 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
 # CI grant demo — CI gets its own scoped key, which expires loudly.
-# `murk agent grant --out -` streams a grant key file to stdout. The file
-# starts with `# murk-trusted-signer:` lines, and murk-action takes only the
-# key line, so `grep AGE-SECRET-KEY` keeps that line on its way into the
-# Actions secret store. The CI job also gets MURK_TRUSTED_SIGNERS, because a
-# bare key names no signer. It carries no expiry line either, so each murk
-# command warns that only the vault's grant record bounds it. murk-action
-# then runs `murk export` and sees only the granted keys. The `gh` CLI is shimmed for the recording (it writes the
-# key to a local file) so the on-camera command is exactly what a reader
-# copies.
+# `murk agent grant --out -` streams a grant key file to stdout. The whole
+# file goes into the Actions secret store: murk-action v1.2.0 and later take
+# it as `murk-key`. Its `# murk-trusted-signer:` and `# murk-grant-expires:`
+# lines name who may sign the vault and when the key stops working, so CI
+# needs no MURK_TRUSTED_SIGNERS and murk prints no warning. murk-action then
+# runs `murk export` and sees only the granted keys. The `gh` CLI is shimmed
+# for the recording (it writes the key to a local file) so the on-camera
+# command is exactly what a reader copies.
 # The TTL is seconds here so the expiry fits on camera; use 30d in real life.
 
 Output demo/ci-grant.gif
@@ -40,8 +39,6 @@ Type `echo "postgres://prod:s3cr3t@db.example.com/app" | murk add PROD_DB --desc
 Enter
 Type `gh() { cat > "$DEMO_DIR/ci-secret"; echo "Set Actions secret MURK_KEY for acme/app"; }`
 Enter
-Type `CI_SIGNERS="$(murk trust --print-key 2>/dev/null)"`
-Enter
 Type `printf '.env\n.murk.lock\n' >> .gitignore`
 Enter
 Type `git add -A && git commit -qm "vault"`
@@ -63,7 +60,7 @@ Sleep 1s
 
 Type `murk agent grant --name ci-deploy --only DEPLOY_TOKEN --ttl 30s \`
 Enter
-Type `  --out - | grep AGE-SECRET-KEY | gh secret set MURK_KEY`
+Type `  --out - | gh secret set MURK_KEY`
 Enter
 Sleep 2500ms
 
@@ -76,7 +73,7 @@ Enter
 Sleep 1500ms
 
 Hide
-Type `unset MURK_KEY MURK_KEY_FILE && export MURK_KEY="$(cat "$DEMO_DIR/ci-secret")" MURK_TRUSTED_SIGNERS="$CI_SIGNERS"`
+Type `unset MURK_KEY MURK_KEY_FILE && export MURK_KEY="$(cat "$DEMO_DIR/ci-secret")"`
 Enter
 Type `export PS1="\n\[\e[35m\]ci \$\[\e[0m\] "`
 Enter
@@ -85,7 +82,7 @@ Enter
 Sleep 300ms
 Show
 
-Type "# murk-action runs murk export with this key and MURK_TRUSTED_SIGNERS."
+Type "# murk-action runs murk export with the whole key file."
 Enter
 Sleep 1s
 
@@ -93,7 +90,7 @@ Type "murk export"
 Enter
 Sleep 2500ms
 
-Type "# warn: a bare key line has no expiry; the vault record bounds it."
+Type "# No warning: the key file names its signers and its expiry."
 Enter
 Sleep 2s
 
@@ -119,7 +116,7 @@ Enter
 Sleep 2s
 
 Hide
-Type `cd "$DEMO_DIR" && unset MURK_KEY MURK_TRUSTED_SIGNERS && source .env`
+Type `cd "$DEMO_DIR" && unset MURK_KEY && source .env`
 Enter
 Type `export PS1="\n\[\e[94m\]dev \$\[\e[0m\] "`
 Enter
@@ -134,7 +131,7 @@ Sleep 1500ms
 
 Type `murk agent grant --name ci-deploy --only DEPLOY_TOKEN --ttl 30s \`
 Enter
-Type `  --renew --out - | grep AGE-SECRET-KEY | gh secret set MURK_KEY`
+Type `  --renew --out - | gh secret set MURK_KEY`
 Enter
 Sleep 2500ms
 
@@ -149,7 +146,7 @@ Enter
 Sleep 2s
 
 Hide
-Type `unset MURK_KEY MURK_KEY_FILE && export MURK_KEY="$(cat "$DEMO_DIR/ci-secret")" MURK_TRUSTED_SIGNERS="$CI_SIGNERS"`
+Type `unset MURK_KEY MURK_KEY_FILE && export MURK_KEY="$(cat "$DEMO_DIR/ci-secret")"`
 Enter
 Type `export PS1="\n\[\e[35m\]ci \$\[\e[0m\] "`
 Enter

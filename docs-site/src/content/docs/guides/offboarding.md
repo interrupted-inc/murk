@@ -115,8 +115,8 @@ can't reach any other copy: a key file written with `--out`, handed to the
 agent host, or made on another operator's machine. Such a copy still trusts
 the revoked teammate. If they sign a vault built from a copy from before the
 revoke, the agent reads the values they chose, until the expiry written into
-the key file. A key file without that line (minted by an older murk, or the
-bare key line that murk-action takes) has no such limit, because they can
+the key file. A key file without that line (minted by an older murk, or
+passed as a bare key line) has no such limit, because they can
 write a later expiry into the vault.
 
 So delete every other copy of each revoked grant's key file, including the

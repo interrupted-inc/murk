@@ -218,7 +218,12 @@ Hardware, plugin and `ssh-rsa` keys can't sign, so their writes are unsigned. A 
 
 [![GitHub Marketplace](https://img.shields.io/badge/GitHub%20Marketplace-murk--action-2ea44f?logo=github&logoColor=white)](https://github.com/marketplace/actions/murk-action)
 
-Use [murk-action](https://github.com/interrupted-sh/murk-action) to decrypt secrets in GitHub Actions workflows:
+Use [murk-action](https://github.com/interrupted-sh/murk-action) to decrypt secrets in GitHub Actions workflows. Give CI a scoped grant and store its whole key file as one secret:
+
+```bash
+murk agent grant --name ci-deploy --only DEPLOY_TOKEN --ttl 30d --out - | gh secret set MURK_KEY
+git commit -am "grant ci-deploy" && git push
+```
 
 ```yaml
 steps:
@@ -226,12 +231,12 @@ steps:
   - uses: interrupted-sh/murk-action@v1
     with:
       murk-key: ${{ secrets.MURK_KEY }}
-    env:
-      MURK_TRUSTED_SIGNERS: ${{ secrets.MURK_TRUSTED_SIGNERS }}
-  - run: ./deploy.sh  # all vault secrets are now in the environment
+  - run: ./deploy.sh  # DEPLOY_TOKEN is now in the environment
 ```
 
-A CI runner has no trust pin and nobody to run `murk trust`. `MURK_TRUSTED_SIGNERS` lists the people who write the vault, separated by commas or newlines. An age signer is `age1...:<verifying key>` and an `ssh-ed25519` signer is its public key line; each signer runs `murk trust --print-key` to get their entry (it goes to stdout, the fingerprint to stderr). A bare `age1...` key without its verifying key is an error. Store it as a secret next to `MURK_KEY`. With it set, an unsigned vault is refused even for a key that can't sign, and the variable never adds to what the machine's own pin trusts. The action has to pass the variable through to `murk`; if yours doesn't, run `murk exec` yourself with both variables in the step's `env:`.
+This needs murk-action v1.2.0 or later, which `@v1` gives. The key file carries its own trusted signers and expiry, so CI needs nothing else. Renew it before it expires: run the same command with `--renew`, then commit and push.
+
+A CI runner has no trust pin and nobody to run `murk trust`. Any other key, such as a bare key line or a full key, needs `MURK_TRUSTED_SIGNERS`: the people who write the vault, separated by commas or newlines. Pass it as murk-action's `trusted-signers` input, or in the step's `env:` on a murk-action older than v1.2.0. An age signer is `age1...:<verifying key>` and an `ssh-ed25519` signer is its public key line; each signer runs `murk trust --print-key` to get their entry (it goes to stdout, the fingerprint to stderr). A bare `age1...` key without its verifying key is an error. Store it as a secret next to `MURK_KEY`. With it set, an unsigned vault is refused even for a key that can't sign, and the variable never adds to what the machine's own pin trusts. A later step that runs `murk` itself needs both variables in its own `env:`. See the [CI/CD guide](https://murk.interrupted.sh/guides/cicd/).
 
 The organization was renamed from `interrupted-inc` to `interrupted-sh`. Change any workflow that still uses `interrupted-inc/murk-action` to `interrupted-sh/murk-action`.
 
