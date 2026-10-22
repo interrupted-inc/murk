@@ -146,7 +146,7 @@ fn init_existing_vault_ignores_dotenv() {
 
 /// The single key file `murk init` stored under `home`.
 fn stored_key_path(home: &std::path::Path) -> std::path::PathBuf {
-    let keys: Vec<_> = fs::read_dir(home.join(".config/murk/keys"))
+    let keys: Vec<_> = fs::read_dir(home.join(".config").join("murk").join("keys"))
         .unwrap()
         .map(|e| e.unwrap().path())
         .collect();
@@ -4307,7 +4307,7 @@ fn spawn_agent_exec_sh(dir: &TempDir, script: &str) -> std::process::Command {
 
 /// The operator's auto-discovered key file under `<dir>/.config/murk/keys`.
 fn stored_key_file(dir: &TempDir) -> std::path::PathBuf {
-    fs::read_dir(dir.path().join(".config/murk/keys"))
+    fs::read_dir(dir.path().join(".config").join("murk").join("keys"))
         .unwrap()
         .next()
         .unwrap()

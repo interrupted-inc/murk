@@ -1164,7 +1164,7 @@ impl<'f> World<'f> {
             Op::Grant { m } => {
                 let mach = self.machine(m.0);
                 let before = mach.vault();
-                let keys_dir = mach.home.join(".config/murk/agent-keys");
+                let keys_dir = mach.home.join(".config").join("murk").join("agent-keys");
                 let kept: BTreeSet<PathBuf> = fs::read_dir(&keys_dir)
                     .map(|d| d.map(|e| e.unwrap().path()).collect())
                     .unwrap_or_default();

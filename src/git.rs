@@ -431,6 +431,38 @@ fn head_is_unborn(
     Ok(out.status.success() && out.stdout.is_empty())
 }
 
+/// The real path of directory `dir` (symlinks, `..`, 8.3 short names and
+/// drive-letter case resolved), in the plain form every other spelling of it
+/// resolves to: on Windows `fs::canonicalize` returns a verbatim path
+/// (`\\?\C:\…`, `\\?\UNC\server\…`), which no lexical path ever equals, so
+/// the prefix is removed. `None` when `dir` does not exist.
+pub fn real_dir(dir: &Path) -> Option<PathBuf> {
+    let real = fs::canonicalize(dir).ok()?;
+    if !cfg!(windows) {
+        return Some(real);
+    }
+    let s = real.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        return Some(PathBuf::from(format!(r"\\{rest}")));
+    }
+    Some(
+        s.strip_prefix(r"\\?\")
+            .map_or_else(|| real.clone(), PathBuf::from),
+    )
+}
+
+/// `path` with its directory replaced by [`real_dir`] and its file name kept
+/// as given (a symlinked file is not resolved); `path` itself when the
+/// directory does not exist.
+pub fn real_parent(path: &Path) -> PathBuf {
+    match (path.parent(), path.file_name()) {
+        (Some(dir), Some(name)) => {
+            real_dir(dir).map_or_else(|| path.to_path_buf(), |d| d.join(name))
+        }
+        _ => path.to_path_buf(),
+    }
+}
+
 /// The working tree containing `path`: the nearest ancestor holding a `.git`
 /// entry. `None` when `path` is not inside a checkout.
 ///

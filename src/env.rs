@@ -400,6 +400,32 @@ fn absolute_vault_path(vault_path: &str) -> Result<std::path::PathBuf, String> {
         .join(p))
 }
 
+/// The spelling of directory `dir` that key file names are computed from. On
+/// Unix the working directory is already the real path (the kernel returns
+/// it), so this is `dir` as given, and a symlinked `--vault` directory keeps
+/// its own key. On Windows one directory has many spellings — 8.3 short names
+/// (`RUNNER~1`), drive-letter case, `/` or `\` — and the working directory
+/// keeps whichever one was used to enter it, while git runs the merge driver
+/// from its own canonical one; the real path (see [`crate::git::real_dir`])
+/// makes every spelling name the same key.
+fn key_naming_dir(dir: &Path) -> std::path::PathBuf {
+    if cfg!(windows) {
+        crate::git::real_dir(dir).unwrap_or_else(|| dir.to_path_buf())
+    } else {
+        dir.to_path_buf()
+    }
+}
+
+/// The path that names `abs`'s key files: its directory as
+/// [`key_naming_dir`] spells it, and its file name as given — a symlinked
+/// vault file still never borrows its target's key.
+fn key_naming_path(abs: &Path) -> std::path::PathBuf {
+    match (abs.parent(), abs.file_name()) {
+        (Some(dir), Some(name)) => key_naming_dir(dir).join(name),
+        _ => abs.to_path_buf(),
+    }
+}
+
 /// Truncated SHA-256 of an absolute vault path — the filename a vault's key is
 /// stored under, in both `keys/` and `agent-keys/`.
 fn vault_hash(abs_path: &Path) -> String {
@@ -415,19 +441,20 @@ fn vault_hash(abs_path: &Path) -> String {
 
 /// Compute the key file path for a vault: `~/.config/murk/keys/<hash>`.
 ///
-/// This is where `murk init` *writes* a key, keyed on the vault's own path.
-/// Reads go through [`discover_key_file`], which also accepts the key stored
-/// for the same vault in a sibling git worktree.
+/// This is where `murk init` *writes* a key, keyed on the vault's own path
+/// (see [`key_naming_path`]). Reads go through [`discover_key_file`], which
+/// also accepts the key stored for the same vault in a sibling git worktree.
 pub fn key_file_path(vault_path: &str) -> Result<std::path::PathBuf, String> {
-    let abs_path = absolute_vault_path(vault_path)?;
+    let abs_path = key_naming_path(&absolute_vault_path(vault_path)?);
     Ok(dirs_path()?.join(vault_hash(&abs_path)))
 }
 
 /// Find a stored key for `vault_path`, or `None` when the operator has none.
 ///
-/// Checks this checkout's own `keys/<hash>` first, then the same vault path in
-/// every sibling git worktree of the same repository — main checkout first,
-/// then linked worktrees in a stable order.
+/// Checks this checkout's own `keys/<hash>` first (on Windows, also under the
+/// path as spelled, where murk before 0.14 stored it), then the same vault
+/// path in every sibling git worktree of the same repository — main checkout
+/// first, then linked worktrees in a stable order.
 ///
 /// The fallback exists because the hash covers an absolute path, and a worktree
 /// puts the very same vault at a different one. The committed vault travels
@@ -443,15 +470,20 @@ pub fn discover_key_file(vault_path: &str) -> Option<std::path::PathBuf> {
     if own.exists() {
         return Some(own);
     }
-
-    let abs_path = absolute_vault_path(vault_path).ok()?;
-    let root = crate::git::worktree_root(abs_path.parent()?)?;
-    let relative = abs_path.strip_prefix(&root).ok()?;
+    let as_spelled = absolute_vault_path(vault_path).ok()?;
     let keys_dir = dirs_path().ok()?;
+    let legacy = keys_dir.join(vault_hash(&as_spelled));
+    if legacy != own && legacy.exists() {
+        return Some(legacy);
+    }
+
+    let abs_path = key_naming_path(&as_spelled);
+    let root = key_naming_dir(&crate::git::worktree_root(abs_path.parent()?)?);
+    let relative = abs_path.strip_prefix(&root).ok()?;
 
     crate::git::sibling_worktrees(&root)
         .into_iter()
-        .map(|worktree| keys_dir.join(vault_hash(&worktree.join(relative))))
+        .map(|worktree| keys_dir.join(vault_hash(&key_naming_path(&worktree.join(relative)))))
         .find(|key| key.exists())
 }
 
@@ -463,7 +495,7 @@ pub fn discover_key_file(vault_path: &str) -> Option<std::path::PathBuf> {
 /// (which only looks up `keys/<vault-hash>`). The vault hash prefix keeps a
 /// grant named the same across two vaults from colliding.
 pub fn agent_key_file_path(vault_path: &str, name: &str) -> Result<std::path::PathBuf, String> {
-    let short_hash = vault_hash(&absolute_vault_path(vault_path)?);
+    let short_hash = vault_hash(&key_naming_path(&absolute_vault_path(vault_path)?));
     Ok(agent_keys_dir()?.join(format!("{short_hash}-{name}")))
 }
 
@@ -1802,13 +1834,16 @@ mod tests {
 
         let keys_root = home.path().join(".config").join("murk").join("keys");
         let agent_root = home.path().join(".config").join("murk").join("agent-keys");
-        let hash = vault_hash(&abs);
+        let hash = vault_hash(&key_naming_path(&abs));
 
         assert_eq!(resolved_rel.unwrap(), abs);
         assert_eq!(resolved_abs.unwrap(), abs);
         assert_eq!(key_rel.unwrap(), keys_root.join(&hash));
         assert_eq!(key_abs.unwrap(), keys_root.join(&hash));
-        assert_eq!(key_other.unwrap(), keys_root.join(vault_hash(&other)));
+        assert_eq!(
+            key_other.unwrap(),
+            keys_root.join(vault_hash(&key_naming_path(&other)))
+        );
         assert_ne!(vault_hash(&other), hash);
         assert_eq!(
             agent_rel.unwrap(),
@@ -1819,6 +1854,68 @@ mod tests {
             key_link.unwrap(),
             key_real.unwrap(),
             "a symlinked vault must not resolve to its target's key file"
+        );
+    }
+
+    /// Windows: every spelling of a vault's directory names the same key, the
+    /// one git's merge driver computes from its canonical working directory,
+    /// and a key stored under the spelling used before 0.14 is still found.
+    /// Only Windows has these spellings; the body is compiled everywhere.
+    #[test]
+    fn every_spelling_of_a_windows_vault_dir_finds_the_same_key() {
+        if !cfg!(windows) {
+            return;
+        }
+        let _env = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let prev_home = std::env::var_os("HOME");
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        let dir = project.path().to_str().unwrap().to_string();
+        let (drive, rest) = dir.split_at(1);
+        let spellings = [
+            format!(r"{}{rest}\.murk", drive.to_ascii_uppercase()),
+            format!(r"{}{rest}\.murk", drive.to_ascii_lowercase()),
+            format!("{dir}/.murk").replace('\\', "/"),
+        ];
+        let keys: Vec<_> = spellings
+            .iter()
+            .map(|s| key_file_path(s).unwrap())
+            .collect();
+
+        // A key stored by murk before 0.14 under the lowercase spelling.
+        let legacy = home
+            .path()
+            .join(".config")
+            .join("murk")
+            .join("keys")
+            .join(vault_hash(Path::new(&spellings[1])));
+        let found_before = discover_key_file(&spellings[1]);
+        if legacy != keys[1] {
+            std::fs::write(&legacy, "AGE-SECRET-KEY-TEST").unwrap();
+        }
+        let found_legacy = discover_key_file(&spellings[1]);
+
+        unsafe {
+            match &prev_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+
+        assert_eq!(keys[0], keys[1]);
+        assert_eq!(keys[0], keys[2]);
+        assert_eq!(found_before, None);
+        assert_eq!(
+            found_legacy,
+            Some(if legacy == keys[1] {
+                keys[1].clone()
+            } else {
+                legacy
+            })
         );
     }
 

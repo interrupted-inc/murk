@@ -168,25 +168,26 @@ fn pin_paths(vault_path: &str) -> Vec<PathBuf> {
             Err(_) => return Vec::new(),
         }
     };
-    let resolved = match (abs.parent(), abs.file_name()) {
-        (Some(dir), Some(name)) => {
-            std::fs::canonicalize(dir).map_or_else(|_| abs.clone(), |d| d.join(name))
-        }
-        _ => abs.clone(),
-    };
+    // The vault's directory resolved to its real path, in the plain form (see
+    // `git::real_dir`): on Windows, `fs::canonicalize`'s verbatim `\\?\` form
+    // matched no other spelling, so neither the work-tree root nor a sibling
+    // checkout was ever found from it.
+    let resolved = crate::git::real_parent(&abs);
     let mut identities = Vec::new();
     if let Some(repo) = crate::git::repository_vault_identity(&resolved) {
         identities.push(repo);
     }
     // The same vault in a sibling worktree, pinned by path before the
-    // repository existed (or by murk ≤ 0.13): accept that pin too.
+    // repository existed (or by murk ≤ 0.13): accept that pin too, under the
+    // same real-path spelling it was written with (git records a sibling's
+    // path in its own spelling, `/`-separated on Windows).
     let siblings: Vec<PathBuf> = crate::git::worktree_root(resolved.parent().unwrap_or(&resolved))
         .and_then(|root| {
             let relative = resolved.strip_prefix(&root).ok()?.to_path_buf();
             Some(
                 crate::git::sibling_worktrees(&root)
                     .into_iter()
-                    .map(|w| w.join(&relative))
+                    .map(|w| crate::git::real_parent(&w.join(&relative)))
                     .collect(),
             )
         })

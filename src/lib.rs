@@ -357,11 +357,16 @@ pub fn resolve_vault_path(arg: &str) -> String {
         return arg.to_string();
     }
 
-    // CWD is canonical; compare HOME the same way so a symlinked HOME still
-    // counts as a boundary.
+    // Compare the working directory and HOME by their real paths (see
+    // `git::real_dir`), so a symlinked HOME still counts as a boundary. On
+    // Unix the working directory is already real; on Windows it keeps the
+    // spelling it was entered by (an 8.3 short name, say), and a canonical
+    // HOME is a verbatim `\\?\` path, so neither would ever match HOME.
+    let cwd = crate::git::real_dir(&cwd).unwrap_or(cwd);
     let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
-        .map(|h| std::fs::canonicalize(&h).unwrap_or(h));
+        .map(|h| crate::git::real_dir(&h).unwrap_or(h));
     let is_boundary =
         |dir: &Path| dir.join(".git").exists() || home.as_deref().is_some_and(|h| dir == h);
     let Some(boundary) = cwd.ancestors().find(|dir| is_boundary(dir)) else {

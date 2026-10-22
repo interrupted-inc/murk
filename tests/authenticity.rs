@@ -40,7 +40,7 @@ impl Machine {
 
     /// The age key `murk init` stored for this person (there is one).
     fn key_file(&self) -> PathBuf {
-        let dir = self.home.join(".config/murk/keys");
+        let dir = self.home.join(".config").join("murk").join("keys");
         fs::read_dir(dir).unwrap().next().unwrap().unwrap().path()
     }
 
@@ -890,7 +890,7 @@ fn diff_refuses_a_forged_revision() {
     // A revision is checked against the trust pin, never recorded in it.
     let pins = || {
         let mut all: Vec<(PathBuf, Vec<u8>)> =
-            fs::read_dir(alice.home.join(".config/murk/signer-pins"))
+            fs::read_dir(alice.home.join(".config").join("murk").join("signer-pins"))
                 .unwrap()
                 .map(|e| {
                     let path = e.unwrap().path();
@@ -1239,13 +1239,14 @@ fn github_onboarding_extends_trust_to_the_new_member() {
         .stdout("prod-db\n");
     let vault: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(repo.join(".murk")).unwrap()).unwrap();
-    let pin: serde_json::Value = fs::read_dir(carol.home.join(".config/murk/signer-pins"))
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .filter(|p| p.extension().is_some_and(|x| x == "json"))
-        .map(|p| serde_json::from_str(&fs::read_to_string(p).unwrap()).unwrap())
-        .find(|p: &serde_json::Value| p["vault_id"] == vault["vault_id"])
-        .expect("Carol's pin for the team vault");
+    let pin: serde_json::Value =
+        fs::read_dir(carol.home.join(".config").join("murk").join("signer-pins"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|x| x == "json"))
+            .map(|p| serde_json::from_str(&fs::read_to_string(p).unwrap()).unwrap())
+            .find(|p: &serde_json::Value| p["vault_id"] == vault["vault_id"])
+            .expect("Carol's pin for the team vault");
     let trusted: Vec<&str> = pin["trusted"]
         .as_array()
         .unwrap()
@@ -1615,7 +1616,7 @@ fn identity_forgery() -> String {
 
 /// Where `who`'s machine keeps its trust pins.
 fn pin_dir(who: &Machine) -> PathBuf {
-    who.home.join(".config/murk/signer-pins")
+    who.home.join(".config").join("murk").join("signer-pins")
 }
 
 /// The pin files on `who`'s machine.
@@ -1896,7 +1897,7 @@ fn generation_of(vault: &[u8]) -> u64 {
 fn edit_pin(who: &Machine, repo: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
     let vault: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(repo.join(".murk")).unwrap()).unwrap();
-    let path = fs::read_dir(who.home.join(".config/murk/signer-pins"))
+    let path = fs::read_dir(who.home.join(".config").join("murk").join("signer-pins"))
         .unwrap()
         .map(|e| e.unwrap().path())
         .find(|p| {

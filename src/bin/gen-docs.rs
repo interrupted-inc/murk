@@ -133,7 +133,7 @@ const ENV_GROUPS: &[(&str, &[EnvVar])] = &[
             },
             EnvVar {
                 name: "HOME, then USERPROFILE",
-                summary: "Base directory for murk state: `~/.config/murk/keys`, `agent-keys` and `signer-pins`. murk reads `HOME` and falls back to `USERPROFILE` on any platform. `murk completion install` and `murk circle authorize ssh:` need `HOME`.",
+                summary: "Base directory for murk state: `~/.config/murk/keys`, `agent-keys` and `signer-pins`; outside a git checkout, also where the search for `.murk` in parent directories stops. murk reads `HOME` and falls back to `USERPROFILE` on any platform. `murk completion install` and `murk circle authorize ssh:` need `HOME`.",
             },
         ],
     ),
