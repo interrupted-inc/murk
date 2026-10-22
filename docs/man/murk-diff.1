@@ -1,25 +1,27 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH diff 1  "diff " 
+.TH murk-diff 1  "diff " 
 .SH NAME
-diff \- Show secret changes vs a git ref
+murk\-diff \- Show secret and access changes vs a git ref (experimental)
 .SH SYNOPSIS
 \fBmurk diff\fR [\fB\-\-show\-values\fR] [\fB\-\-json\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIGIT_REF\fR] 
 .SH DESCRIPTION
-Show secret changes vs a git ref
+Show secret and access changes vs a git ref (experimental)
+.PP
+Lists recipients, signer, signing keys, policy, grants and group members that changed, then the secrets. The vault at the ref is verified first; a revision this machine\*(Aqs trust pin refuses is never shown.
 .SH OPTIONS
 .TP
 \fB\-\-show\-values\fR
 Show actual values (not just key names)
 .TP
 \fB\-\-json\fR
-Output as JSON
+Output JSON: {"secrets": [...], "changes": [...]} (values only with \-\-show\-values)
 .TP
 \fB\-\-vault\fR \fI<VAULT>\fR [default: .murk]
 Vault filename
 .TP
 \fB\-h\fR, \fB\-\-help\fR
-Print help
+Print help (see a summary with \*(Aq\-h\*(Aq)
 .TP
 [\fIGIT_REF\fR] [default: HEAD]
 Git ref to compare against

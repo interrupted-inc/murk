@@ -45,6 +45,10 @@ for a worktree created by an agent harness, a `git worktree add` in a
 post-checkout hook, or a bare-repo layout where *every* checkout is a linked
 worktree and there is no "main" one.
 
+You do not need `murk init` in a worktree. If you run it, it finds the key
+stored for the vault in a sibling checkout and reuses it. It never replaces
+a stored key.
+
 ## Which checkouts count
 
 murk stores your key under a hash of the vault's absolute path, which is what
@@ -54,7 +58,7 @@ stored for that vault in a sibling checkout of the same repository.
 
 "Sibling" here means what git says it means. murk reads git's own worktree
 metadata — never a `git` subprocess — and verifies the relationship in both
-directions: your current directory has to be a checkout the repository
+directions: the vault's checkout has to be one the repository
 records, and the checkout whose key is used has to point back at the same
 repository. A `.git` entry is just a file that any local process can write, so
 a directory that merely *claims* to be a worktree resolves to no key at all
@@ -63,13 +67,40 @@ and murk fails closed.
 The practical version: real worktrees of your repo work, copies of the vault
 elsewhere on disk don't.
 
-## Agents get no free ride
+## Trust follows the repository, not the checkout
 
-Discovery of a stored key is disabled entirely in strict mode
-(`MURK_STRICT=1`) and in agent context (`MURK_AGENT=1`), worktree or not. An
-agent working in a fresh worktree still has to present its own key — normally
-a scoped grant — or fail closed. That is deliberate: the convenience here is
-for you, not for a process running as you.
+murk also records which signers it trusts for a vault (the [trust
+pin](/concepts/recipients-signatures/#trusting-a-signer)). That pin is keyed
+on the repository's common git directory and the vault's path in the
+checkout, so every worktree of a repo shares one. Run `murk trust` in any
+worktree, and the others already trust the vault. A fresh worktree of a
+repo you've already trusted needs nothing.
+
+The save counter the pin keeps is tracked per branch. Checking out an older
+branch in another worktree isn't a rollback: murk compares the vault with the
+highest counter accepted on the branch that worktree has checked out. On a
+detached HEAD, or a branch this machine has never accepted (reviewing a PR
+branch, say), there is no counter check, so murk accepts a signed vault from
+a trusted signer whatever its counter.
+
+The set of trusted signers is shared too. Apart from `murk trust` and your
+own saves, only loading a vault newer than everything this machine accepted,
+on a branch it accepted before (or outside git), changes it. Loading an older
+branch, a detached HEAD or a PR branch never adds a signer. So reviewing a PR that authorizes someone doesn't make this machine
+trust them: that happens only once the change reaches a branch this machine
+accepted, or you run `murk trust`.
+
+## Agents need their own key
+
+Discovery of a stored key is disabled entirely in strict mode and in agent
+context, worktree or not. Either is on when `MURK_STRICT` or `MURK_AGENT` is
+set to anything except empty, `0`, `false`, `no` or `off`, in any letter
+case. A typo or `on` also turns it on. An agent working in a fresh
+worktree has to present its own key, normally a scoped grant, or fail closed.
+
+This is a default, not a sandbox. A process running as you can still read
+`~/.config/murk/keys/` directly. To contain an agent, run it where it cannot
+read that directory.
 
 See [AI agents & MCP](/guides/ai-agents-mcp/) for issuing an agent a scoped
 grant to use in its worktree.

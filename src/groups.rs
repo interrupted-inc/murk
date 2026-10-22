@@ -14,6 +14,7 @@
 //! and `me` (a personal scoped value, encrypted to the caller only).
 
 use crate::error::MurkError;
+use crate::recipients::same_recipient;
 use crate::types;
 
 /// Destination tier for a secret: where a written value lives and who can
@@ -81,14 +82,21 @@ pub fn create_group(
 
 /// Delete a group. Refuses if any secret is still assigned to it — the caller
 /// should reassign or remove those secrets first, so no data is silently
-/// orphaned (group ciphertext would become unreadable).
+/// orphaned (group ciphertext would become unreadable) — and refuses an
+/// operator who is not a member, like every other membership change.
 pub fn delete_group(
     vault: &types::Vault,
     murk: &mut types::Murk,
     name: &str,
+    operator_pubkey: &str,
 ) -> Result<(), MurkError> {
-    if !murk.groups.contains_key(name) {
+    let Some(members) = murk.groups.get(name) else {
         return Err(MurkError::Group(format!("group not found: {name}")));
+    };
+    if !members.is_empty() && !members.iter().any(|pk| pk == operator_pubkey) {
+        return Err(MurkError::Group(format!(
+            "you must be a member of group \"{name}\" to delete it"
+        )));
     }
     let assigned: Vec<&str> = vault
         .secrets
@@ -114,8 +122,8 @@ pub fn resolve_member(
     murk: &types::Murk,
     spec: &str,
 ) -> Result<String, MurkError> {
-    if vault.recipients.iter().any(|pk| pk == spec) {
-        return Ok(spec.to_string());
+    if let Some(pk) = crate::recipients::find_recipient(vault, spec) {
+        return Ok(pk.clone());
     }
     let matched: Vec<&String> = murk
         .recipients
@@ -125,7 +133,8 @@ pub fn resolve_member(
         .collect();
     match matched.as_slice() {
         [] => Err(MurkError::Group(format!(
-            "no recipient matches \"{spec}\" — authorize them first with `murk circle authorize`"
+            "no recipient matches \"{}\" — authorize them first with `murk circle authorize`",
+            crate::validate::show_key(spec)
         ))),
         [pk] => Ok((*pk).clone()),
         _ => Err(MurkError::Group(format!(
@@ -137,24 +146,30 @@ pub fn resolve_member(
 
 /// Add a member to a group. The group must exist, the operator must already be
 /// a member (so they can re-encrypt the group's secrets), and the new member
-/// must be an authorized recipient. Returns true if the member was added (false
-/// if already present).
+/// must be an authorized recipient that is not an agent grant: a grant reads
+/// exactly its `--only` keys, and a group would widen that silently. Returns
+/// true if the member was added (false if already present).
 pub fn add_member(
     murk: &mut types::Murk,
     name: &str,
     member_pubkey: &str,
     operator_pubkey: &str,
 ) -> Result<bool, MurkError> {
+    if let Some((grant, _)) = murk.grants.iter().find(|(_, g)| g.pubkey == member_pubkey) {
+        return Err(MurkError::Group(format!(
+            "agent grant {grant} can't join a group — a grant reads only its --only keys; mint a grant with the keys it needs instead"
+        )));
+    }
     let members = murk
         .groups
         .get_mut(name)
         .ok_or_else(|| MurkError::Group(format!("group not found: {name}")))?;
-    if !members.iter().any(|pk| pk == operator_pubkey) {
+    if !is_member(members, operator_pubkey) {
         return Err(MurkError::Group(format!(
             "you must be a member of group \"{name}\" to modify it"
         )));
     }
-    if members.iter().any(|pk| pk == member_pubkey) {
+    if is_member(members, member_pubkey) {
         return Ok(false);
     }
     members.push(member_pubkey.to_string());
@@ -174,21 +189,27 @@ pub fn remove_member(
         .groups
         .get_mut(name)
         .ok_or_else(|| MurkError::Group(format!("group not found: {name}")))?;
-    if !members.iter().any(|pk| pk == operator_pubkey) {
+    if !is_member(members, operator_pubkey) {
         return Err(MurkError::Group(format!(
             "you must be a member of group \"{name}\" to modify it"
         )));
     }
-    if !members.iter().any(|pk| pk == member_pubkey) {
+    if !is_member(members, member_pubkey) {
         return Ok(false);
     }
-    if members.len() == 1 {
+    if members.iter().all(|pk| same_recipient(pk, member_pubkey)) {
         return Err(MurkError::Group(format!(
             "cannot remove the last member of group \"{name}\" — delete the group instead"
         )));
     }
-    members.retain(|pk| pk != member_pubkey);
+    members.retain(|pk| !same_recipient(pk, member_pubkey));
     Ok(true)
+}
+
+/// Whether `pubkey` is in `members` under any spelling of the key (a legacy
+/// member entry may carry an SSH comment or be an uppercase age key).
+pub(crate) fn is_member(members: &[String], pubkey: &str) -> bool {
+    members.iter().any(|pk| same_recipient(pk, pubkey))
 }
 
 #[cfg(test)]
@@ -248,7 +269,7 @@ mod tests {
         create_group(&mut murk, "prod", "age1alice").unwrap();
 
         // No secrets yet — delete works.
-        delete_group(&vault, &mut murk, "prod").unwrap();
+        delete_group(&vault, &mut murk, "prod", "age1alice").unwrap();
 
         // Re-create and assign a secret; now delete is refused.
         create_group(&mut murk, "prod", "age1alice").unwrap();
@@ -259,7 +280,19 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert!(delete_group(&vault, &mut murk, "prod").is_err());
+        assert!(delete_group(&vault, &mut murk, "prod", "age1alice").is_err());
+        // A non-member may not delete it either, even once it is empty.
+        vault.secrets.clear();
+        assert!(delete_group(&vault, &mut murk, "prod", "age1bob").is_err());
+    }
+
+    #[test]
+    fn delete_requires_membership() {
+        let vault = empty_vault();
+        let mut murk = empty_murk();
+        create_group(&mut murk, "prod", "age1alice").unwrap();
+        assert!(delete_group(&vault, &mut murk, "prod", "age1bob").is_err());
+        assert!(murk.groups.contains_key("prod"));
     }
 
     #[test]
@@ -277,5 +310,41 @@ mod tests {
         );
         assert_eq!(resolve_member(&vault, &murk, "alice").unwrap(), "age1alice");
         assert!(resolve_member(&vault, &murk, "nobody").is_err());
+    }
+
+    /// An older murk stored keys as typed, so a group may list its member
+    /// under another spelling (uppercase age, SSH comment) than the identity's
+    /// canonical pubkey. That member can still manage the group and add
+    /// secrets to it, and removing a member removes every spelling.
+    #[test]
+    fn group_membership_matches_legacy_key_spellings() {
+        let alice = "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p";
+        let bob = format!("{} bob@laptop", crate::testutil::SSH_ED25519_PK);
+        let mut murk = empty_murk();
+        murk.groups
+            .insert("ops".into(), vec![alice.to_ascii_uppercase(), bob.clone()]);
+
+        assert!(add_member(&mut murk, "ops", "age1carol", alice).unwrap());
+        assert!(!add_member(&mut murk, "ops", crate::testutil::SSH_ED25519_PK, alice).unwrap());
+        assert!(remove_member(&mut murk, "ops", crate::testutil::SSH_ED25519_PK, alice).unwrap());
+        assert_eq!(
+            murk.groups["ops"],
+            vec![alice.to_ascii_uppercase(), "age1carol".to_string()]
+        );
+
+        let mut vault = empty_vault();
+        crate::add_grouped_secret(
+            &mut vault,
+            &mut murk,
+            "KEY",
+            "v",
+            None,
+            None,
+            "ops",
+            &[],
+            alice,
+        )
+        .unwrap();
+        assert!(murk.grouped["KEY"].contains_key("ops"));
     }
 }

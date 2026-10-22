@@ -1,26 +1,26 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH policy 1  "policy " 
+.TH murk-policy 1  "policy " 
 .SH NAME
-policy \- Manage the agent access policy
+murk\-policy \- Manage the agent access policy (experimental)
 .SH SYNOPSIS
 \fBmurk policy\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
 .SH DESCRIPTION
-Manage the agent access policy
+Manage the agent access policy (experimental)
 .SH OPTIONS
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help
 .SH SUBCOMMANDS
 .TP
-policy\-show(1)
+murk\-policy\-show(1)
 Show the agent access policy (works without a key)
 .TP
-policy\-set(1)
+murk\-policy\-set(1)
 Set the agent allow\-list: agents may only receive secrets carrying one of these tags
 .TP
-policy\-clear(1)
+murk\-policy\-clear(1)
 Remove the policy — agent mode becomes unrestricted again
 .TP
-policy\-help(1)
+murk\-policy\-help(1)
 Print this message or the help of the given subcommand(s)

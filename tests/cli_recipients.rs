@@ -32,12 +32,65 @@ fn stdout_json(cmd: &mut assert_cmd::Command) -> serde_json::Value {
     serde_json::from_slice(&out.get_output().stdout).unwrap()
 }
 
-fn stderr_of(cmd: &mut assert_cmd::Command) -> String {
-    let out = cmd.output().unwrap();
-    String::from_utf8(out.stderr).unwrap()
+/// A valid `ssh-ed25519` public key, deterministic per `seed`, with no comment.
+fn ssh_pubkey(seed: u8) -> String {
+    use base64::Engine;
+    let point = ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
+        .verifying_key()
+        .to_bytes();
+    let mut blob = Vec::new();
+    for field in [b"ssh-ed25519".as_slice(), point.as_slice()] {
+        blob.extend((field.len() as u32).to_be_bytes());
+        blob.extend(field);
+    }
+    format!(
+        "ssh-ed25519 {}",
+        base64::engine::general_purpose::STANDARD.encode(blob)
+    )
+}
+
+fn vault_json(dir: &TempDir) -> serde_json::Value {
+    serde_json::from_str(&fs::read_to_string(dir.path().join("test.murk")).unwrap()).unwrap()
 }
 
 // ── circle ──
+
+/// A private key pasted where a public key or member belongs is refused
+/// without being echoed into the terminal or a CI log.
+#[test]
+fn private_key_given_as_recipient_is_never_echoed() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    let secret = {
+        use age::secrecy::ExposeSecret;
+        age::x25519::Identity::generate()
+            .to_string()
+            .expose_secret()
+            .to_string()
+    };
+    murk(&dir, &key)
+        .args(["group", "create", "ops", "--vault", "test.murk"])
+        .assert()
+        .success();
+    let refusals: [&[&str]; 3] = [
+        &["circle", "authorize", &secret],
+        &["circle", "revoke", &secret],
+        &["group", "add", "ops", "--member", &secret],
+    ];
+    for args in refusals {
+        let out = murk(&dir, &key)
+            .args(args)
+            .args(["--vault", "test.murk"])
+            .assert()
+            .failure();
+        let stderr = String::from_utf8_lossy(&out.get_output().stderr).to_string();
+        assert!(stderr.contains("private key"), "{args:?}: {stderr}");
+        assert!(
+            !stderr.contains("AGE-SECRET-KEY-1"),
+            "{args:?} echoed the key: {stderr}"
+        );
+    }
+}
 
 /// `ssh:` alone reads `~/.ssh/id_ed25519.pub`, and a `~` in an explicit path
 /// expands to the same `HOME`.
@@ -164,6 +217,343 @@ fn circle_consolidates_keys_sharing_a_name() {
     let bob_lines: Vec<&str> = stdout.lines().filter(|l| l.contains("bob")).collect();
     assert_eq!(bob_lines.len(), 1, "{stdout}");
     assert!(bob_lines[0].contains("(2 keys)"), "{stdout}");
+}
+
+/// The same SSH key, raw with a comment, via `ssh:` with another comment, or
+/// bare, is one recipient: it is stored once as `type base64`, its comment
+/// becomes the display name, and adding it again in any form is refused.
+#[test]
+fn authorize_refuses_the_same_ssh_key_in_another_form() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    let bob = ssh_pubkey(1);
+    authorize(&dir, &key, &format!("{bob} bob@laptop"), None);
+
+    let circle = stdout_json(murk(&dir, &key).args(["circle", "--json", "--vault", "test.murk"]));
+    let stored: Vec<_> = circle
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["pubkey"].as_str().unwrap().starts_with("ssh-"))
+        .collect();
+    assert_eq!(
+        stored,
+        [&serde_json::json!({"pubkey": bob, "name": "bob@laptop", "is_self": false})]
+    );
+
+    let pub_file = dir.path().join("bob.pub");
+    fs::write(&pub_file, format!("{bob} bob@desktop\n")).unwrap();
+    for twin in [format!("ssh:{}", pub_file.display()), bob.clone()] {
+        murk(&dir, &key)
+            .args(["circle", "authorize", &twin, "--vault", "test.murk"])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("already a recipient"));
+    }
+    assert_eq!(vault_json(&dir)["recipients"].as_array().unwrap().len(), 2);
+}
+
+/// Revoking your own key (by pubkey in any spelling, or by your display name)
+/// is refused before anything is written: the vault stays byte-identical and
+/// signed. Revoking someone else still works.
+#[test]
+fn revoke_refuses_your_own_key() {
+    let dir = TempDir::new().unwrap();
+    let (key, alice) = init_vault(&dir);
+    let bob = age_pubkey();
+    authorize(&dir, &key, &bob, Some("bob"));
+    let path = dir.path().join("test.murk");
+    let before = fs::read(&path).unwrap();
+
+    for spec in [alice.clone(), alice.to_ascii_uppercase(), "testuser".into()] {
+        for extra in [&[][..], &["--rotate", "--force"][..]] {
+            murk(&dir, &key)
+                .args(["circle", "revoke", &spec, "--vault", "test.murk"])
+                .args(extra)
+                .assert()
+                .failure()
+                .stderr(predicate::str::contains("you can't revoke your own key"))
+                .stderr(predicate::str::contains(format!(
+                    "murk circle revoke \"{alice}\""
+                )));
+            assert_eq!(fs::read(&path).unwrap(), before, "{spec} {extra:?}");
+        }
+    }
+
+    murk(&dir, &key)
+        .args(["circle", "revoke", "bob", "--vault", "test.murk"])
+        .assert()
+        .success();
+    assert_eq!(vault_json(&dir)["recipients"], serde_json::json!([alice]));
+}
+
+/// An age key is Bech32, so its uppercase form is the same recipient: it is
+/// stored lowercase, the lowercase twin is refused, and revoking it in either
+/// case cuts the key's access.
+#[test]
+fn age_key_case_variants_are_one_recipient() {
+    let dir = TempDir::new().unwrap();
+    let (key, alice) = init_vault(&dir);
+    let bob = age_pubkey();
+    authorize(&dir, &key, &bob.to_ascii_uppercase(), Some("bob"));
+    assert_eq!(
+        vault_json(&dir)["recipients"],
+        serde_json::json!([alice, bob])
+    );
+
+    murk(&dir, &key)
+        .args(["circle", "authorize", &bob, "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already a recipient"));
+
+    murk(&dir, &key)
+        .args([
+            "circle",
+            "revoke",
+            &bob.to_ascii_uppercase(),
+            "--vault",
+            "test.murk",
+        ])
+        .assert()
+        .success();
+    assert_eq!(vault_json(&dir)["recipients"], serde_json::json!([alice]));
+}
+
+/// The five low-order X25519 points as age recipients. age parses each one,
+/// and encrypting to any of them panics inside age.
+const LOW_ORDER_AGE_RECIPIENTS: [&str; 5] = [
+    "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq5cu47z",
+    "age1qyqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqj7vrya",
+    "age1t7wft09r2zxzfvwsk92eeql0tvzyghxytqwgapkcyf8dm5ylz9ts6wm9s8",
+    "age1ur4h5lpmgxu2u9jku0a0r87ydtdqnr0tnsetrlvxvgz3vh6fhqqqzyt4v9",
+    "age1anlllllllllllllllllllllllllllllllllllllllllllllllals4n2t7m",
+];
+
+/// Authorizing a low-order age key is refused with a clear error, not a panic,
+/// and the vault is left untouched.
+#[test]
+fn authorize_refuses_low_order_age_keys() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    let path = dir.path().join("test.murk");
+    let before = fs::read(&path).unwrap();
+    for pk in LOW_ORDER_AGE_RECIPIENTS {
+        murk(&dir, &key)
+            .args(["circle", "authorize", pk, "--vault", "test.murk"])
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains("invalid public key"))
+            .stderr(predicate::str::contains("low-order"))
+            .stderr(predicate::str::contains("panicked").not());
+        assert_eq!(fs::read(&path).unwrap(), before, "{pk}");
+    }
+}
+
+/// A low-order key can never reach a signed vault: authorize refuses it (see
+/// above) and every save refuses to encrypt to it. Splicing one into the
+/// header by hand breaks the signature, so every command refuses the vault
+/// cleanly (no age panic) and nothing is written.
+#[test]
+fn hand_added_low_order_recipient_is_refused_cleanly() {
+    let dir = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    murk(&dir, &key)
+        .args(["add", "TOKEN", "--vault", "test.murk"])
+        .write_stdin("v\n")
+        .assert()
+        .success();
+    let path = dir.path().join("test.murk");
+    let mut json = vault_json(&dir);
+    json["recipients"]
+        .as_array_mut()
+        .unwrap()
+        .push(LOW_ORDER_AGE_RECIPIENTS[0].into());
+    fs::write(&path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+    let before = fs::read(&path).unwrap();
+
+    for (args, stdin) in [
+        (&["verify"][..], ""),
+        (&["get", "TOKEN"][..], ""),
+        (&["add", "OTHER"][..], "w\n"),
+        (&["circle", "revoke", LOW_ORDER_AGE_RECIPIENTS[0]][..], ""),
+    ] {
+        murk(&dir, &key)
+            .args(args)
+            .args(["--vault", "test.murk"])
+            .write_stdin(stdin)
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains("panicked").not());
+        assert_eq!(fs::read(&path).unwrap(), before, "{args:?}");
+    }
+}
+
+/// A GitHub user's keys all carry `<user>@github`. Revoking that name (or
+/// `github:<user>`) lists the keys and, without a TTY to confirm on, needs
+/// `--force`; with it, every key goes and other recipients stay.
+#[test]
+fn revoke_github_user_by_name_removes_every_key() {
+    let dir = TempDir::new().unwrap();
+    let (key, alice) = init_vault(&dir);
+    let (laptop, desktop) = (ssh_pubkey(1), ssh_pubkey(2));
+    authorize(&dir, &key, &laptop, Some("octo@github"));
+    authorize(&dir, &key, &desktop, Some("octo@github"));
+    let carol = age_pubkey();
+    authorize(&dir, &key, &carol, Some("carol"));
+    let recipients = || vault_json(&dir)["recipients"].clone();
+    let before = recipients();
+
+    murk(&dir, &key)
+        .args(["circle", "revoke", "octo@github", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(&laptop))
+        .stderr(predicate::str::contains(&desktop))
+        .stderr(predicate::str::contains("--force"));
+    assert_eq!(recipients(), before, "nothing is revoked unconfirmed");
+
+    murk(&dir, &key)
+        .args([
+            "circle",
+            "revoke",
+            "github:octo",
+            "--force",
+            "--vault",
+            "test.murk",
+        ])
+        .assert()
+        .success();
+    assert_eq!(recipients(), serde_json::json!([alice, carol]));
+}
+
+/// A vault murk 0.13.0 wrote listing bob's SSH key twice (with and without
+/// its comment: 0.13 compared keys as exact strings), with an override bob
+/// wrote for himself. See tests/fixtures/README.md.
+const V0_13_DUPLICATE_SSH: &str = include_str!("fixtures/v0_13_duplicate_ssh.murk");
+const V0_13_DUPLICATE_SSH_ALICE: &str = include_str!("fixtures/v0_13_duplicate_ssh.test-only.key");
+const V0_13_DUPLICATE_SSH_BOB: &str =
+    include_str!("fixtures/v0_13_duplicate_ssh_bob.test-only.key");
+const BOB_SSH: &str =
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFFMXjwwBOjk5V0rYD2Di9tLG0xGudp2h/CJHkhIPi6Y";
+
+/// The 0.13 vault in a fresh dir, trusted by alice; returns alice's key.
+fn duplicate_ssh_vault(dir: &TempDir) -> String {
+    let path = dir.path().join("test.murk");
+    fs::write(&path, V0_13_DUPLICATE_SSH).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    let alice = V0_13_DUPLICATE_SSH_ALICE.trim().to_string();
+    murk(dir, &alice)
+        .args(["trust", "--yes", "--vault", "test.murk"])
+        .assert()
+        .success();
+    alice
+}
+
+/// `murk` as bob, with his SSH key file.
+fn as_bob(dir: &TempDir) -> assert_cmd::Command {
+    let key = dir.path().join("bob_ed25519");
+    if !key.exists() {
+        fs::write(&key, V0_13_DUPLICATE_SSH_BOB).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+    let mut cmd = murk_bin(dir.path());
+    cmd.current_dir(dir.path()).env("MURK_KEY_FILE", &key);
+    cmd
+}
+
+fn header_recipients(dir: &TempDir) -> Vec<String> {
+    serde_json::from_value(vault_json(dir)["recipients"].clone()).unwrap()
+}
+
+/// Upgrading must not lock out a team whose 0.13 vault lists one SSH key
+/// twice: it loads, `verify` reports the duplicate, and the next save writes
+/// the key once, keeping bob's access and his own override.
+#[test]
+fn a_0_13_vault_listing_an_ssh_key_twice_loads_and_the_next_save_lists_it_once() {
+    let dir = TempDir::new().unwrap();
+    let alice = duplicate_ssh_vault(&dir);
+    assert_eq!(header_recipients(&dir).len(), 3);
+
+    murk(&dir, &alice)
+        .args(["get", "API_KEY", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with("fixture-shared-value"));
+    murk(&dir, &alice)
+        .args(["verify", "--vault", "test.murk"])
+        .assert()
+        .stderr(predicate::str::contains("listed 2 times as a recipient"));
+
+    murk(&dir, &alice)
+        .args(["add", "THIRD", "--vault", "test.murk"])
+        .write_stdin("third-value\n")
+        .assert()
+        .success();
+    let recipients = header_recipients(&dir);
+    assert_eq!(recipients.len(), 2, "{recipients:?}");
+    assert!(recipients.contains(&BOB_SSH.to_string()), "{recipients:?}");
+    assert_eq!(vault_json(&dir)["version"], "3.0");
+    murk(&dir, &alice)
+        .args(["verify", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("times as a recipient").not());
+
+    // Bob still reads the shared values and his own override.
+    as_bob(&dir)
+        .args(["get", "SECOND", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with("fixture-second-value"));
+    as_bob(&dir)
+        .args(["get", "API_KEY", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with("bob-override"));
+}
+
+/// Revoking bob by either spelling of his key removes every copy of it and
+/// his override.
+#[test]
+fn revoking_a_key_a_0_13_vault_lists_twice_removes_every_copy() {
+    let blob = BOB_SSH.split(' ').nth(1).unwrap();
+    for spelling in [format!("{BOB_SSH} bob@laptop"), BOB_SSH.to_string()] {
+        let dir = TempDir::new().unwrap();
+        let alice = duplicate_ssh_vault(&dir);
+        murk(&dir, &alice)
+            .args(["circle", "revoke", &spelling, "--vault", "test.murk"])
+            .assert()
+            .success();
+
+        let json = vault_json(&dir);
+        assert!(
+            !json["recipients"].to_string().contains(blob),
+            "every copy of the key must go: {}",
+            json["recipients"]
+        );
+        assert!(
+            !json["secrets"].to_string().contains(blob),
+            "bob's override must go: {}",
+            json["secrets"]
+        );
+        murk(&dir, &alice)
+            .args(["verify", "--vault", "test.murk"])
+            .assert()
+            .success();
+        as_bob(&dir)
+            .args(["get", "API_KEY", "--vault", "test.murk"])
+            .assert()
+            .failure();
+    }
 }
 
 // ── group ──
@@ -364,7 +754,9 @@ fn init_refuses_to_overwrite_dotenv_key_by_default() {
         .assert()
         .failure()
         .stderr(
-            predicate::str::contains("Overwrite? [y/N]").and(predicate::str::contains("Aborted.")),
+            predicate::str::contains("Generate a new key and replace that line?")
+                .and(predicate::str::contains("[y/N]"))
+                .and(predicate::str::contains("Aborted.")),
         );
     assert_eq!(
         fs::read_to_string(&env_path).unwrap(),
@@ -413,10 +805,9 @@ fn ci_hint_fires_only_for_the_auto_discovered_personal_key() {
     assert!(!explicit.contains("CI is decrypting"), "{explicit}");
 }
 
-/// Sets up a vault whose merge left it unsigned: two branches each add a
-/// secret, and the merge driver (which never signs) combines them into
-/// `test.murk`. Returns `(dir, key)`.
-fn merged_unsigned_vault() -> (TempDir, String) {
+/// Sets up a vault produced by a keyed merge: two branches each add a secret,
+/// and the merge driver combines them into `test.murk`. Returns `(dir, key)`.
+fn merged_vault() -> (TempDir, String) {
     let dir = TempDir::new().unwrap();
     let (key, _) = init_vault(&dir);
     let vault = dir.path().join("test.murk");
@@ -436,7 +827,14 @@ fn merged_unsigned_vault() -> (TempDir, String) {
     let theirs = dir.path().join("theirs.murk");
     fs::copy(&vault, &theirs).unwrap();
 
+    // Ours forks from base, so the next save must outrank the pinned counter
+    // (theirs was saved here last): load it via `murk trust` like a branch
+    // switch, then write.
     fs::copy(&base, &vault).unwrap();
+    murk(&dir, &key)
+        .args(["trust", "--yes", "--vault", "test.murk"])
+        .assert()
+        .success();
     murk(&dir, &key)
         .args(["add", "OURS", "--vault", "test.murk"])
         .write_stdin("o\n")
@@ -446,69 +844,61 @@ fn merged_unsigned_vault() -> (TempDir, String) {
     murk(&dir, &key)
         .args(["merge-driver"])
         .args([&base, &vault, &theirs].map(|p| p.to_str().unwrap()))
+        .arg("test.murk")
         .assert()
         .success();
     (dir, key)
 }
 
-/// After a merge strips the signature, every read warns that a vault seen
-/// signed is now unsigned, until any write re-signs it.
+/// A keyed merge of two genuine sides is signed by the merging key, so it
+/// loads (and verifies) with no re-signing step.
 #[test]
-fn signature_downgrade_warns_until_the_next_write() {
-    let (dir, key) = merged_unsigned_vault();
-    let read = || stderr_of(murk(&dir, &key).args(["get", "OURS", "--vault", "test.murk"]));
-
-    let warned = read();
-    assert!(
-        warned.contains("was signed before and is now unsigned"),
-        "{warned}"
-    );
+fn keyed_merge_of_genuine_sides_signs_and_loads() {
+    let (dir, key) = merged_vault();
+    for (name, value) in [("OURS", "o\n"), ("THEIRS", "t\n"), ("BASE", "b\n")] {
+        murk(&dir, &key)
+            .args(["get", name, "--vault", "test.murk"])
+            .assert()
+            .success()
+            .stdout(value);
+    }
     murk(&dir, &key)
-        .args(["get", "THEIRS", "--vault", "test.murk"])
+        .args(["verify", "--vault", "test.murk"])
         .assert()
-        .success()
-        .stdout("t\n");
-
-    murk(&dir, &key)
-        .args(["add", "AFTER", "--vault", "test.murk"])
-        .write_stdin("a\n")
-        .assert()
-        .success();
-    let clean = read();
-    assert!(!clean.contains("unsigned"), "{clean}");
+        .stderr(predicate::str::contains("signed by trusted signer"));
 }
 
-/// With signer pinning off, murk cannot tell a downgrade or anchor a
-/// signature, and says so: an unsigned vault gets the plain "sign it" nudge,
-/// and a signed one is flagged as trust-only.
+/// With the pin store off, nothing on this machine records trust, so a
+/// secret-emitting load is refused until MURK_TRUSTED_SIGNERS names the signer.
 #[test]
-fn signer_pinning_off_reports_what_it_cannot_check() {
-    let (dir, key) = merged_unsigned_vault();
-    let read = || {
-        stderr_of(murk(&dir, &key).env("MURK_NO_SIGNER_PIN", "1").args([
-            "get",
-            "OURS",
-            "--vault",
-            "test.murk",
-        ]))
-    };
-
-    let unsigned = read();
-    assert!(
-        unsigned.contains("vault is unsigned — run any write command to sign it"),
-        "{unsigned}"
-    );
-    assert!(!unsigned.contains("signed before"), "{unsigned}");
+fn pinning_off_fails_closed_until_trusted_signers_are_given() {
+    let dir = TempDir::new().unwrap();
+    let (key, pubkey) = init_vault(&dir);
+    murk(&dir, &key)
+        .args(["add", "A", "--vault", "test.murk"])
+        .write_stdin("v\n")
+        .assert()
+        .success();
 
     murk(&dir, &key)
         .env("MURK_NO_SIGNER_PIN", "1")
-        .args(["add", "AFTER", "--vault", "test.murk"])
-        .write_stdin("a\n")
+        .args(["get", "A", "--vault", "test.murk"])
         .assert()
-        .success();
-    let signed = read();
-    assert!(signed.contains("signer pinning is off"), "{signed}");
-    assert!(!signed.contains("unsigned"), "{signed}");
+        .failure()
+        .stderr(predicate::str::contains("not trusted on this machine"));
+    let out = murk(&dir, &key)
+        .args(["trust", "--print-key", "--vault", "test.murk"])
+        .output()
+        .unwrap();
+    let entry = String::from_utf8(out.stdout).unwrap().trim().to_string();
+    assert!(entry.starts_with(&format!("{pubkey}:")), "{entry}");
+    murk(&dir, &key)
+        .env("MURK_NO_SIGNER_PIN", "1")
+        .env("MURK_TRUSTED_SIGNERS", &entry)
+        .args(["get", "A", "--vault", "test.murk"])
+        .assert()
+        .success()
+        .stdout("v\n");
 }
 
 // ── rotate --list ──
@@ -575,13 +965,14 @@ fn rotate_list_reports_each_rotation_problem() {
         .success();
 
     // Time passing, and an older vault. (A garbled timestamp is refused when
-    // the vault loads, so rotate --list never sees one.)
+    // the vault loads, so rotate --list never sees one.) Hand-editing the header
+    // breaks the MAC, so only a run with no key at all still reads it.
     let vault = dir.path().join("test.murk");
     set_schema_field(&vault, "STALE", "updated", Some("2020-01-01T00:00:00Z"));
     set_schema_field(&vault, "UNDATED", "updated", None);
 
-    let out = murk_bin(dir.path())
-        .current_dir(dir.path())
+    let home = TempDir::new().unwrap();
+    let out = keyless(&dir, &home)
         .args(["rotate", "--list", "--vault", "test.murk"])
         .assert()
         .code(1);
@@ -605,10 +996,210 @@ fn rotate_list_reports_each_rotation_problem() {
     );
 }
 
+/// `murk` in `dir` with no key: `HOME` is a fresh directory, so the key `init`
+/// stored under the vault's own `HOME` is not auto-discovered.
+fn keyless(dir: &TempDir, home: &TempDir) -> assert_cmd::Command {
+    let mut cmd = murk_bin(home.path());
+    cmd.current_dir(dir.path());
+    cmd
+}
+
+fn stderr_of(assert: &assert_cmd::assert::Assert) -> String {
+    String::from_utf8(assert.get_output().stderr.clone()).unwrap()
+}
+
+/// A vault whose `TOKEN` needs rotating after a revoke (`revoked_at` set), or
+/// after its expiry passed (`expires_at` set). Returns the vault's `.murk`
+/// path and the operator key.
+fn vault_needing_rotation(dir: &TempDir, field: &str) -> (std::path::PathBuf, String) {
+    let (key, _) = init_vault(dir);
+    murk(dir, &key)
+        .args(["add", "TOKEN", "--vault", "test.murk"])
+        .write_stdin("old\n")
+        .assert()
+        .success();
+    match field {
+        "revoked_at" => {
+            authorize(dir, &key, &age_pubkey(), Some("bob"));
+            murk(dir, &key)
+                .args(["circle", "revoke", "bob", "--vault", "test.murk"])
+                .assert()
+                .success();
+        }
+        "expires_at" => {
+            murk(dir, &key)
+                .args([
+                    "describe",
+                    "TOKEN",
+                    "api token",
+                    "--expires",
+                    "2020-01-01",
+                    "--vault",
+                    "test.murk",
+                ])
+                .assert()
+                .success();
+        }
+        other => panic!("unknown field {other}"),
+    }
+    (dir.path().join("test.murk"), key)
+}
+
+/// Every command that prints data from the plaintext header with no key says,
+/// once, that nothing it shows was checked. A run with a key that verifies the
+/// vault (`rotate --list`) does not.
+#[test]
+fn keyless_header_reads_are_labelled_unverified() {
+    let dir = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let (key, _) = init_vault(&dir);
+    murk(&dir, &key)
+        .args(["add", "TOKEN", "--vault", "test.murk"])
+        .write_stdin("v\n")
+        .assert()
+        .success();
+
+    let commands: &[&[&str]] = &[
+        &["info"],
+        &["info", "--json"],
+        &["ls"],
+        &["ls", "--json"],
+        &["agent", "plan"],
+        &["agent", "plan", "--json"],
+        &["rotate", "--list"],
+        &["rotate", "--list", "--json"],
+        &["policy", "show"],
+        &["circle"],
+        &["skeleton"],
+        &["doctor"],
+    ];
+    for args in commands {
+        let out = keyless(&dir, &home)
+            .args(*args)
+            .args(["--vault", "test.murk"])
+            .assert();
+        let stderr = stderr_of(&out);
+        assert_eq!(
+            stderr.matches("unverified").count(),
+            1,
+            "`murk {}` must label its output unverified exactly once:\n{stderr}",
+            args.join(" ")
+        );
+    }
+
+    // With a key, `rotate --list` checks the vault and has nothing to label.
+    let out = murk(&dir, &key)
+        .args(["rotate", "--list", "--vault", "test.murk"])
+        .assert()
+        .success();
+    assert!(!stderr_of(&out).contains("unverified"));
+}
+
+/// `rotate --list --json` says whether a key verified the vault. The array of
+/// `reason`-tagged issues moves under `issues`, because an empty array has no
+/// element to carry the flag and `[]` is the very output a stripped header
+/// produces.
+#[test]
+fn rotate_list_json_reports_whether_the_vault_was_verified() {
+    let dir = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let (_, key) = vault_needing_rotation(&dir, "expires_at");
+
+    let keyed =
+        stdout_json(murk(&dir, &key).args(["rotate", "--list", "--json", "--vault", "test.murk"]));
+    assert_eq!(keyed["verified"], true, "{keyed}");
+    assert_eq!(keyed["issues"][0]["reason"], "expired", "{keyed}");
+    assert_eq!(keyed["issues"][0]["key"], "TOKEN", "{keyed}");
+
+    let keyless_run = stdout_json(keyless(&dir, &home).args([
+        "rotate",
+        "--list",
+        "--json",
+        "--vault",
+        "test.murk",
+    ]));
+    assert_eq!(keyless_run["verified"], false, "{keyless_run}");
+    assert_eq!(
+        keyless_run["issues"][0]["reason"], "expired",
+        "{keyless_run}"
+    );
+}
+
+/// Deleting `revoked_at` / `expires_at` from the header must not turn the
+/// `rotate --list` gate green. With a key the edit is caught as tampering;
+/// without one the result is labelled unverified, and `MURK_STRICT` refuses it.
+#[test]
+fn rotate_list_gate_survives_header_edits() {
+    for field in ["revoked_at", "expires_at"] {
+        let dir = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        let (vault, key) = vault_needing_rotation(&dir, field);
+        let list = |cmd: &mut assert_cmd::Command| {
+            cmd.args(["rotate", "--list", "--vault", "test.murk"])
+                .assert()
+        };
+
+        // Before the edit the gate is red, with a key or without.
+        list(&mut murk(&dir, &key)).code(1);
+        list(&mut keyless(&dir, &home)).code(1);
+
+        set_schema_field(&vault, "TOKEN", field, None);
+
+        // With the key: the edited header fails its integrity check.
+        let out = list(&mut murk(&dir, &key)).failure();
+        let stderr = stderr_of(&out);
+        assert!(stderr.contains("tampered"), "{field}: {stderr}");
+        assert!(
+            !stderr.contains("no keys need rotation"),
+            "{field}: {stderr}"
+        );
+        let out = murk(&dir, &key)
+            .args(["rotate", "--list", "--json", "--vault", "test.murk"])
+            .assert()
+            .failure();
+        assert!(
+            out.get_output().stdout.is_empty(),
+            "{field}: JSON printed for a tampered vault"
+        );
+
+        // Without it nothing can be checked: same exit as before, but labelled.
+        let out = list(&mut keyless(&dir, &home)).success();
+        assert!(stderr_of(&out).contains("unverified"), "{field}");
+
+        // MURK_STRICT refuses to report an unverified result, in both formats.
+        let out = list(keyless(&dir, &home).env("MURK_STRICT", "1")).failure();
+        assert!(stderr_of(&out).contains("unverified"), "{field}");
+        let out = keyless(&dir, &home)
+            .env("MURK_STRICT", "1")
+            .args(["rotate", "--list", "--json", "--vault", "test.murk"])
+            .assert()
+            .failure();
+        let json: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+        assert_eq!(json["verified"], false, "{field}: {json}");
+    }
+}
+
+/// A vault with a stale key (not a recipient) is not "no key": the key resolves
+/// but cannot check the vault, so the gate fails instead of falling back to an
+/// unchecked read.
+#[test]
+fn rotate_list_with_a_key_that_cannot_verify_fails() {
+    let dir = TempDir::new().unwrap();
+    let (_, _) = vault_needing_rotation(&dir, "expires_at");
+    let stranger = age::x25519::Identity::generate();
+    let stranger_key = age::secrecy::ExposeSecret::expose_secret(&stranger.to_string()).to_string();
+    murk(&dir, &stranger_key)
+        .args(["rotate", "--list", "--vault", "test.murk"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not a recipient"));
+}
+
 // ── agent exec supervision ──
 
-/// `agent exec --only DB_URL -- sh -c <script>` with `DB_URL` in the vault,
-/// as a spawnable process for tests that need to drive its pipes.
+/// `agent exec --only DB_URL -- sh -c <script>` with `DB_URL` in the vault and
+/// a grant key for it (agent exec refuses the operator's key), as a spawnable
+/// process for tests that need to drive its pipes.
 #[cfg(unix)]
 fn agent_exec_sh(script: &str) -> (TempDir, std::process::Command) {
     let dir = TempDir::new().unwrap();
@@ -618,6 +1209,16 @@ fn agent_exec_sh(script: &str) -> (TempDir, std::process::Command) {
         .write_stdin("postgres://prod-sentinel\n")
         .assert()
         .success();
+    let grant_path = dir.path().join("exec.key");
+    murk(&dir, &key)
+        .args([
+            "agent", "grant", "--name", "exec", "--only", "DB_URL", "--out",
+        ])
+        .arg(&grant_path)
+        .args(["--vault", "test.murk"])
+        .assert()
+        .success();
+    let grant_key = std::fs::read_to_string(&grant_path).unwrap();
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("murk"));
     for var in MURK_CONTEXT_VARS {
         cmd.env_remove(var);
@@ -625,7 +1226,7 @@ fn agent_exec_sh(script: &str) -> (TempDir, std::process::Command) {
     cmd.current_dir(dir.path())
         .env("HOME", dir.path())
         .env("XDG_RUNTIME_DIR", dir.path())
-        .env("MURK_KEY", &key)
+        .env("MURK_KEY", grant_key.trim())
         .args([
             "agent",
             "exec",

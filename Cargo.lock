@@ -1706,7 +1706,7 @@ dependencies = [
 
 [[package]]
 name = "murk-cli"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "age",
  "assert_cmd",
@@ -1722,6 +1722,7 @@ dependencies = [
  "clap_mangen",
  "colored",
  "constant_time_eq",
+ "curve25519-dalek 5.0.0",
  "ed25519-dalek 3.0.0",
  "fs2",
  "libc",
@@ -1747,7 +1748,7 @@ dependencies = [
 
 [[package]]
 name = "murk-napi"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "murk-cli",
  "napi",
@@ -3811,6 +3812,7 @@ version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879"
 dependencies = [
+ "serde",
  "zeroize_derive",
 ]
 

@@ -8,6 +8,10 @@
 //! Generates:
 //!   - docs/cli-reference.md   — the command reference, from the clap model.
 //!   - docs/env-reference.md   — the environment-variable reference.
+//!   - docs/permissions.md     — the role × command authorization matrix, from
+//!     the table `tests/auth_matrix.rs` enforces.
+//!   - docs/completions/*      — shell completions, from the clap model.
+//!   - docs/man/*              — man pages, from the clap model.
 //!
 //! Regenerate:  `cargo run --features doc-gen --bin gen-docs`
 //! Check (CI):  `cargo run --features doc-gen --bin gen-docs -- --check`
@@ -20,6 +24,10 @@ use std::process::ExitCode;
 use clap::{CommandFactory, ValueEnum};
 use clap_complete::{Generator, Shell};
 use murk_cli::cli::Cli;
+
+/// The authorization matrix, shared with `tests/auth_matrix.rs`.
+#[path = "../../tests/auth_matrix/table.rs"]
+mod table;
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -60,12 +68,11 @@ struct EnvVar {
 /// Doc-only registry of the environment variables murk honors.
 ///
 /// clap only annotates `MURK_VAULT` (via `#[arg(env = ...)]`); every other
-/// variable is read ad hoc in `src/env.rs`, `src/hardening.rs`, and
-/// `src/pins.rs`, so a complete reference needs this list. Names mirror the
-/// `ENV_*` constants in `src/env.rs` and the reads in those modules — keep it in
-/// sync when env handling changes (CI `--check` fails until
-/// `docs/env-reference.md` is regenerated). Summaries avoid literal `|` so they
-/// stay valid inside the Markdown table.
+/// variable is read ad hoc under `src/`, so a complete reference needs this
+/// list. Names mirror the `ENV_*` constants in `src/env.rs` and the reads under
+/// `src/`. Update this list when you add or remove an environment read. CI
+/// `--check` only catches edits to the list, not missing entries. Summaries
+/// avoid literal `|` so they stay valid inside the Markdown table.
 const ENV_GROUPS: &[(&str, &[EnvVar])] = &[
     (
         "Identity and vault selection",
@@ -89,19 +96,23 @@ const ENV_GROUPS: &[(&str, &[EnvVar])] = &[
         &[
             EnvVar {
                 name: "MURK_STRICT",
-                summary: "Truthy fails closed rather than let a secret touch disk, and disables the automatic key lookup under `~/.config/murk/keys`.",
+                summary: "Experimental. On for any value except unset, empty, `0`, `false`, `no` and `off`, so a typo turns it on. A short list of checks, not a guarantee that no plaintext reaches disk. Disables the automatic key lookup under `~/.config/murk/keys`, needs RAM-backed scratch for `murk edit`, refuses to write `get`, `export` or `murk diff --show-values` output to a regular file, refuses a result that no key checked, and makes `murk diff` refuse a revision it could only show with a warning. It does not stop a process from writing values elsewhere.",
             },
             EnvVar {
                 name: "MURK_AGENT",
-                summary: "Marks the process as running for an AI agent. Forces strict mode unconditionally. `murk agent exec` sets it on its child.",
+                summary: "Marks the process as running for an AI agent. Forces strict mode unconditionally. `murk agent exec` sets it on its child. Read like `MURK_STRICT`: any value except unset, empty, `0`, `false`, `no` and `off` turns it on.",
             },
             EnvVar {
                 name: "MURK_SELF_SCOPE",
-                summary: "Truthy holds your own key to the vault's agent allow-tag policy, as if you were an agent. Implied inside an agent context.",
+                summary: "Holds your own key to the vault's agent allow-tag policy, as if you were an agent. Implied inside an agent context. Read like `MURK_STRICT`.",
+            },
+            EnvVar {
+                name: "MURK_TRUSTED_SIGNERS",
+                summary: "Signers trusted to sign the vault on this machine, separated by commas or newlines, replacing the local trust pin's set. An age signer is `age1...:<verifying key>` and an ssh-ed25519 signer is its public key line; `murk trust --print-key` prints the entry for your own key. For CI runners and other machines with no pin (set it from a CI secret). Any other entry, including a bare age key, is an error.",
             },
             EnvVar {
                 name: "MURK_NO_SIGNER_PIN",
-                summary: "Opts out of signer-registry pinning (TOFU) on load — an escape hatch for a deliberate signer-key change, not for everyday use.",
+                summary: "Present (any value) stops murk reading or writing the local trust pin. Trust then comes only from `MURK_TRUSTED_SIGNERS`, and rollback and stripped-signature detection are off.",
             },
         ],
     ),
@@ -110,7 +121,7 @@ const ENV_GROUPS: &[(&str, &[EnvVar])] = &[
         &[
             EnvVar {
                 name: "CI",
-                summary: "Truthy prints a nudge toward the scoped-agent path when a pipeline decrypts with a personal key. Advisory only.",
+                summary: "Truthy prints a short hint toward the scoped-agent path when a pipeline decrypts with a personal key. Advisory only.",
             },
             EnvVar {
                 name: "EDITOR, VISUAL",
@@ -118,11 +129,11 @@ const ENV_GROUPS: &[(&str, &[EnvVar])] = &[
             },
             EnvVar {
                 name: "XDG_RUNTIME_DIR",
-                summary: "Preferred (typically tmpfs) scratch location for `murk edit`'s temporary file, over `/tmp`.",
+                summary: "Scratch location for `murk edit`'s temporary file when it is a directory (typically tmpfs). Otherwise murk uses `/dev/shm` if it is RAM-backed, then the system temp dir (`$TMPDIR`, else `/tmp`), and warns when the file will not be in RAM.",
             },
             EnvVar {
-                name: "HOME (USERPROFILE on Windows)",
-                summary: "Base directory for murk state: `~/.config/murk/keys`, `agent-keys`, and `signer-pins`.",
+                name: "HOME, then USERPROFILE",
+                summary: "Base directory for murk state: `~/.config/murk/keys`, `agent-keys` and `signer-pins`; outside a git checkout, also where the search for `.murk` in parent directories stops. murk reads `HOME` and falls back to `USERPROFILE` on any platform. `murk completion install` and `murk circle authorize ssh:` need `HOME`.",
             },
         ],
     ),
@@ -135,7 +146,9 @@ fn env_reference() -> (PathBuf, String) {
          The environment variables murk reads, and the CLI flags they mirror \
          where one exists. This is the terse reference. The narrative version \
          with resolution order and interactions lives in the Environment \
-         variables concept page.\n",
+         variables concept page.\n\n\
+         A variable marked \"truthy\" is on when set to `1`, `true` or `yes` \
+         (any case). Other values, including `0`, mean off.\n",
     );
     for (group, vars) in ENV_GROUPS {
         body.push_str(&format!(
@@ -148,6 +161,116 @@ fn env_reference() -> (PathBuf, String) {
     (
         manifest_dir().join("docs/env-reference.md"),
         format!("{BANNER}{body}"),
+    )
+}
+
+/// The role × command authorization matrix, rendered from the table that
+/// `tests/auth_matrix.rs` enforces cell by cell.
+fn permissions() -> (PathBuf, String) {
+    use table::{Basis, EDITOR_UNIX_ONLY, NOT_IN_MATRIX, ROWS, Role, UNDER_REVIEW, Verdict};
+
+    let mut body = String::from(
+        "# murk permissions matrix\n\n\
+         Who can run which vault command. Each row is a command and each column \
+         a role; `yes` means murk runs it, `no` means it refuses and leaves the \
+         vault file unchanged, and `conflict` (merge driver only) means it \
+         stops with a merge conflict, so git commits nothing. An allowed read \
+         shows only the values that role can read, and an allowed write never \
+         gives anyone read access to a value that the command doesn't name. \
+         `tests/auth_matrix.rs` checks every cell against the real binary.\n\n\
+         The rows run against one fixture vault:\n\n\
+         - `SHARED`: shared with everyone. The override owner also has a \
+         personal (`--group me`) value for it.\n\
+         - `OPS`: held by the group `ops`.\n\
+         - `PRIV`: only the override owner's personal value.\n\
+         - `AGENT_OK`: shared with everyone, and the scope of the agent grants.\n\
+         - Every key carries the tag `agents`, which the agent policy allows.\n\
+         - `spare` is a recipient in `ops` that commands act on. `idle` is a \
+         group with no secrets, whose members are the owner and the group \
+         member. `X` is a key that isn't on the vault yet.\n\n\
+         A cell marked with a number was decided where the policy left it open; \
+         the notes below the table give the reason. A cell marked `current` \
+         records what murk does today on a question that is still open; see \
+         [Under review](#under-review).\n\n\
+         ## Roles\n\n",
+    );
+    for role in Role::ALL {
+        body.push_str(&format!("- **{}**: {}.\n", role.heading(), role.describe()));
+    }
+
+    // Number each distinct reason in order of first use.
+    let mut reasons: Vec<&str> = Vec::new();
+    body.push_str("\n## Matrix\n\n| Command |");
+    for role in Role::ALL {
+        body.push_str(&format!(" {} |", role.heading()));
+    }
+    body.push_str("\n| --- |");
+    body.push_str(&" --- |".repeat(Role::ALL.len()));
+    body.push('\n');
+    for row in ROWS {
+        body.push_str(&format!("| `{}` |", row.command));
+        for cell in &row.cells {
+            let mark = match cell.verdict {
+                Verdict::Allow => "yes",
+                Verdict::Refuse => "no",
+                Verdict::Conflict => "conflict",
+            };
+            match cell.basis {
+                Basis::Decided(reason) => {
+                    let n = match reasons.iter().position(|r| *r == reason) {
+                        Some(i) => i + 1,
+                        None => {
+                            reasons.push(reason);
+                            reasons.len()
+                        }
+                    };
+                    body.push_str(&format!(" {mark} ({n}) |"));
+                }
+                Basis::UnderReview => body.push_str(&format!(" {mark} (current) |")),
+                Basis::Policy => body.push_str(&format!(" {mark} |")),
+            }
+        }
+        body.push('\n');
+    }
+
+    body.push_str("\n## Decided cells\n\n");
+    for (i, reason) in reasons.iter().enumerate() {
+        body.push_str(&format!("{}. {reason}.\n", i + 1));
+    }
+
+    body.push_str(&format!(
+        "\n## Under review\n\n\
+         The cells marked `current` show what murk does today, not a settled \
+         rule. Whether every recipient should be able to run these commands is \
+         an open product question. The test checks today's behaviour so that \
+         any change is deliberate: if murk gains an admin role, these cells \
+         change in the table.\n\n\
+         How it works today: {UNDER_REVIEW}\n"
+    ));
+
+    let unix_only: Vec<String> = ROWS
+        .iter()
+        .filter(|row| row.editor)
+        .map(|row| format!("`{}`", row.command))
+        .collect();
+    body.push_str(&format!(
+        "\n## Platforms\n\n\
+         Every row runs on Linux, macOS and Windows except {}, which run on \
+         Linux and macOS only: {EDITOR_UNIX_ONLY}.\n",
+        unix_only.join(" and ")
+    ));
+
+    body.push_str("\n## Not in the matrix\n\n");
+    for (command, why) in NOT_IN_MATRIX {
+        body.push_str(&format!("- `{command}`: {why}.\n"));
+    }
+
+    (
+        manifest_dir().join("docs/permissions.md"),
+        format!(
+            "<!-- Generated by `cargo run --features doc-gen --bin gen-docs` from \
+             tests/auth_matrix/table.rs. Do not edit by hand; CI checks it. -->\n\n{body}"
+        ),
     )
 }
 
@@ -175,9 +298,13 @@ fn man_pages() -> Vec<(PathBuf, String)> {
 
 fn collect_man(cmd: &clap::Command, path: &[&str], out: &mut Vec<(PathBuf, String)>) {
     // `bin_name` (a runtime String) drives the SYNOPSIS, so it shows the real
-    // spaced invocation ("murk agent plan"). The filename uses the git-man
-    // dashed convention ("murk-agent-plan.1"). Both come from the command path.
-    let render_cmd = cmd.clone().bin_name(path.join(" "));
+    // spaced invocation ("murk agent plan"). `display_name` drives the page
+    // title and NAME, so each page is unique ("murk-agent-plan"). The filename
+    // uses the git-man dashed convention ("murk-agent-plan.1").
+    let render_cmd = cmd
+        .clone()
+        .bin_name(path.join(" "))
+        .display_name(path.join("-"));
     let mut buf = Vec::new();
     clap_mangen::Man::new(render_cmd)
         .render(&mut buf)
@@ -207,7 +334,7 @@ const MANAGED_DIRS: &[&str] = &["docs/completions", "docs/man"];
 
 /// Every generated artifact: (path, expected content).
 fn artifacts() -> Vec<(PathBuf, String)> {
-    let mut a = vec![cli_reference(), env_reference()];
+    let mut a = vec![cli_reference(), env_reference(), permissions()];
     a.extend(completions());
     a.extend(man_pages());
     a

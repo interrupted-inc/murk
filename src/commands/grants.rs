@@ -53,14 +53,68 @@ pub(crate) fn cmd_mcp(vault_path: &str, allow_exec: bool) {
     ));
 }
 
+/// Write the rendered output of `skeleton -o` / `agent plan -o` to a *new* file.
+///
+/// Both commands are keyless, read-only and safe to auto-approve for an agent,
+/// so a path argument must never be able to destroy anything. The file is
+/// created with `create_new` (`O_EXCL`), which fails when *anything* is already
+/// at `path`: a regular file, the vault itself, or a symlink — even a dangling
+/// one, which `O_EXCL` refuses instead of following. Nothing is truncated and
+/// nothing is written through a link. There is deliberately no overwrite flag:
+/// replacing a file takes an explicit `rm` first.
+fn write_new_output(path: &str, contents: &str, vault_path: &str) -> Result<(), String> {
+    use std::io::Write;
+
+    let mut file = match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            let is_vault = matches!(
+                (fs::canonicalize(path), fs::canonicalize(vault_path)),
+                (Ok(out), Ok(vault)) if out == vault
+            );
+            return Err(if is_vault {
+                format!(
+                    "refusing to write {path}: it is the vault\n\
+                     choose a path that does not exist yet"
+                )
+            } else {
+                format!(
+                    "refusing to overwrite {path}: it already exists (a file or a symlink)\n\
+                     choose a path that does not exist yet, or remove it first"
+                )
+            });
+        }
+        Err(e) => return Err(format!("cannot write {path}: {e}")),
+    };
+
+    if let Err(e) = file.write_all(contents.as_bytes()) {
+        // This call created the file, so a partial one is ours to clean up.
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(format!("cannot write {path}: {e}"));
+    }
+    Ok(())
+}
+
 pub(crate) fn cmd_skeleton(output: Option<&str>, vault_path: &str) {
     let vault = murk_cli::vault::read(Path::new(vault_path)).unwrap_or_else(|e| die(&e, 1));
+    warn_if_keyless(vault_path);
 
     let skeleton = murk_cli::types::Vault {
         version: vault.version,
         created: vault.created,
         vault_name: vault.vault_name,
         repo: vault.repo,
+        // A skeleton is a new vault's starting shape, not this vault: no
+        // identity, no counter.
+        vault_id: String::new(),
+        generation: 0,
+        agents: BTreeMap::new(),
+        sig: None,
         recipients: Vec::new(),
         schema: vault.schema,
         // Policy is public header metadata (like schema) — keep it in the
@@ -73,7 +127,7 @@ pub(crate) fn cmd_skeleton(output: Option<&str>, vault_path: &str) {
     let json = serde_json::to_string_pretty(&skeleton).unwrap();
     match output {
         Some(path) => {
-            fs::write(path, format!("{json}\n")).unwrap_or_else(|e| die(&e, 1));
+            try_or_die(write_new_output(path, &format!("{json}\n"), vault_path));
             eprintln!("{} wrote skeleton to {}", "ok".green().bold(), path.bold());
         }
         None => println!("{json}"),
@@ -82,40 +136,36 @@ pub(crate) fn cmd_skeleton(output: Option<&str>, vault_path: &str) {
 
 /// `murk agent exec`: run `command` with only the `--only` keys injected.
 ///
-/// Fails closed on the operator's auto-discovered personal key
-/// (`~/.config/murk/keys`): an agent shell with no `MURK_*` set would otherwise
-/// decrypt with it silently, and the allow-list would be the only gate. The run
-/// needs an explicit `MURK_KEY`/`MURK_KEY_FILE` (normally a grant key), or the
-/// operator's deliberate `--allow-operator-key`. The key source is resolved
-/// before the vault is loaded, so the refusal happens before any decryption.
+/// Needs an agent grant key. The operator's auto-discovered personal key
+/// (`~/.config/murk/keys`) is refused before the vault is loaded, and any other
+/// non-grant key (an exported `MURK_KEY_FILE`, say from direnv) is refused by
+/// identity once the vault is open, before any secret is resolved. The
+/// operator's deliberate `--allow-operator-key` lifts both, with a warning.
 pub(crate) fn cmd_agent_exec(
     command: &[String],
     only: &[String],
     allow_operator_key: bool,
+    allow_reserved: bool,
     vault_path: &str,
 ) {
     // A resolution error falls through: `load_vault` reports it with its hints.
-    let operator_key = matches!(
+    let auto_key = matches!(
         murk_cli::resolve_key_with_source(vault_path),
         Ok((_, murk_cli::KeySource::Auto(_)))
     );
-    if operator_key {
-        if !allow_operator_key {
-            die(
-                &"agent exec refuses your personal key (~/.config/murk/keys)\n\
-                  an agent run must present its own key, not auto-discover yours\n\
-                  point MURK_KEY_FILE at a grant key (mint one: `murk agent init`)\n\
-                  or pass --allow-operator-key to use your own key on purpose",
-                1,
-            );
-        }
-        // The opt-in is the operator's call, so it is never silent — in CI or
-        // not. It replaces the CI personal-key hint, which would repeat it.
-        super::suppress_agent_nudge();
-        eprintln!(
-            "{} agent exec is decrypting with your personal key (--allow-operator-key)",
-            "warn".yellow().bold()
+    if auto_key && !allow_operator_key {
+        die(
+            &"agent exec refuses your personal key (~/.config/murk/keys)\n\
+              an agent run must present its own key, not auto-discover yours\n\
+              point MURK_KEY_FILE at a grant key (mint one: `murk agent init`)\n\
+              or pass --allow-operator-key to use your own key on purpose",
+            1,
         );
+    }
+    if allow_operator_key {
+        // The opt-in is the operator's call, so `cmd_exec` never runs it
+        // silently. Its warning replaces the CI personal-key hint.
+        super::suppress_agent_nudge();
     }
 
     eprintln!(
@@ -134,29 +184,74 @@ pub(crate) fn cmd_agent_exec(
         &[],
         /* clean_env */ true,
         /* agent_mode */ true,
+        allow_reserved,
+        /* operator_key_ok */ allow_operator_key,
         vault_path,
     );
+}
+
+/// A grant just minted: where its key went (`None` when streamed to stdout)
+/// and the grant's public key, captured while the vault was still locked.
+pub(crate) struct Minted {
+    pub(crate) path: Option<String>,
+    pub(crate) pubkey: String,
+}
+
+/// Where [`mint_grant`] hands off the agent key.
+#[derive(Clone, Copy)]
+pub(crate) enum KeyOut<'a> {
+    /// murk's own per-grant key file (`agent_key_file_path`).
+    Default,
+    /// Printed to stdout (`--out -`); never stored.
+    Stdout,
+    /// An explicit `--out` path. An existing file there is replaced only with
+    /// `force`: it may be anyone's file, the operator's own key included.
+    Path { path: &'a str, force: bool },
+}
+
+impl<'a> KeyOut<'a> {
+    /// From the `--out` and `--force` flags.
+    pub(crate) fn from_flags(out: Option<&'a str>, force: bool) -> Self {
+        match out {
+            None => Self::Default,
+            Some("-") => Self::Stdout,
+            Some(path) => Self::Path { path, force },
+        }
+    }
 }
 
 /// Mint a scoped agent grant in one locked transaction and hand off the
 /// ephemeral key. When `allow_tags` is `Some`, the vault's agent allow-list is
 /// set first (so scope validation reflects it) — used by `agent init`; `None`
 /// leaves the policy unchanged. A single `save_vault` covers both the optional
-/// policy change and the grant. Returns the written key path, or `None` when the
-/// key was streamed to stdout.
+/// policy change and the grant.
 pub(crate) fn mint_grant(
     name: &str,
     only: &[String],
     ttl: &str,
     renew: bool,
-    out: Option<&str>,
+    out: KeyOut<'_>,
     allow_tags: Option<&[String]>,
     vault_path: &str,
-) -> Option<String> {
+) -> Minted {
     use age::secrecy::ExposeSecret;
 
     try_or_die(murk_cli::validate_grant_name(name));
     let ttl_dur = try_or_die(murk_cli::parse_ttl(ttl));
+
+    // Refuse an occupied --out before the vault changes: failing at the key
+    // write would leave a live grant whose key was never handed off. The write
+    // itself is exclusive too, so a file that appears in between is not replaced.
+    if let KeyOut::Path { path, force: false } = out
+        && std::fs::symlink_metadata(path).is_ok()
+    {
+        die(
+            &format_args!(
+                "{path} already exists — refusing to overwrite it (it may be a key); pass --force to replace it"
+            ),
+            1,
+        );
+    }
 
     let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
     let issuer = identity.pubkey_string().unwrap_or_else(|e| die(&e, 1));
@@ -168,16 +263,31 @@ pub(crate) fn mint_grant(
     // live keys and no partial revoke-without-regrant state on failure.
     if renew && current.grants.contains_key(name) {
         let old = try_or_die(murk_cli::remove_grant(&mut current, name));
-        try_or_die(murk_cli::revoke_recipient(
+        let exposed = grant_exposure(&vault, &current, &old);
+        let result = try_or_die(murk_cli::revoke_recipient(
             &mut vault,
             &mut current,
             &old.pubkey,
         ));
+        // The previous key can still decrypt what it could read from git
+        // history, so those keys owe a rotation, as after `agent revoke`.
+        let owed = still_exposed(&vault, &exposed, &result.exposed_groups);
+        murk_cli::mark_revoked(&mut vault, &owed, chrono::Utc::now());
         eprintln!(
             "{} renewing {} — its previous key is revoked",
             "◆".magenta(),
             name.bold()
         );
+        if !owed.is_empty() {
+            eprintln!(
+                "  {}",
+                format!(
+                    "it could read {} — rotate them to close it fully (`murk rotate --list` tracks them)",
+                    owed.join(", ")
+                )
+                .dimmed()
+            );
+        }
     }
 
     // Set the allow-list before validating scope so a single save covers both the
@@ -202,13 +312,13 @@ pub(crate) fn mint_grant(
     let agent_secret = agent_id.to_string();
     let agent_pubkey = agent_id.to_public().to_string();
 
-    // The agent becomes a recipient (so it can decrypt meta and its scoped
-    // values) named for the grant, then we stage the scoped copies + metadata.
+    // The agent becomes a recipient (for its scoped values and its own
+    // `agents` record; never the meta) named for the grant.
     vault.recipients.push(agent_pubkey.clone());
     current
         .recipients
         .insert(agent_pubkey.clone(), format!("agent:{name}"));
-    let entry = try_or_die(murk_cli::create_grant(
+    let mut entry = try_or_die(murk_cli::create_grant(
         &mut current,
         name,
         &agent_pubkey,
@@ -218,7 +328,49 @@ pub(crate) fn mint_grant(
         ttl_dur,
     ));
 
-    save_vault(vault_path, &mut vault, &original, &current);
+    // The key file is headed by the signers the grant may trust: a grant
+    // can't read the meta, so this anchor is how it tells a genuine vault from
+    // a forged one. The grant record keeps the same set, so revoking one of
+    // those signers later revokes this grant (see `revoke_recipient`). The
+    // grant's id and expiry follow, so the key file bounds the grant by itself
+    // whatever record a later vault carries for it.
+    let signers = try_or_die(murk_cli::agents::anchor_signers(
+        vault_path, &vault, &identity,
+    ));
+    entry.anchors = signers.keys().cloned().collect();
+    if let Some(g) = current.grants.get_mut(name) {
+        g.anchors.clone_from(&entry.anchors);
+    }
+    let anchor = murk_cli::agents::anchor_lines(&signers);
+    let bound = murk_cli::agents::grant_lines(name, &entry.expires_at);
+    let key_text =
+        zeroize::Zeroizing::new(format!("{anchor}{bound}{}\n", agent_secret.expose_secret()));
+
+    // Stage the key file before the vault records the grant, and rename it
+    // into place only once the save succeeded. An unwritable destination fails
+    // here, leaving no live grant whose key nobody holds; a failed save drops
+    // the staged file, leaving any existing key (the one `--renew` would
+    // replace) byte-for-byte as it was.
+    let staged = match out {
+        KeyOut::Stdout => None,
+        KeyOut::Path { path, force } => Some(try_or_die(murk_cli::stage_key_file(
+            Path::new(path),
+            &key_text,
+            force,
+        ))),
+        // murk's own slot for this grant: whatever is there is the key of a
+        // renewed or revoked grant of the same name and vault.
+        KeyOut::Default => {
+            let path = try_or_die(murk_cli::agent_key_file_path(vault_path, name));
+            Some(try_or_die(murk_cli::stage_key_file(&path, &key_text, true)))
+        }
+    };
+
+    // `die` exits without running destructors, so drop the staged key first.
+    if let Err(e) = murk_cli::save_vault(vault_path, &mut vault, &original, &current) {
+        drop(staged);
+        die(&e, 1);
+    }
 
     eprintln!(
         "{} granted {} read access to {} key{} until {}",
@@ -231,27 +383,52 @@ pub(crate) fn mint_grant(
     for key in &entry.scope {
         eprintln!("  {} {}", "▸".dimmed(), key.bold());
     }
+    if anchor.is_empty() {
+        eprintln!(
+            "{} your key can't sign, so the grant names no trusted signer: it reads only with MURK_TRUSTED_SIGNERS set",
+            "⚠".yellow()
+        );
+    }
 
-    // Hand off the ephemeral key.
-    let secret = agent_secret.expose_secret();
-    match out {
-        Some("-") => {
-            println!("{secret}");
+    let path = match staged {
+        None => {
+            // stdout cannot be taken back, so the key is only streamed once saved.
+            print!("{}", key_text.as_str());
             eprintln!(
                 "{} key streamed to stdout — capture it now; it is not stored",
                 "⚠".yellow()
             );
             None
         }
-        Some(path) => {
-            try_or_die(murk_cli::write_key_to_file(Path::new(path), secret));
-            Some(path.to_string())
+        Some(staged) => {
+            let target = staged.target().display().to_string();
+            match staged.commit() {
+                Ok(()) => Some(target),
+                // The grant is saved, so its key must not be lost: keep the
+                // staged file and hand that over instead of the destination.
+                Err(uncommitted) => {
+                    let reason = uncommitted.reason.clone();
+                    let kept = uncommitted.keep().unwrap_or_else(|e| {
+                        die(
+                            &format_args!(
+                                "{reason}\n{e}\nthe grant is saved but its key was not written — run `murk agent revoke {name}`"
+                            ),
+                            1,
+                        )
+                    });
+                    eprintln!(
+                        "{} {reason}; the new key is at {} instead",
+                        "⚠".yellow(),
+                        kept.display()
+                    );
+                    Some(kept.display().to_string())
+                }
+            }
         }
-        None => {
-            let path = try_or_die(murk_cli::agent_key_file_path(vault_path, name));
-            try_or_die(murk_cli::write_key_to_file(&path, secret));
-            Some(path.display().to_string())
-        }
+    };
+    Minted {
+        path,
+        pubkey: agent_pubkey,
     }
 }
 
@@ -271,9 +448,11 @@ pub(crate) fn cmd_agent_grant(
     ttl: &str,
     renew: bool,
     out: Option<&str>,
+    force: bool,
     vault_path: &str,
 ) {
-    if let Some(path) = mint_grant(name, only, ttl, renew, out, None, vault_path) {
+    let out = KeyOut::from_flags(out, force);
+    if let Some(path) = mint_grant(name, only, ttl, renew, out, None, vault_path).path {
         print_grant_handoff(only, &path);
     }
     print_ttl_advisory();
@@ -399,7 +578,14 @@ pub(crate) fn cmd_agent_connect(
     // wider or narrower than the command line asked for.
     let allow = (!allow_tag.is_empty()).then_some(allow_tag);
     let (_v, existing, _id) = load_vault(vault_path);
-    let key_path = if let Some(entry) = existing.grants.get(name) {
+    // Reusing a grant writes no vault, but connect is still an operator action:
+    // a grant key must not wire editors to grant key files.
+    try_or_die(murk_cli::ensure_writable(&existing));
+    // The key path is a pure function of vault and grant name, so every config
+    // can be rendered with it before the grant exists.
+    let key_file = try_or_die(murk_cli::agent_key_file_path(vault_path, name));
+    let key_path = key_file.display().to_string();
+    let reused_scope = if let Some(entry) = existing.grants.get(name) {
         let norm = |xs: &[String]| {
             let mut v: Vec<String> = xs.to_vec();
             v.sort_unstable();
@@ -422,8 +608,7 @@ pub(crate) fn cmd_agent_connect(
                 name.bold()
             );
         }
-        let p = try_or_die(murk_cli::agent_key_file_path(vault_path, name));
-        if !p.exists() {
+        if !key_file.exists() {
             die(
                 &format_args!(
                     "grant '{name}' exists but its key file is gone — `murk agent disconnect --name {name} --rotate`, then reconnect"
@@ -431,48 +616,113 @@ pub(crate) fn cmd_agent_connect(
                 1,
             );
         }
+        Some(entry.scope.len())
+    } else {
+        None
+    };
+
+    // A non-default vault must reach the configured `murk mcp`, or it looks for
+    // `.murk` next to the config and fails with "vault file not found".
+    let mut extra_args = connect::vault_args(vault_path);
+    if allow_exec {
+        extra_args.push("--allow-exec".to_string());
+    }
+
+    // Render every target before touching anything: a malformed or symlinked
+    // config has to fail while the vault and key directory are still untouched,
+    // not after a live grant has been minted for it.
+    let mut edits = Vec::new();
+    let mut plan_failed = false;
+    for adapter in &targets {
+        match connect::plan_connect(adapter, &project_dir, &key_path, &extra_args) {
+            Ok(edit) => edits.push((*adapter, edit)),
+            Err(e) => {
+                eprintln!("{} {}: {e}", "✗".red(), adapter.display);
+                plan_failed = true;
+            }
+        }
+    }
+    if plan_failed {
+        die(
+            &if reused_scope.is_some() {
+                "no editor config was written — fix the error above and re-run"
+            } else {
+                "no grant was minted and no editor config was written — fix the error above and re-run"
+            },
+            1,
+        );
+    }
+
+    let mut minted_pubkey = None;
+    if let Some(keys) = reused_scope {
         eprintln!(
             "{} reusing grant {} ({} key{})",
             "◆".magenta(),
             name.bold(),
-            entry.scope.len(),
-            if entry.scope.len() == 1 { "" } else { "s" }
+            keys,
+            if keys == 1 { "" } else { "s" }
         );
-        p.display().to_string()
     } else {
-        let Some(p) = mint_grant(name, only, ttl, false, None, allow, vault_path) else {
-            return;
-        };
-        p
-    };
-    let extra_args: Vec<String> = allow_exec
-        .then(|| "--allow-exec".to_string())
-        .into_iter()
-        .collect();
+        // `out = None` lands the key at `agent_key_file_path` — the path the
+        // rendered configs already carry — and always returns it.
+        let minted = mint_grant(name, only, ttl, false, KeyOut::Default, allow, vault_path);
+        debug_assert_eq!(minted.path.as_deref(), Some(key_path.as_str()));
+        // Remembered so a rollback only ever undoes *this* grant. It comes
+        // from the mint itself, taken under the vault lock; rereading the key
+        // file now could pick up a renewal that ran since.
+        minted_pubkey = Some(minted.pubkey);
+    }
 
+    // All or nothing: if any write fails, undo the ones that landed and, for a
+    // grant minted by this run, revoke it and delete its key file, so a failed
+    // connect never leaves a live grant behind.
     eprintln!();
-    let mut failed = false;
-    for adapter in &targets {
-        match connect::connect_client(adapter, &project_dir, &key_path, &extra_args) {
-            Ok(outcome) => {
-                eprintln!(
-                    "{} {} — {} {}",
-                    "ok".green().bold(),
-                    adapter.display.bold(),
-                    if outcome.created {
-                        "created"
-                    } else {
-                        "updated"
-                    },
-                    outcome.path.display().to_string().dimmed()
-                );
-                offer_gitignore(&project_dir, &outcome.path);
+    let mut applied: Vec<(&connect::ClientAdapter, &connect::ConfigEdit)> = Vec::new();
+    for (adapter, edit) in &edits {
+        if let Err(e) = edit.apply() {
+            eprintln!("{} {}: {e}", "✗".red(), adapter.display);
+            let mut restored_all = true;
+            for (done_adapter, done) in applied.iter().rev() {
+                if let Err(e) = done.undo() {
+                    restored_all = false;
+                    eprintln!(
+                        "{} {}: could not restore {}: {e}",
+                        "✗".red(),
+                        done_adapter.display,
+                        done.path.display()
+                    );
+                }
             }
-            Err(e) => {
-                eprintln!("{} {}: {e}", "✗".red(), adapter.display);
-                failed = true;
+            if let Some(minted) = &minted_pubkey {
+                revoke_unhanded_grant(name, &key_file, minted, vault_path);
             }
+            let configs = if restored_all {
+                "no editor config was changed"
+            } else {
+                "the editor configs named above still hold the murk entry"
+            };
+            die(
+                &if reused_scope.is_some() {
+                    format!("{configs} — fix the error above and re-run (the grant is still live)")
+                } else {
+                    format!(
+                        "rolled back: the new grant was revoked and its key file deleted; {configs} — fix the error above and re-run"
+                    )
+                },
+                1,
+            );
         }
+        applied.push((*adapter, edit));
+    }
+    for (adapter, edit) in &applied {
+        eprintln!(
+            "{} {} — {} {}",
+            "ok".green().bold(),
+            adapter.display.bold(),
+            if edit.created { "created" } else { "updated" },
+            edit.path.display().to_string().dimmed()
+        );
+        offer_gitignore(&project_dir, &edit.path);
     }
 
     eprintln!();
@@ -484,8 +734,46 @@ pub(crate) fn cmd_agent_connect(
         .dimmed()
     );
     print_ttl_advisory();
-    if failed {
-        process::exit(1);
+}
+
+/// Undo a grant this run minted but never handed to an editor: drop the record
+/// and its recipient, then delete the key file. Nothing outside this process
+/// has seen the key, so no rotation is owed. Only the grant with public key
+/// `minted_pubkey` is touched: if the name now belongs to a different key
+/// (another run renewed it meanwhile), the grant and its key file are left
+/// alone.
+fn revoke_unhanded_grant(name: &str, key_file: &Path, minted_pubkey: &str, vault_path: &str) {
+    let (mut vault, murk, _identity, _lock) = load_vault_locked(vault_path);
+    if murk.grants.get(name).map(|g| g.pubkey.as_str()) != Some(minted_pubkey) {
+        eprintln!(
+            "{} grant {name} was changed by another command since this run minted it — left as is",
+            "⚠".yellow()
+        );
+        return;
+    }
+    let original = murk.clone();
+    let mut current = murk;
+    let grant = try_or_die(murk_cli::remove_grant(&mut current, name));
+    try_or_die(murk_cli::revoke_recipient(
+        &mut vault,
+        &mut current,
+        &grant.pubkey,
+    ));
+    save_vault(vault_path, &mut vault, &original, &current);
+    let still_ours = fs::read_to_string(key_file).is_ok_and(|k| {
+        murk_cli::crypto::parse_identity(k.trim())
+            .and_then(|id| id.pubkey_string())
+            .is_ok_and(|pk| pk == minted_pubkey)
+    });
+    if !still_ours {
+        return;
+    }
+    if let Err(e) = fs::remove_file(key_file) {
+        eprintln!(
+            "{} could not delete key file {}: {e}",
+            "✗".red(),
+            key_file.display()
+        );
     }
 }
 
@@ -508,6 +796,12 @@ pub(crate) fn cmd_agent_disconnect(
         })],
         None => connect::ADAPTERS.iter().collect(),
     };
+    // `--rotate` revokes the grant, which an agent grant can't do; refuse before
+    // touching any editor config so a refused run changes nothing.
+    if rotate {
+        let (_v, murk, _id) = load_vault(vault_path);
+        try_or_die(murk_cli::ensure_writable(&murk));
+    }
 
     let mut removed_any = false;
     let mut failed = false;
@@ -529,13 +823,13 @@ pub(crate) fn cmd_agent_disconnect(
             }
         }
     }
-    if !removed_any {
+    if !removed_any && !failed {
         eprintln!("{} no murk MCP entries found to remove", "◆".magenta());
     }
 
     if rotate {
         eprintln!();
-        cmd_agent_revoke(name, true, vault_path);
+        cmd_agent_revoke(name, true, None, vault_path);
     } else {
         eprintln!(
             "  {}",
@@ -554,6 +848,7 @@ pub(crate) fn cmd_agent_init(
     allow_tags: &[String],
     ttl: &str,
     out: Option<&str>,
+    force: bool,
     vault_path: &str,
 ) {
     let allow = if allow_tags.is_empty() {
@@ -561,7 +856,8 @@ pub(crate) fn cmd_agent_init(
     } else {
         Some(allow_tags)
     };
-    if let Some(path) = mint_grant(name, only, ttl, false, out, allow, vault_path) {
+    let out = KeyOut::from_flags(out, force);
+    if let Some(path) = mint_grant(name, only, ttl, false, out, allow, vault_path).path {
         print_grant_handoff(only, &path);
         print_isolation_snippet();
     }
@@ -630,8 +926,16 @@ pub(crate) fn cmd_agent_ls(json: bool, vault_path: &str) {
     }
 }
 
-pub(crate) fn cmd_agent_revoke(name: &str, rotate: bool, vault_path: &str) {
-    let (mut vault, murk, _identity, _lock) = load_vault_locked(vault_path);
+pub(crate) fn cmd_agent_revoke(
+    name: &str,
+    rotate: bool,
+    values_from: Option<&str>,
+    vault_path: &str,
+) {
+    let source = values_from.map_or(ValueSource::Prompt, |p| {
+        ValueSource::Named(read_values_from(p))
+    });
+    let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
     let original = murk.clone();
     let mut current = murk;
 
@@ -639,41 +943,77 @@ pub(crate) fn cmd_agent_revoke(name: &str, rotate: bool, vault_path: &str) {
     // the agent's scoped ciphertexts). Persist before rotating so the agent is
     // durably gone even if the rotation prompts are aborted.
     let grant = try_or_die(murk_cli::remove_grant(&mut current, name));
-    try_or_die(murk_cli::revoke_recipient(
+    let exposed = grant_exposure(&vault, &current, &grant);
+    let result = try_or_die(murk_cli::revoke_recipient(
         &mut vault,
         &mut current,
         &grant.pubkey,
     ));
-    save_vault(vault_path, &mut vault, &original, &current);
+    // Record the rotation the handed-off key now owes before persisting, as
+    // `circle revoke` does, so declining the prompt leaves it flagged.
+    let owed = still_exposed(&vault, &exposed, &result.exposed_groups);
+    murk_cli::mark_revoked(&mut vault, &owed, chrono::Utc::now());
 
-    eprintln!("{} revoked grant {}", "◆".magenta(), name.bold());
+    // Each exposed value is rotated in its own tier: the shared value (the
+    // grant's private copies were copies of it) and values in groups the grant
+    // belonged to. Overrides stay untouched. With --rotate, the batch is checked
+    // before anything is written.
+    let plan = |vault: &murk_cli::types::Vault, current: &murk_cli::types::Murk| {
+        let pubkey = try_or_die(identity.pubkey_string());
+        let plans = plan_exposed(vault, current, &pubkey, &exposed, &result.exposed_groups);
+        (pubkey, plans)
+    };
+    let mut checked = rotate.then(|| plan(&vault, &current));
+    if let Some((_, plans)) = &checked {
+        let retry = format!(
+            "to revoke now and rotate afterwards, run `murk agent revoke {name}` without --rotate, then `murk rotate --all --values-from FILE`"
+        );
+        check_batch(&vault, plans, &source, Some(&retry));
+    }
 
-    // The agent could read exactly its scope (it was never in the shared layer),
-    // so rotate those keys — that's the real close, since the handed-off key can
-    // still decrypt old `.murk` versions from git history.
-    if !grant.scope.is_empty() {
-        let n = grant.scope.len();
+    // The handed-off key can still decrypt old `.murk` versions from git
+    // history, so rotating what it could read is the real close. Decide on and
+    // collect the rotation before writing: one save covers the revoke and the
+    // rotated values.
+    let mut outcome = None;
+    if !exposed.is_empty() {
+        let n = exposed.len();
         let plural = if n == 1 { "" } else { "s" };
-        eprintln!();
         eprintln!(
             "{} the agent could read {n} secret{plural} — rotate them:",
             "⚠".yellow(),
         );
-        for key in &grant.scope {
+        for key in &exposed {
             eprintln!("  {} {}", "▸".dimmed(), key.bold());
         }
         eprintln!();
-
         let do_rotate = rotate
             || (io::stdin().is_terminal() && confirm(&format!("rotate {n} secret{plural} now?")));
         if do_rotate {
-            rotate_exposed(vault_path, &mut vault, &current, &grant.scope);
-        } else {
-            eprintln!(
-                "  {}",
-                "run `murk rotate KEY` to rotate each secret".dimmed()
-            );
+            let (pubkey, plans) = checked.take().unwrap_or_else(|| plan(&vault, &current));
+            outcome = Some(rotate_exposed(
+                &mut vault,
+                &mut current,
+                &pubkey,
+                &plans,
+                &source,
+            ));
         }
+    }
+
+    save_vault(vault_path, &mut vault, &original, &current);
+
+    eprintln!("{} revoked grant {}", "◆".magenta(), name.bold());
+    match &outcome {
+        Some(outcome) => {
+            outcome.report();
+            outcome.report_total();
+        }
+        None if !exposed.is_empty() => eprintln!(
+            "  {}",
+            "run `murk rotate KEY` to rotate each secret".dimmed()
+        ),
+        None => {}
     }
     eprintln!();
     eprintln!(
@@ -682,21 +1022,74 @@ pub(crate) fn cmd_agent_revoke(name: &str, rotate: bool, vault_path: &str) {
     );
 }
 
+/// Keys a grant's key could read, taken before it is revoked (which strips its
+/// ciphertexts): its scope, any key holding a private copy for it (a
+/// hand-edited or older vault can hold more than the scope), and keys in
+/// groups it belongs to.
+fn grant_exposure(
+    vault: &murk_cli::types::Vault,
+    current: &murk_cli::types::Murk,
+    grant: &murk_cli::types::GrantEntry,
+) -> Vec<String> {
+    vault
+        .secrets
+        .iter()
+        .filter(|(key, entry)| {
+            grant.scope.contains(key)
+                || entry.private.contains_key(&grant.pubkey)
+                || entry.grouped.keys().any(|g| {
+                    current
+                        .groups
+                        .get(g)
+                        .is_some_and(|members| members.contains(&grant.pubkey))
+                })
+        })
+        .map(|(key, _)| key.clone())
+        .collect()
+}
+
+/// The exposed keys that still hold a value the revoked key could read: a
+/// shared value, or a value in one of `groups`. These owe a rotation.
+fn still_exposed(
+    vault: &murk_cli::types::Vault,
+    keys: &[String],
+    groups: &[String],
+) -> Vec<String> {
+    keys.iter()
+        .filter(|k| {
+            vault.secrets.get(*k).is_some_and(|e| {
+                !e.shared.is_empty() || e.grouped.keys().any(|g| groups.contains(g))
+            })
+        })
+        .cloned()
+        .collect()
+}
+
 /// True if `expires_at` (ISO-8601 UTC) is in the past.
 pub(crate) fn grant_is_expired(expires_at: &str, now: chrono::DateTime<chrono::Utc>) -> bool {
+    // Missing or unreadable counts as expired, matching the read-time gate.
     chrono::DateTime::parse_from_rfc3339(expires_at)
         .map(|e| e.with_timezone(&chrono::Utc) <= now)
-        .unwrap_or(false)
+        .unwrap_or(true)
 }
 
 /// A colored status string for a grant: time remaining, or how long expired.
+/// An expired grant no longer reads and is removed by the next vault write.
 pub(crate) fn grant_status(expires_at: &str, now: chrono::DateTime<chrono::Utc>) -> String {
+    const GONE: &str = "removed on the next vault write";
+    if expires_at.is_empty() {
+        return format!("no expiry (predates grant TTLs) — {GONE}")
+            .yellow()
+            .to_string();
+    }
     let Ok(exp) = chrono::DateTime::parse_from_rfc3339(expires_at) else {
-        return format!("expires {expires_at}").dimmed().to_string();
+        return format!("unreadable expiry {expires_at:?} — {GONE}")
+            .yellow()
+            .to_string();
     };
     let exp = exp.with_timezone(&chrono::Utc);
     if exp <= now {
-        format!("expired {} ago", human_duration(now - exp))
+        format!("expired {} ago — {GONE}", human_duration(now - exp))
             .yellow()
             .to_string()
     } else {
@@ -723,6 +1116,7 @@ pub(crate) fn human_duration(d: chrono::Duration) -> String {
 
 pub(crate) fn cmd_agent_plan(tags: &[String], json: bool, output: Option<&str>, vault_path: &str) {
     let vault = murk_cli::vault::read(Path::new(vault_path)).unwrap_or_else(|e| die(&e, 1));
+    warn_if_keyless(vault_path);
     let plan = murk_cli::agent_plan(&vault, tags);
 
     let rendered = if json {
@@ -735,7 +1129,7 @@ pub(crate) fn cmd_agent_plan(tags: &[String], json: bool, output: Option<&str>, 
 
     match output {
         Some(path) => {
-            fs::write(path, &rendered).unwrap_or_else(|e| die(&e, 1));
+            try_or_die(write_new_output(path, &rendered, vault_path));
             eprintln!(
                 "{} wrote agent plan to {}",
                 "ok".green().bold(),
@@ -743,5 +1137,123 @@ pub(crate) fn cmd_agent_plan(tags: &[String], json: bool, output: Option<&str>, 
             );
         }
         None => print!("{rendered}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// These tests set process env (`HOME`, `MURK_KEY`) for the in-process
+    /// load/save path, so they run one at a time.
+    static ENV: Mutex<()> = Mutex::new(());
+
+    /// A fresh vault with `A` set, `HOME` and `MURK_KEY` pointed at it, and
+    /// every other murk context variable cleared. Returns the dir (keep it
+    /// alive), the vault path and the operator key.
+    fn operator_vault() -> (tempfile::TempDir, String, String) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let operator = age::x25519::Identity::generate();
+        let secret = age::secrecy::ExposeSecret::expose_secret(&operator.to_string()).to_string();
+        // SAFETY: serialised by `ENV`; no other test in this binary touches it.
+        unsafe {
+            for var in [
+                "MURK_KEY_FILE",
+                "MURK_VAULT",
+                "MURK_AGENT",
+                "MURK_STRICT",
+                "MURK_SELF_SCOPE",
+                "MURK_NO_SIGNER_PIN",
+                "CI",
+            ] {
+                std::env::remove_var(var);
+            }
+            std::env::set_var("HOME", dir.path());
+            std::env::set_var("MURK_KEY", &secret);
+        }
+        let vault_path = dir.path().join("test.murk").display().to_string();
+        let identity = murk_cli::crypto::parse_identity(&secret).unwrap();
+        let vault = murk_cli::create_vault("test.murk", &identity, "alice").unwrap();
+        murk_cli::vault::write(Path::new(&vault_path), &vault).unwrap();
+        murk_cli::pin_created_vault(&vault_path, &vault, &identity).unwrap();
+        let (mut vault, murk, _) = murk_cli::load_vault(&vault_path).unwrap();
+        let mut current = murk.clone();
+        murk_cli::add_secret(
+            &mut vault,
+            &mut current,
+            "A",
+            "aval",
+            None,
+            None,
+            false,
+            &[],
+            None,
+        );
+        murk_cli::save_vault(&vault_path, &mut vault, &murk, &current).unwrap();
+        (dir, vault_path, secret)
+    }
+
+    fn grant_pubkey(key: &str) -> String {
+        murk_cli::crypto::parse_identity(key.trim())
+            .and_then(|id| id.pubkey_string())
+            .unwrap()
+    }
+
+    #[test]
+    fn rollback_leaves_a_grant_renewed_since_alone() {
+        let _env = ENV
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (_dir, vault_path, operator) = operator_vault();
+        let key_file = murk_cli::agent_key_file_path(&vault_path, "g").unwrap();
+        let only = ["A".to_string()];
+
+        let a = mint_grant("g", &only, "2h", false, KeyOut::Default, None, &vault_path);
+        // Another command renews `g` before this run's rollback.
+        mint_grant("g", &only, "2h", true, KeyOut::Default, None, &vault_path);
+        let key_b = fs::read_to_string(&key_file).unwrap();
+        assert_ne!(a.pubkey, grant_pubkey(&key_b));
+
+        revoke_unhanded_grant("g", &key_file, &a.pubkey, &vault_path);
+
+        let murk = murk_cli::load_vault(&vault_path).unwrap().1;
+        assert_eq!(murk.grants["g"].pubkey, grant_pubkey(&key_b));
+        assert_eq!(fs::read_to_string(&key_file).unwrap(), key_b);
+        unsafe { std::env::set_var("MURK_KEY", key_b.trim()) };
+        let (_, agent, identity) = murk_cli::load_vault(&vault_path).unwrap();
+        let pubkey = identity.pubkey_string().unwrap();
+        assert_eq!(murk_cli::get_secret(&agent, "A", &pubkey), Some("aval"));
+        unsafe { std::env::set_var("MURK_KEY", &operator) };
+    }
+
+    #[test]
+    fn rollback_revokes_the_grant_this_run_minted() {
+        let _env = ENV
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (_dir, vault_path, _) = operator_vault();
+        let key_file = murk_cli::agent_key_file_path(&vault_path, "g").unwrap();
+
+        let a = mint_grant(
+            "g",
+            &["A".to_string()],
+            "2h",
+            false,
+            KeyOut::Default,
+            None,
+            &vault_path,
+        );
+        assert_eq!(
+            grant_pubkey(&fs::read_to_string(&key_file).unwrap()),
+            a.pubkey
+        );
+
+        revoke_unhanded_grant("g", &key_file, &a.pubkey, &vault_path);
+
+        let (vault, murk, _) = murk_cli::load_vault(&vault_path).unwrap();
+        assert!(!murk.grants.contains_key("g"));
+        assert!(!vault.recipients.contains(&a.pubkey));
+        assert!(!key_file.exists());
     }
 }

@@ -1,13 +1,15 @@
 ---
 title: Quick start
-description: Get set up on a project that uses murk for secrets.
+description: Join a project that uses murk for secrets, or start a new vault.
 sidebar:
   order: 1
 ---
 
 import { Steps } from '@astrojs/starlight/components';
 
-You've been invited to a project that uses murk for secrets. Here's how to get set up.
+You've been invited to a project that uses murk for secrets. Here's how to get
+set up. Starting a project of your own? See
+[Start a new vault](#start-a-new-vault).
 
 <Steps>
 
@@ -17,58 +19,117 @@ You've been invited to a project that uses murk for secrets. Here's how to get s
    brew install interrupted-sh/tap/murk
    ```
 
-   Or: `cargo install murk-cli`, `pip install murk-secrets`, or download from
+   Or use `cargo install murk-cli`, or download a binary from
    [GitHub Releases](https://github.com/interrupted-sh/murk/releases). See
    [Install & verify](/install/) for every install path and how to verify a
    release.
 
 2. ## Generate your key
 
+   Clone the repo and change into it. Run `murk init` next to the `.murk`
+   file. In a directory without a `.murk` file, `murk init` creates a new,
+   unrelated vault.
+
    ```bash
    murk init
    ```
 
-   This creates your keypair and prints 24 recovery words. **Write them
-   down.** If you lose your key, these words are the only way to recover it.
-   See [Key recovery](/guides/recovery/).
-
-   murk stores your key in `~/.config/murk/keys/`, not in the repo.
-
-3. ## Get authorized
-
-   Ask whoever maintains the vault to authorize you. The easiest path is
-   GitHub, with no manual key exchange:
-
-   ```bash
-   # (run by a current recipient, not you)
-   murk circle authorize github:YOUR_USERNAME
-   ```
-
-   This fetches your SSH public keys from `https://github.com/YOUR_USERNAME.keys`
-   and adds them as recipients. murk pins the fingerprints on first authorize,
-   so if your GitHub keys change later the next `authorize github:YOU` will
-   flag the diff before accepting new keys.
-
-   ![Authorizing a teammate by GitHub username](https://raw.githubusercontent.com/interrupted-sh/murk/demo/github.gif)
-
-   If GitHub isn't an option, send them your raw age pubkey instead. Run
-   `murk init` a second time in the project directory. When the vault
-   already exists and you are not yet authorized, it prints the pubkey you
-   need to share:
+   murk generates a key for this vault, prints 24 recovery words, and prints
+   your public key:
 
    ```
    ⚠ not authorized — share your public key to get added:
      age1…
+     signing key SHA256:… — teammates confirm this on your first write
    ```
 
-   They authorize it with `murk circle authorize age1… --name you@example.com`.
+   If `MURK_KEY` or `MURK_KEY_FILE` is already set in your shell, or murk
+   already stores a key for this vault, murk uses that key instead of
+   generating one. It then prints no recovery words. Unsetting the variable
+   gives you a new key only if murk stores no key for this vault.
 
-4. ## Pull and use secrets
+   **Write the recovery words down.** If you lose your key, these words are
+   the only way to recover it. See [Key recovery](/guides/recovery/). Copy the
+   `age1…` line for step 3.
+
+   If you lose the `age1…` line, run `murk init` again in the same directory.
+   It reuses your stored key and prints the same public key. It never
+   replaces a key that is already stored.
+
+   murk stores your key in `~/.config/murk/keys/`, not in the repo. It also
+   writes a `.env` file that points at the key: add `.env` to `.gitignore`.
+
+3. ## Get authorized
+
+   Send your `age1…` public key to someone who can already decrypt the
+   vault. They run:
+
+   ```bash
+   # (run by a current recipient, not you)
+   murk circle authorize age1… --name you@example.com
+   ```
+
+   Then they commit and push `.murk`.
+
+   **Confirm your signing-key fingerprint (age keys only).** Your first write
+   after you are authorized is refused once on each teammate's machine until
+   they confirm the key you sign with. `murk init` printed its fingerprint
+   (`signing key SHA256:…`). To see it again, run `murk trust --print-key`. It
+   prints your signer entry on stdout and the fingerprint on stderr. Read the
+   fingerprint to a teammate over something other than the repo. They compare
+   it with the one `murk trust` shows, then accept. This is a one-time step per
+   teammate. An `ssh-ed25519` key, including one added with `github:`, is its
+   own verifying key and skips it.
+
+   **Using a GitHub SSH key instead.** If you have an ed25519 SSH key on
+   GitHub, the recipient can add it without exchanging keys. They run
+   `murk circle authorize github:YOUR_USERNAME`, then commit and push
+   `.murk`. murk adds your GitHub SSH public keys as recipients (RSA keys are
+   skipped). On this path your SSH key is your murk identity, so you do not
+   need the key from step 2. murk does not look in `~/.ssh` on its own. After
+   you `git pull`, unset `MURK_KEY` and point murk at your SSH private key:
+   `export MURK_KEY_FILE=~/.ssh/id_ed25519`. The key must be unencrypted (no
+   passphrase) and readable only by you. Without this, `murk get`,
+   `murk export` and `murk exec` fail with "you are not a recipient".
+
+   ![Authorizing a teammate by GitHub username](https://raw.githubusercontent.com/interrupted-sh/murk/demo/github.gif)
+
+   If your GitHub keys change later, the next `authorize github:YOUR_USERNAME`
+   refuses and lists the added and removed keys. The recipient must review
+   them and pass `--force`.
+
+4. ## Pull and trust the vault
 
    Once authorized:
 
    ```bash
    git pull                    # get the updated .murk file
+   murk trust                  # once per machine: review the signer, then accept
+   ```
+
+   `murk trust` prints who signed the vault (their full key and its
+   signing-key fingerprint) and every recipient, then asks before it records
+   anything. Check the signer's fingerprint with the person who invited you,
+   over something other than the repo. Run
+   `git log -p -- .murk` first if you want to see what changed. On a machine
+   that already trusts the vault, `murk diff 'HEAD@{1}'` shows what a pull
+   changed. Skip this step and the first load on a machine is refused with
+   "not trusted on this machine yet". murk remembers your answer on this
+   machine, not in the repo, and asks again only if a later vault looks
+   wrong: unsigned, signed by an unfamiliar key, or older than one you've
+   already accepted. See [Recipients &
+   signatures](/concepts/recipients-signatures/#trusting-a-signer) for the
+   rules.
+
+   Do this once on every machine, after every fresh clone (the trust pin
+   lives outside the repo). A CI runner has no pin and nobody to run
+   `murk trust`: set `MURK_TRUSTED_SIGNERS` instead, with the entry each
+   signer's `murk trust --print-key` prints (comma or newline separated),
+   next to the key. See [CI/CD](/guides/cicd/).
+
+5. ## Use secrets
+
+   ```bash
    murk ls                     # see what secrets are available
    murk get DATABASE_URL       # print one secret
    murk export                 # print all as shell exports
@@ -77,7 +138,7 @@ You've been invited to a project that uses murk for secrets. Here's how to get s
 
    See the [CLI reference](/reference/cli/) for every command and flag.
 
-5. ## Set up direnv (optional)
+6. ## Set up direnv (optional)
 
    ```bash
    murk env
@@ -90,6 +151,26 @@ You've been invited to a project that uses murk for secrets. Here's how to get s
 
 </Steps>
 
+## Start a new vault
+
+Run `murk init` in a project directory that has no `.murk` file. murk asks
+for your name or email, creates the vault with you as its first recipient,
+and prints your recovery words. Write them down. If `MURK_KEY` or
+`MURK_KEY_FILE` is set, or murk already stores a key for this vault (here or
+in another git worktree of the repo), murk uses that key and prints no
+recovery words. Then add secrets, commit the vault and load it with direnv:
+
+```bash
+murk init
+murk add DATABASE_URL   # prompts for the value (hidden input)
+git add .murk && git commit -m "add secrets vault"
+murk env
+direnv allow
+```
+
+Add `.env` to `.gitignore` before you commit. To add a teammate, run the
+`murk circle authorize` command from step 3, then commit and push `.murk`.
+
 ## What to know
 
 - **Key names are public.** Anyone with repo access can see what secrets
@@ -101,3 +182,12 @@ You've been invited to a project that uses murk for secrets. Here's how to get s
 - **Revocation doesn't erase history.** If you leave the team, your access to
   old git history remains. The team should rotate secrets after revoking
   you. See [Offboarding](/guides/offboarding/).
+- **Trust is per machine.** murk checks every vault against what your
+  machine has accepted, so a file copied over the vault or an older revision
+  is refused. Pass `--yes` to `murk trust` only in scripts, after reviewing
+  the vault.
+- **A vault can't set sensitive variables.** `murk export`, `exec` and
+  `agent exec` refuse a key named like `PATH`, `LD_PRELOAD`, `GIT_*`,
+  `HTTPS_PROXY` or `MURK_*`, because whoever last wrote the vault chose those
+  names. Review who added it, then pass `--allow-reserved` if you mean it. See
+  [Environment variables](/concepts/env-vars/#variable-names-a-vault-may-not-set).

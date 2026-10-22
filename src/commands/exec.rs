@@ -6,16 +6,36 @@ use colored::Colorize;
 use murk_cli::EnvrcStatus;
 use std::process;
 
+/// Run `command` with vault secrets in its environment. `agent_mode` is
+/// `murk agent exec`: it needs an agent grant key unless `operator_key_ok`
+/// (`--allow-operator-key`), checked by identity, not by where the key came
+/// from, before any secret is resolved.
 pub(crate) fn cmd_exec(
     command: &[String],
     only: &[String],
     tags: &[String],
     clean_env: bool,
     agent_mode: bool,
+    allow_reserved: bool,
+    operator_key_ok: bool,
     vault_path: &str,
 ) {
     let (vault, murk, identity) = load_vault(vault_path);
     let pubkey = identity.pubkey_string().unwrap_or_else(|e| die(&e, 1));
+    if agent_mode && !murk_cli::is_agent_identity(&murk, &pubkey) {
+        if !operator_key_ok {
+            die(
+                &"agent exec needs an agent grant key, and this key is a full recipient of the vault\n\
+                  point MURK_KEY_FILE at a grant key (mint one: `murk agent init`)\n\
+                  or pass --allow-operator-key to use your own key on purpose",
+                1,
+            );
+        }
+        eprintln!(
+            "{} agent exec is decrypting with your personal key (--allow-operator-key)",
+            "warn".yellow().bold()
+        );
+    }
     let mut secrets = murk_cli::resolve_secrets(&vault, &murk, &pubkey, tags);
 
     // Filter to specific keys if --only is provided.
@@ -28,12 +48,17 @@ pub(crate) fn cmd_exec(
         }
     }
 
-    // In agent mode or under self-scope, the vault's policy decides which keys may be injected.
+    // In agent mode, for an agent grant (whatever the environment says), or
+    // under self-scope, the vault's policy decides which keys may be injected.
     // Fails closed before any secret reaches the child environment.
-    if agent_mode || murk_cli::hardening::self_scope() {
+    if agent_mode || murk_cli::agent_policy_applies(&murk, &pubkey) {
         let keys: Vec<String> = secrets.keys().cloned().collect();
         try_or_die(murk_cli::check_agent_keys(&vault, &keys));
     }
+
+    // A vault-chosen PATH, LD_PRELOAD, GIT_SSH_COMMAND or MURK_STRICT would run
+    // code as (or switch off murk's hardening for) whoever runs exec.
+    refuse_reserved(secrets.keys(), allow_reserved);
 
     // `Command::env` panics on a NUL in a value (or an `=`/NUL/empty key), so
     // validate before injecting — a NUL-bearing secret should fail with a clear

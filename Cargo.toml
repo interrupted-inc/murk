@@ -3,7 +3,7 @@ members = [".", "node"]
 exclude = ["fuzz"]
 
 [workspace.package]
-version = "0.13.0"
+version = "0.14.0"
 
 [package]
 name = "murk-cli"
@@ -43,8 +43,8 @@ path = "src/lib.rs"
 name = "murk"
 path = "src/main.rs"
 
-# Dev-only: renders docs/cli-reference.md from the clap model. Gated behind the
-# `doc-gen` feature so it is skipped by a normal build/release.
+# Dev-only: renders the CLI reference, env reference, completions and man pages.
+# Gated behind the `doc-gen` feature so it is skipped by a normal build/release.
 [[bin]]
 name = "gen-docs"
 path = "src/bin/gen-docs.rs"
@@ -66,6 +66,9 @@ serde_json = "1.0.150"
 sha2 = "0.11.0"
 blake3 = "1"
 ed25519-dalek = "3"
+# Point checks on recipient keys (reject low-order and torsion points before
+# age encrypts to them). Already in the tree via ed25519-dalek.
+curve25519-dalek = { version = "5", default-features = false }
 # OpenSSH private-key parsing for ssh-ed25519 vault signing. RSA/encryption
 # features are deliberately off: we only need ed25519, and keeping RSA out avoids
 # widening the Marvin-attack surface (RUSTSEC-2023-0071, already tracked in deny.toml).
@@ -80,7 +83,7 @@ clap_mangen = { version = "0.3.0", optional = true }
 fs2 = "0.4.3"
 pyo3 = { version = "0.30", features = ["extension-module", "abi3-py39"], optional = true }
 walkdir = "2.5.0"
-zeroize = "1"
+zeroize = { version = "1", features = ["serde"] }
 # `murk mcp` — an in-process MCP (Model Context Protocol) stdio server for AI
 # agents. rmcp is the official Rust MCP SDK; tokio + tracing are
 # scoped to that subcommand only (the rest of murk stays sync). Default features

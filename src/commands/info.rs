@@ -11,15 +11,13 @@ pub(crate) fn cmd_info(tags: &[String], json: bool, vault_path: &str) {
     // enforces the version check — same as every other read path.
     let (_vault, raw_bytes) = try_or_die(murk_cli::vault::read_with_raw(Path::new(vault_path)));
     let key_with_source = murk_cli::resolve_key_with_source(vault_path).ok();
-    let secret_key = key_with_source
-        .as_ref()
-        .map(|(k, _)| k.expose_secret().to_string());
+    // Borrowed from the SecretString, never copied into a plain String.
+    let secret_key = key_with_source.as_ref().map(|(k, _)| k.expose_secret());
     let key_source = key_with_source.as_ref().map(|(_, s)| s.clone());
-    let info = try_or_die(murk_cli::vault_info(
-        &raw_bytes,
-        tags,
-        secret_key.as_deref(),
-    ));
+    let info = try_or_die(murk_cli::vault_info(&raw_bytes, tags, secret_key));
+    if key_with_source.is_none() {
+        warn_unverified();
+    }
 
     if json {
         let entries: Vec<serde_json::Value> = info
@@ -61,6 +59,7 @@ pub(crate) fn cmd_info(tags: &[String], json: bool, vault_path: &str) {
         return;
     }
 
+    let info = &info.for_terminal();
     // Nameplate: ░▓ vault_name
     println!(
         "{} {}",

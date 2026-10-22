@@ -33,7 +33,7 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::io::AsyncReadExt;
-use tokio::process::Command as TokioCommand;
+use tokio::process::{Child, Command as TokioCommand};
 
 /// The decrypted, grant-scoped vault state the tools read from. Loaded once by
 /// [`crate::cmd_mcp`] after the identity guard passes, then shared read-only for
@@ -152,6 +152,8 @@ impl MurkMcp {
             )]));
         }
 
+        // `ContentBlock::text` takes an owned `String`, so this one copy of the
+        // value is unavoidable: it is the response the client asked for.
         match murk_cli::get_secret(&st.murk, &key, &st.pubkey) {
             Some(value) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 value.to_string(),
@@ -188,7 +190,8 @@ impl MurkMcp {
             return Ok(tool_err(&e.to_string()));
         }
         // Resolve each key under the grant; fail closed on anything out of scope.
-        let mut secrets: Vec<(String, String)> = Vec::with_capacity(only.len());
+        // Values are borrowed from the zeroizing vault state, never copied.
+        let mut secrets: Vec<(&str, &str)> = Vec::with_capacity(only.len());
         for key in &only {
             let Some(value) = murk_cli::get_secret(&st.murk, key, &st.pubkey) else {
                 return Ok(tool_err(&format!(
@@ -205,12 +208,19 @@ impl MurkMcp {
                     "{key}: not a valid environment variable name"
                 )));
             }
+            // An agent must never be handed a vault-chosen PATH, LD_PRELOAD,
+            // GIT_SSH_COMMAND or MURK_STRICT; there is no override here.
+            if murk_cli::is_reserved_env_name(key) {
+                return Ok(tool_err(&format!(
+                    "{key}: reserved environment name (it changes how programs, shells or murk run) — murk_exec never injects it"
+                )));
+            }
             if value.contains('\0') {
                 return Ok(tool_err(&format!(
                     "{key}: value contains a NUL byte and cannot be injected as an environment variable"
                 )));
             }
-            secrets.push((key.clone(), value.to_string()));
+            secrets.push((key, value));
         }
         run_command(&command, &secrets).await
     }
@@ -284,13 +294,72 @@ async fn read_capped<R: tokio::io::AsyncRead + Unpin>(
     Ok((buf, over))
 }
 
-/// Spawn `command` with a cleaned environment plus `secrets`, capturing stdout/
-/// stderr under [`OUTPUT_CAP`] and [`EXEC_TIMEOUT`]. stdin is null and both output
-/// streams are piped, so the child never touches the server's JSON-RPC channel. A
-/// stream past the cap, or a run past the timeout, kills the child.
+/// A spawned `murk_exec` child that dies together with its whole process tree.
+///
+/// `Child::start_kill` and `kill_on_drop` signal only the direct child, so a
+/// backgrounded grandchild (`sh -c '(sleep 300 &)'`) would outlive the call with
+/// the injected secrets still in its environment. On unix the child is spawned as
+/// the leader of a new process group (`process_group(0)`, so pgid == pid) and
+/// [`ExecChild::kill`] SIGKILLs that whole group. Dropping the guard before the
+/// child is reaped (an early return, or the request future being cancelled) does
+/// the same. A descendant that calls `setsid`/`setpgid` leaves the group and
+/// escapes; this is cleanup, not a sandbox.
+struct ExecChild {
+    inner: Child,
+}
+
+impl ExecChild {
+    /// SIGKILL the child and, on unix, every process in its group. Once the
+    /// child has been reaped this is a no-op: its pid (the pgid) may be recycled
+    /// by then, so signalling it could hit an unrelated process.
+    fn kill(&mut self) {
+        #[cfg(unix)]
+        {
+            let pgid = self
+                .inner
+                .id()
+                .and_then(|pid| libc::pid_t::try_from(pid).ok())
+                .filter(|pid| *pid > 1);
+            if let Some(pgid) = pgid {
+                // SAFETY: killpg takes two integers and touches no memory. The
+                // child is unreaped (`id()` is `Some`), so `pgid` is its own live
+                // or zombie pid and cannot name an unrelated group; the group
+                // leader's pid is reserved until reaped. An error (group already
+                // gone) is irrelevant.
+                unsafe {
+                    libc::killpg(pgid, libc::SIGKILL);
+                }
+            }
+        }
+        let _ = self.inner.start_kill();
+    }
+}
+
+impl Drop for ExecChild {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
+/// [`run_command_within`] under the production [`EXEC_TIMEOUT`].
 async fn run_command(
     command: &[String],
-    secrets: &[(String, String)],
+    secrets: &[(&str, &str)],
+) -> Result<CallToolResult, McpError> {
+    run_command_within(command, secrets, EXEC_TIMEOUT).await
+}
+
+/// Spawn `command` with a cleaned environment plus `secrets`, capturing stdout/
+/// stderr under [`OUTPUT_CAP`] and `timeout`. stdin is null and both output
+/// streams are piped, so the child never touches the server's JSON-RPC channel. A
+/// stream past the cap, or a run past the timeout, kills the child and its
+/// process group. The timeout bounds the whole call: the child's exit is awaited
+/// under the same deadline as the output, so a child that closes its pipes and
+/// keeps running is still killed on time.
+async fn run_command_within(
+    command: &[String],
+    secrets: &[(&str, &str)],
+    timeout: Duration,
 ) -> Result<CallToolResult, McpError> {
     let mut cmd = TokioCommand::new(&command[0]);
     cmd.args(&command[1..]);
@@ -332,21 +401,25 @@ async fn run_command(
     // JSON-RPC channel): null stdin, capture stdout/stderr.
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+        .stderr(Stdio::piped());
+    // A group of its own (pgid == child pid) lets the whole tree be killed; see
+    // [`ExecChild`].
+    #[cfg(unix)]
+    cmd.process_group(0);
 
     let mut child = match cmd.spawn() {
-        Ok(c) => c,
+        Ok(c) => ExecChild { inner: c },
         Err(e) => return Ok(tool_err(&format!("failed to run {}: {e}", command[0]))),
     };
 
-    let so = child.stdout.take().expect("stdout piped");
-    let se = child.stderr.take().expect("stderr piped");
+    let so = child.inner.stdout.take().expect("stdout piped");
+    let se = child.inner.stderr.take().expect("stderr piped");
     let out_fut = read_capped(so, OUTPUT_CAP);
     let err_fut = read_capped(se, OUTPUT_CAP);
     tokio::pin!(out_fut, err_fut);
-    let deadline = tokio::time::sleep(EXEC_TIMEOUT);
-    tokio::pin!(deadline);
+    let deadline = tokio::time::Instant::now() + timeout;
+    let expiry = tokio::time::sleep_until(deadline);
+    tokio::pin!(expiry);
 
     let mut ob: Option<Vec<u8>> = None;
     let mut eb: Option<Vec<u8>> = None;
@@ -363,7 +436,7 @@ async fn run_command(
                     Ok(v) => v,
                     Err(e) => return Ok(tool_err(&format!("reading stdout: {e}"))),
                 };
-                if o { over_cap = true; let _ = child.start_kill(); }
+                if o { over_cap = true; child.kill(); }
                 ob = Some(b);
             }
             r = &mut err_fut, if eb.is_none() => {
@@ -371,19 +444,32 @@ async fn run_command(
                     Ok(v) => v,
                     Err(e) => return Ok(tool_err(&format!("reading stderr: {e}"))),
                 };
-                if o { over_cap = true; let _ = child.start_kill(); }
+                if o { over_cap = true; child.kill(); }
                 eb = Some(b);
             }
-            _ = &mut deadline => { timed_out = true; let _ = child.start_kill(); break; }
+            _ = &mut expiry => { timed_out = true; child.kill(); break; }
         }
     }
 
-    let status = child.wait().await.ok();
+    // The pipes can close (or be closed by the child) long before the process
+    // exits, so waiting for the exit needs the same deadline as the read loop.
+    let mut status = None;
+    if !timed_out {
+        match tokio::time::timeout_at(deadline, child.inner.wait()).await {
+            Ok(s) => status = s.ok(),
+            Err(_) => {
+                timed_out = true;
+                child.kill();
+            }
+        }
+    }
 
     if timed_out {
+        // Reap the killed child; SIGKILL can't be caught, so this returns promptly.
+        let _ = child.inner.wait().await;
         return Ok(tool_err(&format!(
             "command timed out after {}s and was killed",
-            EXEC_TIMEOUT.as_secs()
+            timeout.as_secs()
         )));
     }
 
@@ -416,5 +502,153 @@ async fn run_command(
         Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
     } else {
         Ok(CallToolResult::error(vec![ContentBlock::text(text)]))
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use std::time::Instant;
+
+    fn argv(script: &str) -> Vec<String> {
+        vec!["sh".into(), "-c".into(), script.into()]
+    }
+
+    fn text_of(result: &CallToolResult) -> String {
+        result
+            .content
+            .iter()
+            .filter_map(ContentBlock::as_text)
+            .map(|t| t.text.as_str())
+            .collect()
+    }
+
+    /// Poll for the pid a script wrote to `path` (the file may exist but be empty
+    /// until the shell finishes the redirect).
+    async fn read_pid(path: &Path) -> libc::pid_t {
+        for _ in 0..200 {
+            if let Some(pid) = std::fs::read_to_string(path)
+                .ok()
+                .and_then(|s| s.trim().parse().ok())
+            {
+                return pid;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("script never wrote a pid to {}", path.display());
+    }
+
+    fn is_running(pid: libc::pid_t) -> bool {
+        // SAFETY: signal 0 only probes for the process; no signal is sent.
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            return false;
+        }
+        // kill(pid, 0) also succeeds for a zombie whose reaper is slow (or absent
+        // in a container), so consult the process state. If `ps` is unavailable,
+        // fall back to "running", the conservative answer for these assertions.
+        let state = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+        match state {
+            Some(s) => !s.is_empty() && !s.starts_with('Z'),
+            None => true,
+        }
+    }
+
+    /// Assert `pid` is gone within a few seconds; SIGKILL the straggler first so a
+    /// failing run doesn't leave a long `sleep` behind.
+    async fn assert_dies(pid: libc::pid_t, what: &str) {
+        for _ in 0..100 {
+            if !is_running(pid) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        // SAFETY: plain SIGKILL to a pid this test spawned.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        panic!("{what} (pid {pid}) survived");
+    }
+
+    #[tokio::test]
+    async fn timeout_covers_a_child_that_closes_its_pipes_then_keeps_running() {
+        let start = Instant::now();
+        let res = run_command_within(
+            &argv("exec >&- 2>&-; exec sleep 30"),
+            &[],
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        assert!(
+            start.elapsed() < Duration::from_secs(15),
+            "the wait for exit ignored the deadline: returned after {:?}",
+            start.elapsed()
+        );
+        assert_eq!(res.is_error, Some(true), "{}", text_of(&res));
+        assert!(
+            text_of(&res).contains("timed out after 1s"),
+            "{}",
+            text_of(&res)
+        );
+    }
+
+    #[tokio::test]
+    async fn timeout_kills_a_backgrounded_grandchild() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("pid");
+        // The grandchild inherits the output pipes, so the read loop runs to the
+        // deadline; the leader itself exits immediately.
+        let script = format!(
+            "sleep 300 & echo $! > '{}'; echo started",
+            pidfile.display()
+        );
+        let res = run_command_within(&argv(&script), &[], Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(res.is_error, Some(true), "{}", text_of(&res));
+        assert!(text_of(&res).contains("timed out"), "{}", text_of(&res));
+        assert_dies(read_pid(&pidfile).await, "backgrounded grandchild").await;
+    }
+
+    #[tokio::test]
+    async fn output_cap_kills_a_backgrounded_grandchild() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("pid");
+        // Past the cap the call must finish by killing the tree. Were only the
+        // leader killed, the grandchild would keep stderr open and the call would
+        // run to the (here generous) deadline and report a timeout instead.
+        let script = format!(
+            "sleep 300 & echo $! > '{}'; head -c 2000000 /dev/zero",
+            pidfile.display()
+        );
+        let res = run_command_within(&argv(&script), &[], Duration::from_secs(20))
+            .await
+            .unwrap();
+        assert_eq!(res.is_error, Some(true), "{}", text_of(&res));
+        assert!(
+            text_of(&res).contains("\"truncated\": true"),
+            "expected an over-cap result, got: {}",
+            text_of(&res)
+        );
+        assert_dies(read_pid(&pidfile).await, "backgrounded grandchild").await;
+    }
+
+    #[tokio::test]
+    async fn cancelling_the_call_kills_a_backgrounded_grandchild() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("pid");
+        let script = format!("sleep 300 & echo $! > '{}'; wait", pidfile.display());
+        let call = tokio::spawn(async move {
+            run_command_within(&argv(&script), &[], Duration::from_secs(120)).await
+        });
+        let pid = read_pid(&pidfile).await;
+        // Dropping the in-flight call (a client cancelling the request) must
+        // take the tree down with it.
+        call.abort();
+        let _ = call.await;
+        assert_dies(pid, "backgrounded grandchild").await;
     }
 }

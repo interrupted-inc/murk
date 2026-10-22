@@ -36,8 +36,9 @@ pub(crate) fn random_secret(length: usize, hex: bool) -> zeroize::Zeroizing<Stri
 
 /// Map `--group`/`--scoped` onto a tier (see [`SecretTier::parse`] for the
 /// reserved names); `--scoped` is a deprecated alias for `--group me`. Both
-/// flags at once is a usage error.
-pub(crate) fn resolve_secret_tier(group: Option<&str>, scoped: bool) -> SecretTier {
+/// flags at once is a usage error. `None` when neither flag is given: the
+/// write keeps an existing key in its tier (see [`murk_cli::set_secret`]).
+pub(crate) fn resolve_secret_tier(group: Option<&str>, scoped: bool) -> Option<SecretTier> {
     if let Some(g) = group {
         if scoped {
             die(
@@ -45,16 +46,42 @@ pub(crate) fn resolve_secret_tier(group: Option<&str>, scoped: bool) -> SecretTi
                 1,
             );
         }
-        SecretTier::parse(g)
+        Some(SecretTier::parse(g))
     } else if scoped {
         eprintln!(
             "{} --scoped is deprecated; use --group me",
             "warn".yellow().bold()
         );
-        SecretTier::Me
+        Some(SecretTier::Me)
     } else {
-        SecretTier::Everyone
+        None
     }
+}
+
+/// Display suffix for the tiers a write landed in, e.g. ` (group prod)`.
+fn tiers_label(tiers: &[SecretTier]) -> String {
+    tiers.iter().map(tier_label).collect()
+}
+
+/// Tell the user when an explicit tier moved `key` out of the tiers it held.
+fn report_move(key: &str, write: &murk_cli::SecretWrite) {
+    if write.moved_from.is_empty() {
+        return;
+    }
+    let name = |t: &SecretTier| match t {
+        SecretTier::Everyone => "everyone".to_string(),
+        SecretTier::Me => "me".to_string(),
+        SecretTier::Group(g) => format!("group {g}"),
+    };
+    let from: Vec<String> = write.moved_from.iter().map(name).collect();
+    let to: Vec<String> = write.tiers.iter().map(name).collect();
+    eprintln!(
+        "{} moved {} from {} to {}",
+        "◆".magenta(),
+        key.bold(),
+        from.join(" and "),
+        to.join(" and ")
+    );
 }
 
 /// Read a key's value for the given tier from the working state.
@@ -72,39 +99,6 @@ pub(crate) fn tier_get(
             .and_then(|m| m.get(pubkey))
             .cloned(),
         SecretTier::Group(name) => current.grouped.get(key).and_then(|m| m.get(name)).cloned(),
-    }
-}
-
-/// Set a key's value for the given tier in the working state.
-pub(crate) fn tier_set(
-    current: &mut murk_cli::types::Murk,
-    tier: &SecretTier,
-    pubkey: &str,
-    key: &str,
-    value: zeroize::Zeroizing<String>,
-) {
-    match tier {
-        SecretTier::Everyone => {
-            // everyone is the base tier — drop any group assignment so the
-            // shared value isn't shadowed by stale grouped ciphertext.
-            current.grouped.remove(key);
-            current.values.insert(key.to_string(), value);
-        }
-        SecretTier::Me => {
-            // me is an override; leave the base tier untouched.
-            current
-                .private
-                .entry(key.to_string())
-                .or_default()
-                .insert(pubkey.to_string(), value);
-        }
-        SecretTier::Group(name) => {
-            // the named group becomes the sole base tier.
-            current.values.remove(key);
-            let entry = current.grouped.entry(key.to_string()).or_default();
-            entry.clear();
-            entry.insert(name.to_string(), value);
-        }
     }
 }
 
@@ -135,6 +129,18 @@ pub(crate) fn tier_list(
     entries
 }
 
+/// Warn when a key is named like a loader/shell/tool variable: `export` and
+/// `exec` will refuse to set it without `--allow-reserved`.
+pub(crate) fn warn_if_reserved(key: &str) {
+    if murk_cli::is_reserved_env_name(key) {
+        eprintln!(
+            "{} {} is a reserved environment name (it changes how programs, shells or murk run) — `murk export` and `murk exec` will refuse it unless you pass --allow-reserved",
+            "warn".yellow().bold(),
+            key.bold()
+        );
+    }
+}
+
 pub(crate) fn cmd_add(
     key: &str,
     value: &str,
@@ -154,55 +160,35 @@ pub(crate) fn cmd_add(
             1,
         );
     }
+    warn_if_reserved(key);
 
     let tier = resolve_secret_tier(group, scoped);
 
     let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
+    let pubkey = try_or_die(identity.pubkey_string());
     let original = murk.clone();
     let mut current = murk;
 
-    let (needs_desc_hint, label) = match &tier {
-        SecretTier::Group(name) => {
-            let pubkey = try_or_die(identity.pubkey_string());
-            let needs = try_or_die(murk_cli::add_grouped_secret(
-                &mut vault,
-                &mut current,
-                key,
-                value,
-                desc,
-                example,
-                name,
-                tags,
-                &pubkey,
-            ));
-            (needs, format!(" (group {name})"))
-        }
-        tier => {
-            let scoped = matches!(tier, SecretTier::Me);
-            let pubkey = scoped.then(|| try_or_die(identity.pubkey_string()));
-            let needs = murk_cli::add_secret(
-                &mut vault,
-                &mut current,
-                key,
-                value,
-                desc,
-                example,
-                scoped,
-                tags,
-                pubkey.as_deref(),
-            );
-            (
-                needs,
-                if scoped {
-                    " (me)".to_string()
-                } else {
-                    String::new()
-                },
-            )
-        }
-    };
+    let write = try_or_die(murk_cli::set_secret(
+        &mut vault,
+        &mut current,
+        key,
+        value,
+        desc,
+        example,
+        tier.as_ref(),
+        tags,
+        &pubkey,
+    ));
+    let needs_desc_hint = write.needs_desc_hint;
 
-    eprintln!("{} added {}{label}", "◆".magenta(), key.bold());
+    report_move(key, &write);
+    eprintln!(
+        "{} added {}{}",
+        "◆".magenta(),
+        key.bold(),
+        tiers_label(&write.tiers)
+    );
 
     if needs_desc_hint {
         eprintln!(
@@ -229,36 +215,23 @@ pub(crate) fn cmd_import(
             .unwrap_or_else(|e| die(&format_args!("cannot read {file}: {e}"), 1)),
     );
 
-    // Warn about MURK_* keys that will be skipped during import.
-    for line in contents.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let line = line.strip_prefix("export ").unwrap_or(line);
-        if let Some((key, _)) = line.split_once('=') {
-            let key = key.trim();
-            if key.starts_with("MURK_") {
-                eprintln!(
-                    "{} skipping {}: murk variables cannot be imported",
-                    "⚠".yellow(),
-                    key.bold()
-                );
-            }
-        }
+    // A malformed quoted value refuses the whole file: the lines after an
+    // unclosed quote must not turn into secrets of their own. Notices name
+    // line numbers, never the file's text.
+    let parsed = murk_cli::parse_env(&contents)
+        .unwrap_or_else(|e| die(&format_args!("{file}, {e} — nothing imported"), 1));
+    for skipped in &parsed.skipped {
+        eprintln!("{} skipping {skipped}", "⚠".yellow());
     }
-
-    let all_pairs = murk_cli::parse_env(&contents);
-
-    // Filter out keys that aren't valid shell identifiers. Values stay
-    // wrapped in Zeroizing end-to-end.
-    let mut pairs: Vec<(String, zeroize::Zeroizing<String>)> = Vec::new();
-    for (key, value) in &all_pairs {
-        if is_valid_key_name(key) {
-            pairs.push((key.clone(), value.clone()));
-        } else {
-            eprintln!("{} skipping invalid key name: {}", "⚠".yellow(), key.bold());
-        }
+    for notice in &parsed.hash_notices {
+        eprintln!("{} {notice}", "⚠".yellow());
+    }
+    for duplicate in &parsed.duplicates {
+        eprintln!("{} {duplicate}; the later value is kept", "⚠".yellow());
+    }
+    let pairs = parsed.pairs;
+    for (key, _) in &pairs {
+        warn_if_reserved(key);
     }
 
     if pairs.is_empty() {
@@ -267,6 +240,7 @@ pub(crate) fn cmd_import(
     }
 
     let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
+    let pubkey = try_or_die(identity.pubkey_string());
     let original = murk.clone();
     let mut current = murk;
 
@@ -296,54 +270,39 @@ pub(crate) fn cmd_import(
         }
     }
 
-    let imported: Vec<String> = match &tier {
-        SecretTier::Everyone => murk_cli::import_secrets(&mut vault, &mut current, &pairs, example),
-        SecretTier::Me => {
-            let pubkey = try_or_die(identity.pubkey_string());
-            for (key, value) in &pairs {
-                murk_cli::add_secret(
-                    &mut vault,
-                    &mut current,
-                    key,
-                    value,
-                    None,
-                    example,
-                    true,
-                    &[],
-                    Some(&pubkey),
-                );
-            }
-            pairs.iter().map(|(k, _)| k.clone()).collect()
-        }
-        SecretTier::Group(name) => {
-            let pubkey = try_or_die(identity.pubkey_string());
-            for (key, value) in &pairs {
-                try_or_die(murk_cli::add_grouped_secret(
-                    &mut vault,
-                    &mut current,
-                    key,
-                    value,
-                    None,
-                    example,
-                    name,
-                    &[],
-                    &pubkey,
-                ));
-            }
-            pairs.iter().map(|(k, _)| k.clone()).collect()
-        }
-    };
+    // Any refusal dies before the vault is saved, so the import is all or nothing.
+    let mut imported = Vec::with_capacity(pairs.len());
+    for (key, value) in &pairs {
+        let write = try_or_die(murk_cli::set_secret(
+            &mut vault,
+            &mut current,
+            key,
+            value,
+            None,
+            example,
+            tier.as_ref(),
+            &[],
+            &pubkey,
+        ));
+        imported.push((key, write));
+    }
 
-    for key in &imported {
-        eprintln!("  {} {}", "◆".magenta(), key.bold());
+    for (key, write) in &imported {
+        report_move(key, write);
+        eprintln!(
+            "  {} {}{}",
+            "◆".magenta(),
+            key.bold(),
+            tiers_label(&write.tiers)
+        );
     }
 
     save_vault(vault_path, &mut vault, &original, &current);
     let count = imported.len();
     let label = match &tier {
-        SecretTier::Group(name) => format!(" into group {name}"),
-        SecretTier::Me => " (me)".to_string(),
-        SecretTier::Everyone => String::new(),
+        Some(SecretTier::Group(name)) => format!(" into group {name}"),
+        Some(SecretTier::Me) => " (me)".to_string(),
+        Some(SecretTier::Everyone) | None => String::new(),
     };
     eprintln!(
         "{} imported {count} secret{}{label}",
@@ -371,53 +330,35 @@ pub(crate) fn cmd_generate(
             1,
         );
     }
+    warn_if_reserved(key);
 
     let tier = resolve_secret_tier(group, false);
     let value = random_secret(length, hex);
 
     let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
+    let pubkey = try_or_die(identity.pubkey_string());
     let original = murk.clone();
     let mut current = murk;
 
-    let label = match &tier {
-        SecretTier::Group(name) => {
-            let pubkey = try_or_die(identity.pubkey_string());
-            try_or_die(murk_cli::add_grouped_secret(
-                &mut vault,
-                &mut current,
-                key,
-                &value,
-                desc,
-                example,
-                name,
-                tags,
-                &pubkey,
-            ));
-            format!(" (group {name})")
-        }
-        tier => {
-            let scoped = matches!(tier, SecretTier::Me);
-            let pubkey = scoped.then(|| try_or_die(identity.pubkey_string()));
-            murk_cli::add_secret(
-                &mut vault,
-                &mut current,
-                key,
-                &value,
-                desc,
-                example,
-                scoped,
-                tags,
-                pubkey.as_deref(),
-            );
-            if scoped {
-                " (me)".to_string()
-            } else {
-                String::new()
-            }
-        }
-    };
+    let write = try_or_die(murk_cli::set_secret(
+        &mut vault,
+        &mut current,
+        key,
+        &value,
+        desc,
+        example,
+        tier.as_ref(),
+        tags,
+        &pubkey,
+    ));
 
-    eprintln!("{} generated {}{label}", "◆".magenta(), key.bold());
+    report_move(key, &write);
+    eprintln!(
+        "{} generated {}{}",
+        "◆".magenta(),
+        key.bold(),
+        tiers_label(&write.tiers)
+    );
 
     save_vault(vault_path, &mut vault, &original, &current);
 }
@@ -428,6 +369,7 @@ pub(crate) fn cmd_rotate(
     generate: bool,
     length: usize,
     hex: bool,
+    values_from: Option<&str>,
     vault_path: &str,
 ) {
     if key.is_none() && !all {
@@ -442,8 +384,16 @@ pub(crate) fn cmd_rotate(
             1,
         );
     }
+    let source = if generate {
+        ValueSource::Generate { length, hex }
+    } else if let Some(path) = values_from {
+        ValueSource::Named(read_values_from(path))
+    } else {
+        ValueSource::Prompt
+    };
 
-    let (mut vault, murk, _identity, _lock) = load_vault_locked(vault_path);
+    let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
+    let pubkey = try_or_die(identity.pubkey_string());
     let original = murk.clone();
     let mut current = murk;
 
@@ -457,62 +407,123 @@ pub(crate) fn cmd_rotate(
         vec![k.to_string()]
     };
 
-    if keys_to_rotate.is_empty() {
+    // Plan every key before reading any value, so a refusal never leaves input
+    // half-consumed or the vault half-rotated.
+    let plans: Vec<KeyPlan> = keys_to_rotate
+        .into_iter()
+        .map(|k| {
+            let tiers = murk_cli::key_tiers(&vault, &current, &k, &pubkey);
+            match rotation_targets(&tiers) {
+                Ok(targets) => {
+                    let note = (tiers.own_override && !targets.contains(&SecretTier::Me)).then(
+                        || format!("your personal override of {k} is unchanged — `murk add {k} --group me` replaces it"),
+                    );
+                    KeyPlan {
+                        key: k,
+                        targets,
+                        skipped: Vec::new(),
+                        note,
+                    }
+                }
+                Err(msg) => KeyPlan {
+                    key: k,
+                    targets: Vec::new(),
+                    skipped: vec![msg],
+                    note: None,
+                },
+            }
+        })
+        .collect();
+
+    if !all && let Some(reason) = plans[0].skipped.first() {
+        die(
+            &format_args!("cannot rotate {}: {reason}", plans[0].key.bold()),
+            1,
+        );
+    }
+    check_batch(&vault, &plans, &source, None);
+
+    if plans.is_empty() {
         eprintln!("{}", "no secrets to rotate".dimmed());
         return;
     }
 
-    let mut rotated = 0;
-    for k in &keys_to_rotate {
-        let new_value = if generate {
-            random_secret(length, hex)
-        } else {
-            resolve_value(k)
-        };
-
-        murk_cli::add_secret(
-            &mut vault,
-            &mut current,
-            k,
-            &new_value,
-            None,
-            None,
-            false,
-            &[],
-            None,
-        );
-        rotated += 1;
-        eprintln!("{} rotated {}", "◆".magenta(), k.bold());
+    let outcome = run_rotation(&mut vault, &mut current, &pubkey, &plans, &source);
+    if outcome.rotated == 0 {
+        return;
     }
-
     save_vault(vault_path, &mut vault, &original, &current);
+    outcome.report();
 
-    if rotated > 1 {
+    if outcome.rotated > 1 {
         eprintln!();
         eprintln!(
             "{} rotated {} secrets",
             "✓".green(),
-            rotated.to_string().bold()
+            outcome.rotated.to_string().bold()
         );
     }
 }
 
-/// List keys needing rotation — the same signals doctor reports, but scoped to
-/// rotation and machine-readable. Reads only the plaintext schema, so it works
-/// without a key. JSON mode always exits 0 (empty array when clean); human mode
-/// exits 1 when anything needs rotating, so it can gate scripts.
-pub(crate) fn cmd_rotate_list(json: bool, vault_path: &str) {
-    let path = Path::new(vault_path);
-    let vault = try_or_die(vault::read(path));
+/// The tiers `rotate` replaces for a key: its base value, wherever it lives (the
+/// shared value or the groups the operator belongs to). A personal override is
+/// a deliberate per-recipient deviation, so it is rotated only when it is the
+/// key's sole value the operator holds. Errors (with the reason) when the key
+/// can't be rotated without leaving a stale value or moving it to a wider tier.
+fn rotation_targets(tiers: &murk_cli::KeyTiers) -> Result<Vec<SecretTier>, String> {
+    if let Some(group) = tiers.foreign_groups.first() {
+        return Err(format!(
+            "it is held by group {group}, which you are not a member of — a member must rotate it"
+        ));
+    }
+    let mut targets = Vec::new();
+    if tiers.shared {
+        targets.push(SecretTier::Everyone);
+    }
+    targets.extend(tiers.groups.iter().cloned().map(SecretTier::Group));
+    if targets.is_empty() {
+        if !tiers.own_override {
+            return Err(
+                "it holds only other recipients' personal overrides, which only they can rotate"
+                    .to_string(),
+            );
+        }
+        targets.push(SecretTier::Me);
+    }
+    Ok(targets)
+}
 
+/// List keys needing rotation — the same signals doctor reports, but scoped to
+/// rotation and machine-readable. Human mode exits 1 when anything needs
+/// rotating, so it can gate scripts; JSON mode exits 0 either way.
+///
+/// A gate must not be passable by editing the plaintext header, so with a key
+/// the vault is loaded and verified first ([`read_header`]); a tampered or
+/// untrusted vault fails the command. With no key it reads the schema as
+/// written and says so (`verified: false`, the `warn` line), and `MURK_STRICT`
+/// refuses to hand back such a result.
+pub(crate) fn cmd_rotate_list(json: bool, vault_path: &str) {
+    let (vault, verified) = read_header(vault_path);
     let issues = murk_cli::rotation_health(&vault, chrono::Utc::now());
 
+    if !verified {
+        warn_unverified();
+    }
+    let refuse = !verified && murk_cli::hardening::strict_mode();
+
     if json {
-        println!("{}", serde_json::to_string_pretty(&issues).unwrap());
+        let out = serde_json::json!({ "verified": verified, "issues": &issues });
+        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+        if refuse {
+            refuse_unverified();
+        }
         return;
     }
 
     if issues.is_empty() {
+        if refuse {
+            refuse_unverified();
+        }
         eprintln!("{} no keys need rotation", "ok".green().bold());
         return;
     }
@@ -521,10 +532,38 @@ pub(crate) fn cmd_rotate_list(json: bool, vault_path: &str) {
     report_findings(&findings, "rotation");
 }
 
+/// `MURK_STRICT` does not accept a result no key checked.
+fn refuse_unverified() -> ! {
+    die(
+        &"MURK_STRICT refuses an unverified result\nset MURK_KEY or MURK_KEY_FILE so the vault can be checked",
+        1,
+    )
+}
+
 pub(crate) fn cmd_rm(key: &str, vault_path: &str) {
-    let (mut vault, murk, _identity, _lock) = load_vault_locked(vault_path);
+    let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
+    let pubkey = try_or_die(identity.pubkey_string());
     let original = murk.clone();
     let mut current = murk;
+
+    // Removing a key drops only what the operator can read; anything else
+    // would stay on disk while `ls` stops listing it. Refuse instead.
+    try_or_die(murk_cli::require_group_access(
+        &vault, &current, key, &pubkey,
+    ));
+    let tiers = murk_cli::key_tiers(&vault, &current, key, &pubkey);
+    let holds_unreadable = vault
+        .secrets
+        .get(key)
+        .is_some_and(|e| !e.private.is_empty());
+    if holds_unreadable && !tiers.shared && tiers.groups.is_empty() && !tiers.own_override {
+        die(
+            &format_args!(
+                "{key} holds only other recipients' personal overrides, which only they can remove"
+            ),
+            1,
+        );
+    }
 
     murk_cli::remove_secret(&mut vault, &mut current, key);
 
@@ -553,12 +592,23 @@ pub(crate) fn cmd_get(key: &str, vault_path: &str) {
     strict_guard_plaintext_stdout("capture in a variable instead, e.g. TOKEN=$(murk get KEY)");
     let (vault, murk, identity) = load_vault(vault_path);
     let pubkey = identity.pubkey_string().unwrap_or_else(|e| die(&e, 1));
-    if murk_cli::hardening::self_scope() {
-        try_or_die(murk_cli::check_agent_keys(&vault, &[key.to_string()]));
-    }
+    // An agent grant is always held to the policy; an operator only under
+    // self-scope. Fails closed before any value is printed.
+    try_or_die(murk_cli::enforce_agent_policy(
+        &vault,
+        &murk,
+        &pubkey,
+        &[key.to_string()],
+    ));
 
     if let Some(value) = murk_cli::get_secret(&murk, key, &pubkey) {
-        println!("{value}");
+        // A terminal would act on escape sequences in the value; a pipe gets
+        // the exact bytes.
+        if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+            println!("{}", murk_cli::terminal_text(value, true));
+        } else {
+            println!("{value}");
+        }
         return;
     }
 
@@ -568,7 +618,7 @@ pub(crate) fn cmd_get(key: &str, vault_path: &str) {
     let out_of_scope = murk
         .grants
         .values()
-        .any(|g| g.pubkey == pubkey && !g.scope.iter().any(|k| k == key));
+        .any(|g| murk_cli::same_recipient(&g.pubkey, &pubkey) && !g.scope.iter().any(|k| k == key));
     if out_of_scope && vault.schema.contains_key(key) {
         die(
             &format_args!("{} is outside this grant's scope", key.bold()),
@@ -589,6 +639,7 @@ pub(crate) fn cmd_get(key: &str, vault_path: &str) {
 pub(crate) fn cmd_ls(tags: &[String], json: bool, vault_path: &str) {
     let path = Path::new(vault_path);
     let vault = try_or_die(vault::read(path));
+    warn_if_keyless(vault_path);
 
     let keys = murk_cli::list_keys(&vault, tags);
     if json {
@@ -612,8 +663,10 @@ pub(crate) fn cmd_describe(
     let rotation_patch = parse_rotate_every(rotate_every).unwrap_or_else(|e| die(&e, 2));
     let expires_patch = parse_expires(expires).unwrap_or_else(|e| die(&e, 2));
 
-    let (mut vault, murk, _identity, _lock) = load_vault_locked(vault_path);
+    let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
     let original = murk.clone();
+    let pubkey = try_or_die(identity.pubkey_string());
+    try_or_die(murk_cli::require_group_access(&vault, &murk, key, &pubkey));
 
     murk_cli::describe_key(
         &mut vault,
@@ -671,14 +724,27 @@ pub(crate) fn parse_expires(input: Option<&str>) -> Result<Option<Option<String>
     ))
 }
 
-pub(crate) fn cmd_export(tags: &[String], json: bool, vault_path: &str) {
+pub(crate) fn cmd_export(tags: &[String], json: bool, allow_reserved: bool, vault_path: &str) {
     strict_guard_plaintext_stdout("pipe to a process instead, e.g. eval \"$(murk export)\"");
     let (vault, murk, identity) = load_vault(vault_path);
     let pubkey = identity.pubkey_string().unwrap_or_else(|e| die(&e, 1));
 
     if json {
         let mut raw = murk_cli::resolve_secrets(&vault, &murk, &pubkey, tags);
-        apply_self_scope(&mut raw, &vault);
+        apply_agent_policy(
+            &mut raw,
+            &vault,
+            murk_cli::agent_policy_applies(&murk, &pubkey),
+        );
+        raw.retain(|k, _| {
+            let ok = is_valid_key_name(k);
+            if !ok {
+                eprintln!("{} skipping unsafe key name: {}", "⚠".yellow(), k.bold());
+            }
+            ok
+        });
+        // JSON output is routinely turned into an environment too.
+        refuse_reserved(raw.keys(), allow_reserved);
         // serde_json copies into its own owned String, so zeroization ends here.
         // Controlled boundary: JSON export intentionally writes plaintext to
         // stdout (murk-lints secret_uncontrolled_escape).
@@ -690,25 +756,36 @@ pub(crate) fn cmd_export(tags: &[String], json: bool, vault_path: &str) {
         println!("{}", serde_json::to_string_pretty(&map).unwrap());
     } else {
         let mut exports = murk_cli::export_secrets(&vault, &murk, &pubkey, tags);
-        apply_self_scope(&mut exports, &vault);
-        for (k, escaped) in &exports {
-            if !is_valid_key_name(k) {
+        apply_agent_policy(
+            &mut exports,
+            &vault,
+            murk_cli::agent_policy_applies(&murk, &pubkey),
+        );
+        exports.retain(|k, _| {
+            let ok = is_valid_key_name(k);
+            if !ok {
                 eprintln!("{} skipping unsafe key name: {}", "⚠".yellow(), k.bold());
-                continue;
             }
+            ok
+        });
+        // Checked before anything is printed: `eval "$(murk export)"` must not
+        // half-apply.
+        refuse_reserved(exports.keys(), allow_reserved);
+        for (k, escaped) in &exports {
             println!("export {k}='{}'", escaped.as_str());
         }
     }
 }
 
-/// Under self-scope, drop keys the vault's agent policy forbids from an export
-/// map, warning (not silently) about what was withheld. A no-op without a policy
-/// or outside self-scope.
-pub(crate) fn apply_self_scope(
+/// For an agent grant or under self-scope (`applies`), drop keys the vault's
+/// agent policy forbids from an export map, warning (not silently) about what
+/// was withheld. A no-op without a policy or when the policy doesn't apply.
+pub(crate) fn apply_agent_policy(
     map: &mut std::collections::BTreeMap<String, zeroize::Zeroizing<String>>,
     vault: &types::Vault,
+    applies: bool,
 ) {
-    if !(murk_cli::hardening::self_scope() && vault.policy.is_some()) {
+    if !(applies && vault.policy.is_some()) {
         return;
     }
     let withheld: Vec<String> = map
@@ -721,7 +798,7 @@ pub(crate) fn apply_self_scope(
     }
     map.retain(|k, _| murk_cli::is_agent_key_allowed(vault, k));
     eprintln!(
-        "{} self-scope: withholding {} key(s) not allowed by policy: {}",
+        "{} agent policy: withholding {} key(s) not allowed by policy: {}",
         "⚠".yellow(),
         withheld.len(),
         withheld.join(", ")
@@ -729,9 +806,27 @@ pub(crate) fn apply_self_scope(
 }
 
 pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vault_path: &str) {
-    let tier = resolve_secret_tier(group, scoped);
+    // The tier whose values are edited. A line for a key outside it is written
+    // with `set_secret`: into `explicit` when given, else where the key lives.
+    let explicit = resolve_secret_tier(group, scoped);
+    let tier = explicit.clone().unwrap_or(SecretTier::Everyone);
 
+    // The vault's bytes as loaded. The editor can stay open for minutes, and a
+    // `git pull` or checkout meanwhile does not take murk's lock; saving then
+    // would silently undo it (even re-adding a revoked recipient). Read before
+    // loading, so any change after this point is caught.
+    let on_disk = fs::read(vault_path).ok();
     let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
+    let refuse_if_changed = || {
+        if fs::read(vault_path).ok() != on_disk {
+            die(
+                &format_args!(
+                    "{vault_path} changed on disk while the editor was open — nothing saved\nre-run murk edit to edit the current vault"
+                ),
+                1,
+            );
+        }
+    };
     let original = murk.clone();
     let mut current = murk;
     let pubkey = identity.pubkey_string().unwrap_or_else(|e| die(&e, 1));
@@ -750,13 +845,28 @@ pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vau
     if let SecretTier::Group(name) = &tier {
         match current.groups.get(name) {
             None => die(&format_args!("group not found: {name}"), 1),
-            Some(members) if !members.contains(&pubkey) => die(
-                &format_args!("you must be a member of group \"{name}\" to edit it"),
-                1,
-            ),
+            Some(members)
+                if !members
+                    .iter()
+                    .any(|pk| murk_cli::same_recipient(pk, &pubkey)) =>
+            {
+                die(
+                    &format_args!("you must be a member of group \"{name}\" to edit it"),
+                    1,
+                )
+            }
             Some(_) => {}
         }
     }
+
+    // Editing a listed shared or group value is refused, like `add`, when a
+    // group the operator is not in also holds the key.
+    let check_listed = |vault: &types::Vault, current: &types::Murk, k: &str| {
+        if tier != SecretTier::Me {
+            let tiers = murk_cli::key_tiers(vault, current, k, &pubkey);
+            try_or_die(murk_cli::check_foreign_groups(k, &tiers));
+        }
+    };
 
     let tier_label = match &tier {
         SecretTier::Everyone => String::new(),
@@ -764,20 +874,24 @@ pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vau
         SecretTier::Group(name) => format!(" (group {name})"),
     };
 
-    // Build the edit buffer.
+    // Build the edit buffer. Values use the `.env` quoting of `murk_cli::dotenv`,
+    // so every value, multi-line or not, reads back byte for byte.
+    use murk_cli::dotenv;
+    let quoting_note = "# Values with newlines, quotes, # or spaces at either end are in \"double\n\
+                        # quotes\" with \\n \\t \\\" \\\\ escapes.\n";
     let (header, entries) = if let Some(k) = key {
-        // Single key: just the raw value.
         let value = tier_get(&current, &tier, &pubkey, k).unwrap_or_else(|| {
             die(&format_args!("key {} not found{tier_label}", k.bold()), 1);
         });
+        check_listed(&vault, &current, k);
         (
             format!(
-                "# Editing {k}{tier_label}\n# Save and quit to apply. Empty value or exit non-zero to abort.\n",
+                "# Editing {k}{tier_label}\n# Save and quit to apply. Empty value or exit non-zero to abort.\n{quoting_note}{}\n",
+                dotenv::VALUE_MARKER,
             ),
             vec![(k.to_string(), value)] as Vec<(String, zeroize::Zeroizing<String>)>,
         )
     } else {
-        // All keys: KEY=VALUE format.
         let entries = tier_list(&current, &tier, &pubkey);
         let scope_note = match &tier {
             SecretTier::Everyone => String::new(),
@@ -787,6 +901,7 @@ pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vau
         let header = format!(
             "# Edit secrets below. Lines starting with # are ignored.\n\
              # Format: KEY=VALUE (one per line).\n\
+             {quoting_note}\
              # Delete a line to remove that secret. Add KEY=VALUE to create.\n\
              # Save and quit to apply. Exit non-zero to abort.\n{scope_note}\n",
         );
@@ -794,27 +909,35 @@ pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vau
     };
 
     let single_key = key.is_some();
-    let buffer: zeroize::Zeroizing<String> = if single_key {
-        zeroize::Zeroizing::new(format!("{}{}", header, entries[0].1.as_str()))
+    let mut buffer = zeroize::Zeroizing::new(header);
+    if single_key {
+        dotenv::push_value(&mut buffer, &entries[0].1);
     } else {
-        let mut buf = header;
         for (k, v) in &entries {
-            buf.push_str(&format!("{k}={}\n", v.as_str()));
+            buffer.push_str(k);
+            buffer.push('=');
+            dotenv::push_value(&mut buffer, v);
+            buffer.push('\n');
         }
-        zeroize::Zeroizing::new(buf)
-    };
+    }
 
-    // Prefer XDG_RUNTIME_DIR (typically tmpfs, not written to disk) over /tmp.
+    // The scratch dir: XDG_RUNTIME_DIR if set (typically tmpfs), else a
+    // RAM-backed /dev/shm, else the system temp dir.
     let dir = std::env::var("XDG_RUNTIME_DIR")
         .ok()
         .map(std::path::PathBuf::from)
         .filter(|p| p.is_dir())
+        .or_else(|| {
+            let shm = std::path::PathBuf::from("/dev/shm");
+            (cfg!(unix) && shm.is_dir() && murk_cli::hardening::is_ram_backed(&shm)).then_some(shm)
+        })
         .unwrap_or_else(std::env::temp_dir);
+    let ram_backed = murk_cli::hardening::is_ram_backed(&dir);
 
     // Strict mode: refuse to write the decrypted secret anywhere but RAM. The
     // best-effort wipe below can't undo a write to a journaled/CoW disk, so when
     // MURK_STRICT is set we fail closed rather than fall back to a disk temp dir.
-    if murk_cli::hardening::strict_mode() && !murk_cli::hardening::is_ram_backed(&dir) {
+    if murk_cli::hardening::strict_mode() && !ram_backed {
         eprintln!(
             "{} MURK_STRICT is set but {} is not RAM-backed",
             "error".red().bold(),
@@ -830,6 +953,19 @@ pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vau
         );
         std::process::exit(1);
     }
+    if !ram_backed {
+        eprintln!(
+            "{} the plaintext goes to a scratch file in {}, which is not RAM-backed",
+            "⚠".yellow(),
+            dir.display()
+        );
+        eprintln!(
+            "  {}",
+            "murk wipes it afterwards, but a journaling or copy-on-write disk can keep a copy; \
+             point XDG_RUNTIME_DIR at a tmpfs, or set MURK_STRICT=1 to refuse"
+                .dimmed()
+        );
+    }
 
     use super::editor::{EditAbort, edit_in_scratch_file};
     let edited = match edit_in_scratch_file(&dir, &buffer) {
@@ -843,24 +979,21 @@ pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vau
         }
     };
 
-    // Parse and apply changes.
+    // Parse and apply changes. A buffer that does not parse saves nothing.
+    fn refused(e: &murk_cli::dotenv::ParseError) -> ! {
+        die(
+            &format_args!(
+                "edited file, {e} — nothing saved\nsee the quoting notes at the top of the file"
+            ),
+            1,
+        )
+    }
     if single_key {
         let k = key.unwrap();
-        // Strip comment header, trim trailing newline.
-        let mut new_value: zeroize::Zeroizing<String> = zeroize::Zeroizing::new(
-            edited
-                .lines()
-                .filter(|l| !l.starts_with('#'))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        );
-        let trimmed_len = new_value.trim_end_matches('\n').len();
-        new_value.truncate(trimmed_len);
-
-        if new_value.is_empty() {
+        let Some(new_value) = dotenv::parse_single(&edited).unwrap_or_else(|e| refused(&e)) else {
             eprintln!("{} empty value — no changes", "◆".magenta());
             return;
-        }
+        };
 
         let old_value = tier_get(&current, &tier, &pubkey, k);
 
@@ -869,36 +1002,27 @@ pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vau
             return;
         }
 
-        tier_set(&mut current, &tier, &pubkey, k, new_value);
+        // The value exists in this tier (the buffer was built from it), so it is
+        // replaced in place without moving the key.
+        try_or_die(murk_cli::rotate_secret(
+            &mut vault,
+            &mut current,
+            k,
+            &new_value,
+            &tier,
+            &pubkey,
+        ));
 
+        refuse_if_changed();
         save_vault(vault_path, &mut vault, &original, &current);
         eprintln!("{} updated {}{tier_label}", "◆".magenta(), k.bold());
     } else {
-        // Multi-key: parse KEY=VALUE lines, diff against original.
-        let mut new_entries: std::collections::BTreeMap<String, zeroize::Zeroizing<String>> =
-            std::collections::BTreeMap::new();
-        for line in edited.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-            let (k, v) = match trimmed.split_once('=') {
-                Some((k, v)) => (k.trim(), v),
-                None => {
-                    eprintln!(
-                        "{} skipping malformed line: {}",
-                        "⚠".yellow(),
-                        trimmed.dimmed()
-                    );
-                    continue;
-                }
-            };
-            if !is_valid_key_name(k) {
-                eprintln!("{} skipping invalid key name: {}", "⚠".yellow(), k.bold());
-                continue;
-            }
-            new_entries.insert(k.to_string(), zeroize::Zeroizing::new(v.to_string()));
-        }
+        // Multi-key: diff the parsed entries against the original.
+        let new_entries: std::collections::BTreeMap<String, zeroize::Zeroizing<String>> =
+            dotenv::parse_edit_buffer(&edited)
+                .unwrap_or_else(|e| refused(&e))
+                .into_iter()
+                .collect();
 
         // Compute diff.
         let old_entries: std::collections::BTreeMap<String, zeroize::Zeroizing<String>> =
@@ -912,17 +1036,37 @@ pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vau
             match old_entries.get(k) {
                 Some(old_v) if old_v.as_str() == v.as_str() => {} // Unchanged.
                 Some(_) => {
-                    tier_set(&mut current, &tier, &pubkey, k, v.clone());
+                    check_listed(&vault, &current, k);
+                    try_or_die(murk_cli::rotate_secret(
+                        &mut vault,
+                        &mut current,
+                        k,
+                        v,
+                        &tier,
+                        &pubkey,
+                    ));
                     updated += 1;
                 }
                 None => {
-                    tier_set(&mut current, &tier, &pubkey, k, v.clone());
-                    // Ensure schema entry exists for new keys.
-                    vault
-                        .schema
-                        .entry(k.clone())
-                        .or_insert_with(murk_cli::types::SchemaEntry::default);
-                    added += 1;
+                    // Not listed in this tier: the key is new, or lives elsewhere.
+                    let existed = vault.secrets.contains_key(k);
+                    let write = try_or_die(murk_cli::set_secret(
+                        &mut vault,
+                        &mut current,
+                        k,
+                        v,
+                        None,
+                        None,
+                        explicit.as_ref(),
+                        &[],
+                        &pubkey,
+                    ));
+                    report_move(k, &write);
+                    if existed {
+                        updated += 1;
+                    } else {
+                        added += 1;
+                    }
                 }
             }
         }
@@ -957,6 +1101,7 @@ pub(crate) fn cmd_edit(key: Option<&str>, scoped: bool, group: Option<&str>, vau
             return;
         }
 
+        refuse_if_changed();
         save_vault(vault_path, &mut vault, &original, &current);
 
         let mut parts = vec![];

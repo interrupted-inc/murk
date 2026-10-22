@@ -7,15 +7,16 @@
 
 use crate::types;
 use std::collections::BTreeMap;
+use zeroize::Zeroizing;
 
 /// Compute an integrity MAC over the vault's secrets, scoped entries, grouped
-/// entries, recipients, schema, and group membership.
+/// entries, recipients, schema, group membership, grants, policy, revoked-at
+/// markers, and the header identity fields.
 ///
-/// With a key and at least one group, uses BLAKE3 keyed hash v6 (`blake3v4:`),
-/// which additionally covers the grouped ciphertexts and group definitions. With
-/// a key and no groups, uses v5 (`blake3v3:`) so group-free vaults stay
-/// byte-identical to before groups existed. Without a key, falls back to unkeyed
-/// SHA-256 v2 for legacy compatibility.
+/// With a key, always uses v10 (`blake3v8:`), the only scheme that covers the
+/// header identity fields (`vault_name`, `repo`, `created`, `vault_id`,
+/// `generation`), so every save upgrades an older vault. Without a key, falls
+/// back to unkeyed SHA-256 v2 for legacy compatibility.
 pub(crate) fn compute_mac(
     vault: &types::Vault,
     groups: &BTreeMap<String, Vec<String>>,
@@ -23,15 +24,22 @@ pub(crate) fn compute_mac(
     mac_key: Option<&[u8; 32]>,
 ) -> String {
     match mac_key {
-        Some(key) if vault.schema.values().any(|e| e.revoked_at.is_some()) => {
-            compute_mac_v9(vault, groups, grants, key)
-        }
-        Some(key) if vault.policy.is_some() => compute_mac_v8(vault, groups, grants, key),
-        Some(key) if !grants.is_empty() => compute_mac_v7(vault, groups, grants, key),
-        Some(key) if !groups.is_empty() => compute_mac_v6(vault, groups, key),
-        Some(key) => compute_mac_v5(vault, key),
+        Some(key) => compute_mac_v10(vault, groups, grants, key),
         None => compute_mac_v2(vault),
     }
+}
+
+/// Newest `blake3vN:` prefix this build writes and verifies.
+const NEWEST_BLAKE3_VERSION: u32 = 8;
+
+/// Whether `mac` carries a `blake3vN:` prefix newer than this build knows: the
+/// output of a newer murk, which the caller reports as such instead of as
+/// tampering. Any other unrecognized MAC is just invalid.
+pub(crate) fn is_newer_mac_scheme(mac: &str) -> bool {
+    mac.strip_prefix("blake3v")
+        .and_then(|rest| rest.split_once(':'))
+        .and_then(|(n, _)| n.parse::<u32>().ok())
+        .is_some_and(|n| n > NEWEST_BLAKE3_VERSION)
 }
 
 /// Legacy MAC: covers key names, shared ciphertext, and recipients (no scoped).
@@ -376,8 +384,8 @@ fn v6_mac_bytes(vault: &types::Vault, groups: &BTreeMap<String, Vec<String>>, da
 
 /// v6 MAC (`blake3v4:`). Extends v5 with the per-secret grouped ciphertexts and
 /// the group membership map, so a named group's members and the values encrypted
-/// to them cannot be tampered with undetected. Only emitted once a vault has at
-/// least one group; group-free vaults keep writing v5 and stay byte-identical.
+/// to them cannot be tampered with undetected. Verified for vaults written
+/// before v10; no longer emitted.
 fn compute_mac_v6(
     vault: &types::Vault,
     groups: &BTreeMap<String, Vec<String>>,
@@ -391,9 +399,9 @@ fn compute_mac_v6(
 
 /// v7 MAC (`blake3v5:`). Extends v6 with agent grant metadata — each grant's
 /// name, ephemeral pubkey, sorted scope, issued_at, expires_at, and issuer — so
-/// a grant's TTL and scope cannot be tampered with undetected. Only emitted once
-/// a vault has at least one grant; grant-free vaults keep writing v5/v6 and stay
-/// byte-identical.
+/// a grant's TTL and scope cannot be tampered with undetected. Verified for
+/// vaults written before v10; no longer emitted.
+///
 /// Append the v7 byte stream (v6 bytes plus agent grant metadata) to `data`.
 /// Factored out so v8 can extend the exact same bytes without risking a change
 /// to v7's encoding.
@@ -454,7 +462,7 @@ fn v8_mac_bytes(
 
     // Policy (header). `0x08` opens the policy block (present only when a policy
     // exists, so Some-but-empty is distinct from None). Each agent allow-tag is
-    // length-prefixed (4-byte big-endian) and sorted, so the byte stream is
+    // length-prefixed (8-byte big-endian) and sorted, so the byte stream is
     // unambiguous regardless of tag contents — a crafted tag can't forge a
     // boundary (e.g. `["a\tb"]` and `["a", "b"]` hash differently). New policy
     // fields extend this block.
@@ -473,9 +481,8 @@ fn v8_mac_bytes(
 }
 
 /// v8 MAC (`blake3v6:`). Extends v7 with the plaintext header policy object, so a
-/// vault's agent access policy cannot be weakened or stripped undetected. Only
-/// emitted once a vault has a policy; policy-free vaults keep writing v5/v6/v7
-/// and stay byte-identical.
+/// vault's agent access policy cannot be weakened or stripped undetected.
+/// Verified for vaults written before v10; no longer emitted.
 fn compute_mac_v8(
     vault: &types::Vault,
     groups: &BTreeMap<String, Vec<String>>,
@@ -490,9 +497,8 @@ fn compute_mac_v8(
 
 /// v9 MAC (`blake3v7:`). Extends v8 with each schema entry's `revoked_at` marker,
 /// so the "still owed a rotation since a revoke" flag is tamper-evident — an
-/// attacker editing `.murk` can't silently clear it. Only emitted once a vault
-/// has at least one `revoked_at` set; vaults without one keep writing v5–v8 and
-/// stay byte-identical.
+/// attacker editing `.murk` can't silently clear it. Verified for vaults written
+/// before v10; no longer emitted.
 fn compute_mac_v9(
     vault: &types::Vault,
     groups: &BTreeMap<String, Vec<String>>,
@@ -500,7 +506,21 @@ fn compute_mac_v9(
     key: &[u8; 32],
 ) -> String {
     let mut data = Vec::new();
-    v8_mac_bytes(vault, groups, grants, &mut data);
+    v9_mac_bytes(vault, groups, grants, &mut data);
+    let hash = blake3::keyed_hash(key, &data);
+    format!("blake3v7:{hash}")
+}
+
+/// Append the v9 byte stream (v8 bytes plus revoked-at markers) to `data`.
+/// Factored out so v10 extends the exact same bytes without risking a change
+/// to v9's encoding.
+fn v9_mac_bytes(
+    vault: &types::Vault,
+    groups: &BTreeMap<String, Vec<String>>,
+    grants: &BTreeMap<String, types::GrantEntry>,
+    data: &mut Vec<u8>,
+) {
+    v8_mac_bytes(vault, groups, grants, data);
 
     // Revoked-at markers, in schema order (BTreeMap → sorted by key name). `0x09`
     // opens each marker so the stream can't be confused with the schema (`0x02`)
@@ -515,13 +535,54 @@ fn compute_mac_v9(
             data.push(0x00);
         }
     }
-
-    let hash = blake3::keyed_hash(key, &data);
-    format!("blake3v7:{hash}")
 }
 
-/// Verify a stored MAC against the vault, accepting v1, v2, blake3, blake3v2,
-/// blake3v3, blake3v4, blake3v5, blake3v6, and blake3v7 schemes.
+/// v10 MAC (`blake3v8:`). Extends v9 with the plaintext header identity fields
+/// and the per-grant `agents` blobs, so a vault's name, repo URL, creation
+/// time, vault id, save generation, and grant ciphertexts cannot be edited
+/// undetected. `0x0A` opens the header block; each string is length-prefixed
+/// (8-byte big-endian) so no field value can forge a boundary, and the
+/// generation is a fixed 8-byte big-endian integer. `0x0B` then opens each
+/// `agents` entry (sorted by pubkey): length-prefixed pubkey, then ciphertext.
+/// Always emitted when a key is present, because every vault has these fields.
+fn compute_mac_v10(
+    vault: &types::Vault,
+    groups: &BTreeMap<String, Vec<String>>,
+    grants: &BTreeMap<String, types::GrantEntry>,
+    key: &[u8; 32],
+) -> String {
+    fn push_len_prefixed(data: &mut Vec<u8>, s: &str) {
+        // usize→u64 is lossless on supported targets.
+        data.extend_from_slice(&(s.len() as u64).to_be_bytes());
+        data.extend_from_slice(s.as_bytes());
+    }
+
+    let mut data = Vec::new();
+    v9_mac_bytes(vault, groups, grants, &mut data);
+
+    data.push(0x0A);
+    for field in [
+        &vault.vault_name,
+        &vault.repo,
+        &vault.created,
+        &vault.vault_id,
+    ] {
+        push_len_prefixed(&mut data, field);
+    }
+    data.extend_from_slice(&vault.generation.to_be_bytes());
+
+    for (pubkey, blob) in &vault.agents {
+        data.push(0x0B);
+        push_len_prefixed(&mut data, pubkey);
+        push_len_prefixed(&mut data, blob);
+    }
+
+    let hash = blake3::keyed_hash(key, &data);
+    format!("blake3v8:{hash}")
+}
+
+/// Verify a stored MAC against the vault, accepting v1, v2, blake3, and
+/// blake3v2 through blake3v8 schemes.
 pub(crate) fn verify_mac(
     vault: &types::Vault,
     groups: &BTreeMap<String, Vec<String>>,
@@ -531,10 +592,25 @@ pub(crate) fn verify_mac(
 ) -> bool {
     use constant_time_eq::constant_time_eq;
 
-    // `revoked_at` is only covered by v9 (`blake3v7:`). A vault carrying one but
-    // stamped with an older MAC is tampered or inconsistent — reject it so an
-    // attacker can't clear a pending-rotation flag by downgrading the MAC.
-    if vault.schema.values().any(|e| e.revoked_at.is_some()) && !stored_mac.starts_with("blake3v7:")
+    // `vault_id`, `generation`, and `agents` are only covered by v10
+    // (`blake3v8:`), and a 3.x vault is only ever written with it. A vault
+    // carrying any of them, or a 3.x version, under an older MAC is tampered or
+    // inconsistent: reject it so an attacker can't roll the counter back, swap
+    // the vault id, or inject a grant blob by downgrading.
+    let needs_v10 = !vault.vault_id.is_empty()
+        || vault.generation != 0
+        || !vault.agents.is_empty()
+        || crate::validate::is_v3_version(&vault.version);
+    if needs_v10 && !stored_mac.starts_with("blake3v8:") {
+        return false;
+    }
+
+    // `revoked_at` is only covered by v9 (`blake3v7:`) and up. A vault carrying
+    // one but stamped with an older MAC is tampered or inconsistent — reject it
+    // so an attacker can't clear a pending-rotation flag by downgrading the MAC.
+    if vault.schema.values().any(|e| e.revoked_at.is_some())
+        && !stored_mac.starts_with("blake3v7:")
+        && !stored_mac.starts_with("blake3v8:")
     {
         return false;
     }
@@ -545,6 +621,7 @@ pub(crate) fn verify_mac(
     if vault.policy.is_some()
         && !stored_mac.starts_with("blake3v6:")
         && !stored_mac.starts_with("blake3v7:")
+        && !stored_mac.starts_with("blake3v8:")
     {
         return false;
     }
@@ -555,6 +632,7 @@ pub(crate) fn verify_mac(
         && !stored_mac.starts_with("blake3v5:")
         && !stored_mac.starts_with("blake3v6:")
         && !stored_mac.starts_with("blake3v7:")
+        && !stored_mac.starts_with("blake3v8:")
     {
         return false;
     }
@@ -571,11 +649,17 @@ pub(crate) fn verify_mac(
         && !stored_mac.starts_with("blake3v5:")
         && !stored_mac.starts_with("blake3v6:")
         && !stored_mac.starts_with("blake3v7:")
+        && !stored_mac.starts_with("blake3v8:")
     {
         return false;
     }
 
-    let expected = if stored_mac.starts_with("blake3v7:") {
+    let expected = if stored_mac.starts_with("blake3v8:") {
+        match mac_key {
+            Some(key) => compute_mac_v10(vault, groups, grants, key),
+            None => return false,
+        }
+    } else if stored_mac.starts_with("blake3v7:") {
         match mac_key {
             Some(key) => compute_mac_v9(vault, groups, grants, key),
             None => return false,
@@ -620,22 +704,25 @@ pub(crate) fn verify_mac(
     constant_time_eq(stored_mac.as_bytes(), expected.as_bytes())
 }
 
-/// Generate a random 32-byte BLAKE3 MAC key, returned as hex.
-pub(crate) fn generate_mac_key() -> String {
-    let key: [u8; 32] = rand::random();
-    key.iter().fold(String::new(), |mut s, b| {
+/// Generate a random 32-byte BLAKE3 MAC key, returned as hex. Both the raw
+/// bytes and the hex are wiped on drop; the hex is sized up front so writing it
+/// never reallocates.
+pub(crate) fn generate_mac_key() -> Zeroizing<String> {
+    let key: Zeroizing<[u8; 32]> = Zeroizing::new(rand::random());
+    let mut hex = Zeroizing::new(String::with_capacity(64));
+    for b in key.iter() {
         use std::fmt::Write;
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+        let _ = write!(hex, "{b:02x}");
+    }
+    hex
 }
 
-/// Decode a hex-encoded 32-byte key.
-pub(crate) fn decode_mac_key(hex: &str) -> Option<[u8; 32]> {
+/// Decode a hex-encoded 32-byte key into a buffer wiped on drop.
+pub(crate) fn decode_mac_key(hex: &str) -> Option<Zeroizing<[u8; 32]>> {
     if hex.len() != 64 {
         return None;
     }
-    let mut key = [0u8; 32];
+    let mut key = Zeroizing::new([0u8; 32]);
     for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
         key[i] = u8::from_str_radix(std::str::from_utf8(chunk).ok()?, 16).ok()?;
     }
@@ -655,6 +742,10 @@ mod tests {
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec!["age1abc".into()],
             schema: BTreeMap::new(),
             policy: None,
@@ -676,7 +767,7 @@ mod tests {
             Some(&key),
         );
         assert_eq!(mac1, mac2);
-        assert!(mac1.starts_with("blake3v3:"));
+        assert!(mac1.starts_with("blake3v8:"));
 
         // Without key, falls back to sha256v2
         let mac_legacy = compute_mac(
@@ -695,6 +786,10 @@ mod tests {
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec!["age1abc".into()],
             schema: BTreeMap::new(),
             policy: None,
@@ -735,6 +830,10 @@ mod tests {
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec!["age1abc".into()],
             schema: BTreeMap::new(),
             policy: None,
@@ -766,6 +865,10 @@ mod tests {
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec!["age1abc".into()],
             schema: BTreeMap::new(),
             policy: None,
@@ -810,10 +913,14 @@ mod tests {
     #[allow(clippy::too_many_lines)] // exhaustively enumerates every MAC scheme
     fn verify_mac_accepts_v1_prefix() {
         let vault = types::Vault {
-            version: types::VAULT_VERSION.into(),
+            version: "2.0".into(),
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec!["age1abc".into()],
             schema: BTreeMap::new(),
             policy: None,
@@ -893,7 +1000,7 @@ mod tests {
             Some(&key)
         ));
 
-        // v5 (blake3v3) — current scheme, includes lifecycle metadata
+        // v5 (blake3v3) — includes lifecycle metadata
         let v5_mac = compute_mac_v5(&vault, &key);
         assert!(v5_mac.starts_with("blake3v3:"));
         assert!(verify_mac(
@@ -903,25 +1010,10 @@ mod tests {
             &v5_mac,
             Some(&key)
         ));
-        // compute_mac emits v5 when there are no groups
-        assert!(
-            compute_mac(
-                &vault,
-                &std::collections::BTreeMap::new(),
-                &std::collections::BTreeMap::new(),
-                Some(&key)
-            )
-            .starts_with("blake3v3:")
-        );
 
-        // v6 (blake3v4) — emitted once a group exists; verifies and round-trips
+        // v6 (blake3v4) — covers groups; verifies and round-trips
         let groups = BTreeMap::from([("prod".to_string(), vec!["age1abc".to_string()])]);
-        let v6_mac = compute_mac(
-            &vault,
-            &groups,
-            &std::collections::BTreeMap::new(),
-            Some(&key),
-        );
+        let v6_mac = compute_mac_v6(&vault, &groups, &key);
         assert!(v6_mac.starts_with("blake3v4:"));
         assert!(verify_mac(
             &vault,
@@ -950,10 +1042,14 @@ mod tests {
         // grouped entry must not verify against the old scheme — otherwise an
         // attacker without a key could add a group value that wins on read.
         let mut vault = types::Vault {
-            version: types::VAULT_VERSION.into(),
+            version: "2.0".into(),
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec!["age1abc".into()],
             schema: BTreeMap::new(),
             policy: None,
@@ -962,12 +1058,7 @@ mod tests {
         };
         let key = [7u8; 32];
         let no_groups = BTreeMap::new();
-        let v5_mac = compute_mac(
-            &vault,
-            &no_groups,
-            &std::collections::BTreeMap::new(),
-            Some(&key),
-        );
+        let v5_mac = compute_mac_v5(&vault, &key);
         assert!(v5_mac.starts_with("blake3v3:"));
         assert!(verify_mac(
             &vault,
@@ -997,10 +1088,14 @@ mod tests {
     #[test]
     fn mac_v7_covers_grant_metadata() {
         let vault = types::Vault {
-            version: types::VAULT_VERSION.into(),
+            version: "2.0".into(),
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec!["age1abc".into(), "age1agent".into()],
             schema: BTreeMap::new(),
             policy: None,
@@ -1010,7 +1105,7 @@ mod tests {
         let key = [9u8; 32];
         let no_groups = BTreeMap::new();
 
-        // compute_mac emits v7 (blake3v5) once a grant exists.
+        // v7 (blake3v5) covers grant metadata.
         let grants = BTreeMap::from([(
             "codex".to_string(),
             types::GrantEntry {
@@ -1019,9 +1114,10 @@ mod tests {
                 issued_at: "2026-02-28T00:00:00Z".into(),
                 expires_at: "2026-02-28T02:00:00Z".into(),
                 issuer: "age1abc".into(),
+                anchors: Vec::new(),
             },
         )]);
-        let v7_mac = compute_mac(&vault, &no_groups, &grants, Some(&key));
+        let v7_mac = compute_mac_v7(&vault, &no_groups, &grants, &key);
         assert!(v7_mac.starts_with("blake3v5:"));
         assert!(verify_mac(&vault, &no_groups, &grants, &v7_mac, Some(&key)));
 
@@ -1034,6 +1130,7 @@ mod tests {
                 issued_at: "2026-02-28T00:00:00Z".into(),
                 expires_at: "2026-02-28T02:00:00Z".into(),
                 issuer: "age1abc".into(),
+                anchors: Vec::new(),
             },
         )]);
         assert!(!verify_mac(
@@ -1055,6 +1152,10 @@ mod tests {
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec!["age1abc".into()],
             schema: BTreeMap::new(),
             policy: None,
@@ -1071,6 +1172,7 @@ mod tests {
                 issued_at: "2026-02-28T00:00:00Z".into(),
                 expires_at: "2026-02-28T02:00:00Z".into(),
                 issuer: "age1abc".into(),
+                anchors: Vec::new(),
             },
         )]);
         // A v6 MAC (no grants in the digest) must be rejected once grants exist.
@@ -1088,10 +1190,14 @@ mod tests {
     #[test]
     fn mac_v8_covers_policy() {
         let mut vault = types::Vault {
-            version: types::VAULT_VERSION.into(),
+            version: "2.0".into(),
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec!["age1abc".into()],
             schema: BTreeMap::new(),
             policy: Some(types::Policy {
@@ -1104,8 +1210,8 @@ mod tests {
         let no_groups = BTreeMap::new();
         let no_grants = BTreeMap::new();
 
-        // compute_mac emits v8 (blake3v6) once a policy exists.
-        let v8_mac = compute_mac(&vault, &no_groups, &no_grants, Some(&key));
+        // v8 (blake3v6) covers the policy.
+        let v8_mac = compute_mac_v8(&vault, &no_groups, &no_grants, &key);
         assert!(v8_mac.starts_with("blake3v6:"));
         assert!(verify_mac(
             &vault,
@@ -1137,6 +1243,10 @@ mod tests {
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec!["age1abc".into()],
             schema: BTreeMap::new(),
             policy: None,
@@ -1171,6 +1281,10 @@ mod tests {
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec!["age1abc".into()],
             schema: BTreeMap::new(),
             policy: Some(types::Policy {
@@ -1201,6 +1315,10 @@ mod tests {
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec!["age1abc".into()],
             schema: BTreeMap::new(),
             policy: None,
@@ -1263,10 +1381,14 @@ mod tests {
     #[test]
     fn compute_mac_v9_covers_revoked_at() {
         let mut vault = types::Vault {
-            version: types::VAULT_VERSION.into(),
+            version: "2.0".into(),
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec!["age1abc".into()],
             schema: BTreeMap::new(),
             policy: None,
@@ -1285,13 +1407,11 @@ mod tests {
         let groups = BTreeMap::new();
         let grants = BTreeMap::new();
 
-        // No marker → v8 falls through to v5 (no policy/grants/groups here).
-        let baseline = compute_mac(&vault, &groups, &grants, Some(&key));
-        assert!(baseline.starts_with("blake3v3:"));
+        let baseline = compute_mac_v9(&vault, &groups, &grants, &key);
 
-        // Setting `revoked_at` switches the written scheme to v9 and changes the MAC.
+        // Setting `revoked_at` changes the v9 MAC.
         vault.schema.get_mut("API_KEY").unwrap().revoked_at = Some("2026-06-18T00:00:00Z".into());
-        let with_marker = compute_mac(&vault, &groups, &grants, Some(&key));
+        let with_marker = compute_mac_v9(&vault, &groups, &grants, &key);
         assert!(with_marker.starts_with("blake3v7:"));
         assert_ne!(baseline, with_marker);
 
@@ -1324,6 +1444,10 @@ mod tests {
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec!["age1abc".into()],
             schema: BTreeMap::new(),
             policy: None,
@@ -1381,7 +1505,7 @@ mod tests {
             let _ = write!(s, "{b:02x}");
             s
         });
-        assert_eq!(hex, rehex);
+        assert_eq!(hex.as_str(), rehex);
     }
 
     #[test]
@@ -1400,6 +1524,10 @@ mod tests {
             created: "2026-02-28T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec!["age1abc".into()],
             schema: BTreeMap::new(),
             policy: None,
@@ -1422,5 +1550,98 @@ mod tests {
             Some(&key2),
         );
         assert_ne!(mac1, mac2);
+    }
+
+    /// Each header identity field, with a rewrite an attacker might make.
+    fn header_rewrites() -> Vec<(&'static str, crate::testutil::VaultRewrite)> {
+        vec![
+            ("vault_name", |v| v.vault_name = "payments-prod".into()),
+            ("repo", |v| v.repo = "https://github.com/evil/fork".into()),
+            ("created", |v| v.created = "2020-01-01T00:00:00Z".into()),
+            ("vault_id", |v| {
+                v.vault_id = "0123456789abcdef0123456789abcdef".into();
+            }),
+            ("generation", |v| v.generation = 7),
+            ("agents", |v| {
+                v.agents
+                    .insert("age1agent".into(), "Y2lwaGVydGV4dA==".into());
+            }),
+        ]
+    }
+
+    #[test]
+    fn mac_v10_covers_header_fields() {
+        let mut vault = crate::testutil::empty_vault();
+        vault.repo = "https://github.com/org/repo".into();
+        vault.vault_id = "ffffffffffffffffffffffffffffffff".into();
+        vault.generation = 3;
+        let key = [5u8; 32];
+        let (groups, grants) = (BTreeMap::new(), BTreeMap::new());
+        let mac = compute_mac(&vault, &groups, &grants, Some(&key));
+        assert!(mac.starts_with("blake3v8:"));
+        assert!(verify_mac(&vault, &groups, &grants, &mac, Some(&key)));
+
+        for (field, rewrite) in header_rewrites() {
+            let mut forged = vault.clone();
+            rewrite(&mut forged);
+            assert!(
+                !verify_mac(&forged, &groups, &grants, &mac, Some(&key)),
+                "rewriting `{field}` must break the v10 MAC"
+            );
+        }
+    }
+
+    #[test]
+    fn mac_v10_length_prefix_blocks_field_boundary_shift() {
+        // Moving bytes between adjacent header strings must change the MAC.
+        let mut a = crate::testutil::empty_vault();
+        a.vault_name = "ab".into();
+        a.repo = "c".into();
+        let mut b = a.clone();
+        b.vault_name = "a".into();
+        b.repo = "bc".into();
+        let key = [5u8; 32];
+        let (groups, grants) = (BTreeMap::new(), BTreeMap::new());
+        assert_ne!(
+            compute_mac(&a, &groups, &grants, Some(&key)),
+            compute_mac(&b, &groups, &grants, Some(&key))
+        );
+    }
+
+    #[test]
+    fn verify_mac_rejects_pre_v10_scheme_where_v10_is_required() {
+        // A 3.x vault, or one carrying a vault id, generation or agents blob, is
+        // only written with v10. An older MAC on it is a downgrade.
+        let key = [5u8; 32];
+        let (groups, grants) = (BTreeMap::new(), BTreeMap::new());
+        let mut old = crate::testutil::empty_vault();
+        old.version = "2.0".into();
+        let v9 = compute_mac_v9(&old, &groups, &grants, &key);
+        assert!(verify_mac(&old, &groups, &grants, &v9, Some(&key)));
+
+        let mut v3 = old.clone();
+        v3.version = "3.0".into();
+        assert!(!verify_mac(&v3, &groups, &grants, &v9, Some(&key)));
+        for (field, rewrite) in header_rewrites()
+            .into_iter()
+            .filter(|(f, _)| matches!(*f, "vault_id" | "generation" | "agents"))
+        {
+            let mut carrying = old.clone();
+            rewrite(&mut carrying);
+            let v9 = compute_mac_v9(&carrying, &groups, &grants, &key);
+            assert!(
+                !verify_mac(&carrying, &groups, &grants, &v9, Some(&key)),
+                "a vault carrying `{field}` must not verify under v9"
+            );
+        }
+    }
+
+    #[test]
+    fn newer_mac_scheme_is_recognized() {
+        assert!(is_newer_mac_scheme("blake3v9:00"));
+        assert!(is_newer_mac_scheme("blake3v12:00"));
+        assert!(!is_newer_mac_scheme("blake3v8:00"));
+        assert!(!is_newer_mac_scheme("blake3:00"));
+        assert!(!is_newer_mac_scheme("garbage"));
     }
 }

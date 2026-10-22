@@ -18,11 +18,41 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Approve and auto-merge patch updates
-        if: steps.meta.outputs.update-type == 'version-update:semver-patch'
+      # The policy comes from the base branch, never from the pull request.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          sparse-checkout: scripts/automerge-policy.cjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # Patch updates merge unread, except for dependencies murk's security
+      # rests on (crypto, keys, randomness, vault parsing, MCP): those wait for
+      # a human approval.
+      - name: Decide whether the update may merge without review
+        id: policy
+        run: node scripts/automerge-policy.cjs
+        env:
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          DEPENDENCY_NAMES: ${{ steps.meta.outputs.dependency-names }}
+
+      - name: Approve and auto-merge
+        if: steps.policy.outputs.automerge == 'true'
         run: |
           gh pr review --approve "$PR_URL"
           gh pr merge --auto --rebase "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # A later push (a rebase, or a newer version) can turn a qualifying
+      # update into one that needs review; turn off auto-merge set earlier.
+      - name: Leave the update for review
+        if: steps.policy.outputs.automerge != 'true'
+        run: |
+          if [ "$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')" = true ]; then
+            gh pr merge --disable-auto "$PR_URL"
+          fi
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

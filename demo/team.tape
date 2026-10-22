@@ -180,6 +180,14 @@ Type "git pull"
 Enter
 Sleep 2s
 
+Type "# First time on this machine: Bob reviews and trusts the vault"
+Enter
+Sleep 500ms
+
+Type "murk trust --yes"
+Enter
+Sleep 3s
+
 Type "# 2 recipients now, Bob is on the team"
 Enter
 Sleep 500ms

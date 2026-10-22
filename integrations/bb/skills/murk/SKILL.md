@@ -17,10 +17,14 @@ closed — the other values were never encrypted to your identity.
 2. **Never echo, log, or commit secret values.** That includes values you can
    read from a delivered env file and values a reveal grant returns inline.
    Do not write them into code, config, commit messages, or tool output.
-3. **Never commit the delivered env file** (`.murk-<threadId>.env`, the exact
-   path is in every murk_get result). It is mode 0600 and deleted automatically
-   when this thread goes idle. If it shows up in `git status`, leave it out of
-   the commit (it is ephemeral either way).
+3. **Never commit the delivered env file.** It is `.murk-<threadId>.env`, mode
+   0600, and murk_get returns its path when it delivers to a file. The plugin
+   deletes it when this thread goes idle. If it shows up in `git status`,
+   leave it out of the commit.
+4. **Never run `murk trust`, and never pass `--allow-reserved`.** If murk
+   says the vault is not trusted, unsigned, rolled back, or signed by an
+   unknown key, stop and tell the user: deciding who may sign the vault is
+   theirs to make, after they review `murk diff`.
 
 ## Discovering what exists: murk_plan
 
@@ -81,9 +85,9 @@ in an agent context never falls back to the user's personal key in
 `~/.config/murk/keys`. Any `murk` command that needs a key fails closed with
 `cannot read MURK_KEY_FILE`, or with `MURK_KEY and MURK_KEY_FILE are both set`
 if something filled in `MURK_KEY`. `--allow-operator-key` does not change that:
-it only applies outside an agent context. That is by design. Do not unset or
-change those variables, and never point `MURK_KEY_FILE` at anything under
-`~/.config/murk`; that is the user's decision, not yours. `agent exec` also
-masks injected values in its output, but masking is an accident guard, not
-permission to print: an encoded or partial value gets through. Use the
-delivered dotenv file instead.
+it only lets `agent exec` use a personal key that has already resolved, and none
+does here. That is by design. Do not unset or change those variables, and never
+point `MURK_KEY_FILE` at anything under `~/.config/murk`; that is the user's
+decision, not yours. `agent exec` also masks injected values in its output, but
+masking is an accident guard, not permission to print: an encoded or partial
+value gets through. Use the delivered dotenv file instead.

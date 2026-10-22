@@ -52,12 +52,45 @@ pub fn check_agent_keys(vault: &Vault, keys: &[String]) -> Result<(), MurkError>
 
 /// True when `pubkey` identifies a granted agent for this decrypted vault state.
 ///
-/// Agent grants live in the encrypted meta and are carried into [`Murk::grants`]
-/// after decryption, so this is the same "am I an agent" test the CLI makes when
-/// it decrypts as an agent (`lib::decrypt_vault`). An operator (or any plain
-/// recipient) is not in `grants`, so this returns `false` for them.
+/// For the key that loaded the state this is [`Murk::loaded_as_grant`]: what
+/// the key could open (its own `agents` blob, never the meta) decides, not a
+/// grant record a meta writer could bind to anyone's key. For any other key it
+/// is whether a grant record names it.
 pub fn is_agent_identity(murk: &Murk, pubkey: &str) -> bool {
-    murk.grants.values().any(|g| g.pubkey == pubkey)
+    if murk.loaded_by.as_deref() == Some(pubkey) {
+        return murk.loaded_as_grant;
+    }
+    murk.grants
+        .values()
+        .any(|g| crate::recipients::same_recipient(&g.pubkey, pubkey))
+}
+
+/// Whether the agent allow-tag policy governs what `pubkey` may read: always
+/// for an agent grant (decided by what the key opened, so unsetting
+/// `MURK_AGENT` doesn't lift it), and for anyone under self-scope.
+pub fn agent_policy_applies(murk: &Murk, pubkey: &str) -> bool {
+    is_agent_identity(murk, pubkey) || crate::hardening::self_scope()
+}
+
+/// Refuse a vault write when `murk` was decrypted by an agent grant.
+///
+/// Grants are read-only: an agent gets the keys in its scope and nothing else,
+/// so it must not change secrets, recipients, groups, policy or grants. Every
+/// write goes through [`crate::save_vault`], which calls this on the state as
+/// loaded, so the CLI and the bindings are both covered. It reads what the key
+/// opened at load ([`Murk::loaded_as_grant`]), not the environment, so
+/// unsetting `MURK_AGENT` doesn't get around it.
+pub fn ensure_writable(murk: &Murk) -> Result<(), MurkError> {
+    let grant = match &murk.loaded_by {
+        Some(pubkey) => is_agent_identity(murk, pubkey),
+        None => false,
+    };
+    if grant {
+        return Err(MurkError::Grant(
+            "agent grants are read-only; ask the operator to make this change".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Apply the agent guardrails when the caller is a granted agent, or when the
@@ -86,11 +119,16 @@ pub fn enforce_agent_policy(
     // Check every grant bound to this pubkey, not just the first: `create_grant`
     // refuses duplicate bindings, but a hand-built vault could carry them, and an
     // expired duplicate must not hide behind a valid one. Fail closed on any.
-    let mut is_agent = false;
-    let now = chrono::Utc::now();
-    for (name, grant) in murk.grants.iter().filter(|(_, g)| g.pubkey == pubkey) {
-        is_agent = true;
-        check_grant_expiry(name, grant, now)?;
+    let is_agent = is_agent_identity(murk, pubkey);
+    if is_agent {
+        let now = chrono::Utc::now();
+        for (name, grant) in murk
+            .grants
+            .iter()
+            .filter(|(_, g)| crate::recipients::same_recipient(&g.pubkey, pubkey))
+        {
+            check_grant_expiry(name, grant, now)?;
+        }
     }
     if is_agent || crate::hardening::self_scope() {
         check_agent_keys(vault, keys)?;
@@ -100,21 +138,24 @@ pub fn enforce_agent_policy(
 
 /// Refuse an expired (or unreadable) grant at read time.
 ///
-/// An empty `expires_at` — a grant written before TTLs existed — is allowed. A
-/// non-empty value must parse as RFC-3339 and lie in the future: a past
-/// timestamp is expired, and an unparseable one fails closed too, because murk
-/// writes grant metadata itself, so a malformed expiry means corruption or
-/// tampering, never a formatting choice. (`agent ls` display stays lenient;
-/// this gate does not.) Like the allow-tag policy this is a binary-level
-/// guardrail, not access control: the key still decrypts old `.murk` revisions
-/// with raw age, so `agent revoke` + rotate remains the real close.
+/// An empty `expires_at` — a grant written before TTLs existed — counts as
+/// expired: it has no bound, so it fails closed until renewed. A non-empty
+/// value must parse as RFC-3339 and lie in the future: a past timestamp is
+/// expired, and an unparseable one fails closed too, because murk writes grant
+/// metadata itself, so a malformed expiry means corruption or tampering, never
+/// a formatting choice. (`agent ls` display stays lenient; this gate does
+/// not.) Like the allow-tag policy this is a binary-level guardrail, not access
+/// control: the key still decrypts old `.murk` revisions with raw age, so
+/// `agent revoke` + rotate remains the real close.
 pub(crate) fn check_grant_expiry(
     name: &str,
     grant: &GrantEntry,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<(), MurkError> {
     if grant.expires_at.is_empty() {
-        return Ok(());
+        return Err(MurkError::Grant(format!(
+            "grant {name} has no expiry (it predates grant TTLs) — renew it with `murk agent grant --renew` or close it with `murk agent revoke {name}`"
+        )));
     }
     let Ok(exp) = chrono::DateTime::parse_from_rfc3339(&grant.expires_at) else {
         return Err(MurkError::Grant(format!(
@@ -158,15 +199,16 @@ mod tests {
     use crate::types::{GrantEntry, Murk, Policy, SchemaEntry, Vault};
     use std::collections::BTreeMap;
 
-    // Note: `..Default::default()` leaves `expires_at` empty — the legacy
-    // no-TTL shape, which the expiry gate deliberately allows. Tests that
-    // exercise expiry use `agent_murk_expiring`.
+    // A grant with a far-future expiry. An empty `expires_at` (the pre-TTL
+    // shape) counts as expired; tests that exercise expiry use
+    // `agent_murk_expiring`.
     fn agent_murk(pubkey: &str) -> Murk {
         let mut grants = BTreeMap::new();
         grants.insert(
             "codex".to_string(),
             GrantEntry {
                 pubkey: pubkey.to_string(),
+                expires_at: "2999-01-01T00:00:00Z".into(),
                 ..Default::default()
             },
         );
@@ -198,6 +240,10 @@ mod tests {
             created: "2026-06-16T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec![],
             schema,
             policy,

@@ -27,6 +27,7 @@ use commands::recover::*;
 use commands::resolve_value;
 use commands::scan::*;
 use commands::secrets::*;
+use commands::trust::*;
 use commands::verify::*;
 
 fn main() {
@@ -47,6 +48,7 @@ fn main() {
 
 fn run() {
     murk_cli::hardening::disable_core_dumps();
+    murk_cli::hardening::deny_same_user_inspection();
     let cli = Cli::parse();
 
     match cli.command {
@@ -115,6 +117,7 @@ fn run() {
             generate,
             length,
             hex,
+            values_from,
             list,
             json,
             vault,
@@ -123,7 +126,15 @@ fn run() {
             if list {
                 cmd_rotate_list(json, &vault_path);
             } else {
-                cmd_rotate(key.as_deref(), all, generate, length, hex, &vault_path);
+                cmd_rotate(
+                    key.as_deref(),
+                    all,
+                    generate,
+                    length,
+                    hex,
+                    values_from.as_deref(),
+                    &vault_path,
+                );
             }
         }
         Command::Rm { key, vault } => cmd_rm(&key, &murk_cli::resolve_vault_path(&vault)),
@@ -151,8 +162,18 @@ fn run() {
         Command::Info { tag, json, vault } => {
             cmd_info(&tag, json, &murk_cli::resolve_vault_path(&vault));
         }
-        Command::Export { tag, json, vault } => {
-            cmd_export(&tag, json, &murk_cli::resolve_vault_path(&vault));
+        Command::Export {
+            tag,
+            json,
+            allow_reserved,
+            vault,
+        } => {
+            cmd_export(
+                &tag,
+                json,
+                allow_reserved,
+                &murk_cli::resolve_vault_path(&vault),
+            );
         }
         Command::Edit {
             key,
@@ -171,6 +192,7 @@ fn run() {
             only,
             tag,
             clean_env,
+            allow_reserved,
             vault,
             command,
         } => cmd_exec(
@@ -179,6 +201,8 @@ fn run() {
             &tag,
             clean_env,
             /* agent_mode */ false,
+            allow_reserved,
+            /* operator_key_ok */ true,
             &murk_cli::resolve_vault_path(&vault),
         ),
         Command::Authorize {
@@ -198,9 +222,17 @@ fn run() {
         Command::Revoke {
             recipient,
             rotate,
+            values_from,
+            force,
             vault,
         } => {
-            cmd_revoke(&recipient, rotate, &murk_cli::resolve_vault_path(&vault));
+            cmd_revoke(
+                &recipient,
+                rotate,
+                values_from.as_deref(),
+                force,
+                &murk_cli::resolve_vault_path(&vault),
+            );
         }
         Command::Circle {
             sub: None,
@@ -231,10 +263,18 @@ fn run() {
                 Some(CircleCommand::Revoke {
                     recipient,
                     rotate,
+                    values_from,
+                    force,
                     vault,
                 }),
             ..
-        } => cmd_revoke(&recipient, rotate, &murk_cli::resolve_vault_path(&vault)),
+        } => cmd_revoke(
+            &recipient,
+            rotate,
+            values_from.as_deref(),
+            force,
+            &murk_cli::resolve_vault_path(&vault),
+        ),
         Command::Group { sub } => cmd_group(sub),
         Command::Policy { sub } => cmd_policy(sub),
         Command::Env { vault } => cmd_env(&vault),
@@ -249,9 +289,27 @@ fn run() {
             json,
             &murk_cli::resolve_vault_path(&vault),
         ),
-        Command::MergeDriver { base, ours, theirs } => cmd_merge_driver(&base, &ours, &theirs),
+        Command::MergeDriver {
+            base,
+            ours,
+            theirs,
+            path,
+        } => cmd_merge_driver(&base, &ours, &theirs, path.as_deref()),
         Command::SetupMergeDriver => cmd_setup_merge_driver(),
         Command::Verify { vault } => cmd_verify(&murk_cli::resolve_vault_path(&vault)),
+        Command::Trust {
+            yes,
+            print_key,
+            re_add,
+            vault,
+        } => {
+            let vault = murk_cli::resolve_vault_path(&vault);
+            if print_key {
+                cmd_trust_print_key(&vault);
+            } else {
+                cmd_trust(yes, &re_add, &vault);
+            }
+        }
         Command::Doctor { vault } => cmd_doctor(&murk_cli::resolve_vault_path(&vault)),
         Command::Skeleton { output, vault } => {
             cmd_skeleton(output.as_deref(), &murk_cli::resolve_vault_path(&vault));
@@ -271,12 +329,14 @@ fn run() {
             AgentCommand::Exec {
                 only,
                 allow_operator_key,
+                allow_reserved,
                 vault,
                 command,
             } => cmd_agent_exec(
                 &command,
                 &only,
                 allow_operator_key,
+                allow_reserved,
                 &murk_cli::resolve_vault_path(&vault),
             ),
             AgentCommand::Grant {
@@ -285,6 +345,7 @@ fn run() {
                 ttl,
                 renew,
                 out,
+                force,
                 vault,
             } => cmd_agent_grant(
                 &name,
@@ -292,6 +353,7 @@ fn run() {
                 &ttl,
                 renew,
                 out.as_deref(),
+                force,
                 &murk_cli::resolve_vault_path(&vault),
             ),
             AgentCommand::Init {
@@ -300,6 +362,7 @@ fn run() {
                 allow_tag,
                 ttl,
                 out,
+                force,
                 vault,
             } => cmd_agent_init(
                 &name,
@@ -307,6 +370,7 @@ fn run() {
                 &allow_tag,
                 &ttl,
                 out.as_deref(),
+                force,
                 &murk_cli::resolve_vault_path(&vault),
             ),
             AgentCommand::Ls { json, vault } => {
@@ -315,8 +379,14 @@ fn run() {
             AgentCommand::Revoke {
                 name,
                 rotate,
+                values_from,
                 vault,
-            } => cmd_agent_revoke(&name, rotate, &murk_cli::resolve_vault_path(&vault)),
+            } => cmd_agent_revoke(
+                &name,
+                rotate,
+                values_from.as_deref(),
+                &murk_cli::resolve_vault_path(&vault),
+            ),
             AgentCommand::Connect {
                 client,
                 only,
@@ -419,13 +489,17 @@ mod cli_structure {
         // assert each top-level command is actually invoked somewhere in the
         // integration suite, so a new command cannot ship untested.
         let manifest = env!("CARGO_MANIFEST_DIR");
-        let sources: String = ["tests/cli.rs", "tests/adversarial.rs"]
-            .iter()
-            .map(|rel| {
-                std::fs::read_to_string(format!("{manifest}/{rel}"))
-                    .unwrap_or_else(|e| panic!("reading {rel}: {e}"))
-            })
-            .collect();
+        let sources: String = [
+            "tests/cli.rs",
+            "tests/adversarial.rs",
+            "tests/authenticity.rs",
+        ]
+        .iter()
+        .map(|rel| {
+            std::fs::read_to_string(format!("{manifest}/{rel}"))
+                .unwrap_or_else(|e| panic!("reading {rel}: {e}"))
+        })
+        .collect();
 
         let untested: Vec<String> = Cli::command()
             .get_subcommands()

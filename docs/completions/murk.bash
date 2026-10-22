@@ -109,6 +109,9 @@ _murk() {
             murk,skeleton)
                 cmd="murk__subcmd__skeleton"
                 ;;
+            murk,trust)
+                cmd="murk__subcmd__trust"
+                ;;
             murk,verify)
                 cmd="murk__subcmd__verify"
                 ;;
@@ -325,6 +328,9 @@ _murk() {
             murk__subcmd__help,skeleton)
                 cmd="murk__subcmd__help__subcmd__skeleton"
                 ;;
+            murk__subcmd__help,trust)
+                cmd="murk__subcmd__help__subcmd__trust"
+                ;;
             murk__subcmd__help,verify)
                 cmd="murk__subcmd__help__subcmd__verify"
                 ;;
@@ -416,7 +422,7 @@ _murk() {
 
     case "${cmd}" in
         murk)
-            opts="-h --help init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help"
+            opts="-h --help init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -534,7 +540,7 @@ _murk() {
             return 0
             ;;
         murk__subcmd__agent__subcmd__exec)
-            opts="-h --only --allow-operator-key --vault --help"
+            opts="-h --only --allow-operator-key --allow-reserved --vault --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -556,7 +562,7 @@ _murk() {
             return 0
             ;;
         murk__subcmd__agent__subcmd__grant)
-            opts="-h --name --only --ttl --renew --out --vault --help"
+            opts="-h --name --only --ttl --renew --out --force --vault --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -730,7 +736,7 @@ _murk() {
             return 0
             ;;
         murk__subcmd__agent__subcmd__init)
-            opts="-h --name --only --allow-tag --ttl --out --vault --help"
+            opts="-h --name --only --allow-tag --ttl --out --force --vault --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -816,12 +822,16 @@ _murk() {
             return 0
             ;;
         murk__subcmd__agent__subcmd__revoke)
-            opts="-h --rotate --vault --help"
+            opts="-h --rotate --values-from --vault --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
+                --values-from)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 --vault)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
@@ -956,12 +966,16 @@ _murk() {
             return 0
             ;;
         murk__subcmd__circle__subcmd__revoke)
-            opts="-h --rotate --vault --help"
+            opts="-h --rotate --values-from --force --vault --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
+                --values-from)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 --vault)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
@@ -1182,7 +1196,7 @@ _murk() {
             return 0
             ;;
         murk__subcmd__exec)
-            opts="-h --only --tag --clean-env --vault --help"
+            opts="-h --only --tag --clean-env --allow-reserved --vault --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1208,7 +1222,7 @@ _murk() {
             return 0
             ;;
         murk__subcmd__export)
-            opts="-h --tag --json --vault --help"
+            opts="-h --tag --json --allow-reserved --vault --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1464,7 +1478,7 @@ _murk() {
             return 0
             ;;
         murk__subcmd__help)
-            opts="init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help"
+            opts="init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2177,6 +2191,20 @@ _murk() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        murk__subcmd__help__subcmd__trust)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         murk__subcmd__help__subcmd__verify)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
@@ -2486,12 +2514,16 @@ _murk() {
             return 0
             ;;
         murk__subcmd__revoke)
-            opts="-h --rotate --vault --help"
+            opts="-h --rotate --values-from --force --vault --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
+                --values-from)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 --vault)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
@@ -2522,13 +2554,17 @@ _murk() {
             return 0
             ;;
         murk__subcmd__rotate)
-            opts="-h --all --generate --length --hex --list --json --vault --help"
+            opts="-h --all --generate --length --hex --values-from --list --json --vault --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
                 --length)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --values-from)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -2587,6 +2623,28 @@ _murk() {
                     return 0
                     ;;
                 -o)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --vault)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        murk__subcmd__trust)
+            opts="-h --yes --print-key --re-add --vault --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --re-add)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;

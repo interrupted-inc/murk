@@ -1,8 +1,8 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH add 1  "add " 
+.TH murk-add 1  "add " 
 .SH NAME
-add \- Add or update a secret
+murk\-add \- Add or update a secret
 .SH SYNOPSIS
 \fBmurk add\fR [\fB\-\-desc\fR] [\fB\-\-example\fR] [\fB\-\-group\fR] [\fB\-\-tag\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIKEY\fR> 
 .SH DESCRIPTION
@@ -16,7 +16,7 @@ Description for this key
 Example value
 .TP
 \fB\-\-group\fR \fI<GROUP>\fR
-Who can read it: a group name, `everyone` (default), or `me`
+Who can read it: a group name (experimental), `everyone`, or `me`. Omit to keep an existing key\*(Aqs tier; a new key is shared with everyone
 .TP
 \fB\-\-tag\fR \fI<TAG>\fR
 Tag for grouping (repeatable)

@@ -10,7 +10,7 @@ use std::io::{self, IsTerminal};
 use std::path::Path;
 
 pub(crate) fn is_ssh_rsa(key: &str) -> bool {
-    key.starts_with("ssh-rsa ")
+    murk_cli::canonical_recipient(key).starts_with("ssh-rsa ")
 }
 
 /// Abort if any of the given keys are ssh-rsa, unless the user passed
@@ -74,10 +74,7 @@ pub(crate) fn cmd_authorize(
         // runs over the full key set (including ssh-rsa) so rotation of an
         // rsa key is still detected even though we refuse to authorize it.
         let pinned = try_or_die(murk_cli::decrypt_meta(&vault, &identity))
-            .and_then(|m| {
-                let pins = m.github_pins.get(username)?.clone();
-                Some(pins)
-            })
+            .map(|m| murk_cli::github::pins_for(&m.github_pins, username))
             .unwrap_or_default();
 
         if !force && let Err(msg) = murk_cli::github::check_pins(username, &all_keys, &pinned) {
@@ -121,12 +118,16 @@ pub(crate) fn cmd_authorize(
             std::collections::HashMap::new();
 
         for (_, key_string) in &keys {
-            // Skip keys already in the vault.
-            if vault.recipients.contains(key_string) {
+            // Skip keys already in the vault, in any form.
+            if vault
+                .recipients
+                .iter()
+                .any(|pk| murk_cli::same_recipient(pk, key_string))
+            {
                 continue;
             }
 
-            try_or_die(murk_cli::authorize_recipient(
+            let stored = try_or_die(murk_cli::authorize_recipient(
                 &mut vault,
                 &mut current,
                 key_string,
@@ -135,7 +136,7 @@ pub(crate) fn cmd_authorize(
 
             let key_type = murk_cli::github::key_type_label(key_string);
             *type_counts.entry(key_type.to_string()).or_default() += 1;
-            authorized.push((*key_string).clone());
+            authorized.push(stored);
             added += 1;
         }
 
@@ -159,7 +160,7 @@ pub(crate) fn cmd_authorize(
             .iter()
             .map(|(_, k)| murk_cli::github::fingerprint(k))
             .collect();
-        current.github_pins.insert(username.to_string(), new_pins);
+        murk_cli::github::set_pins(&mut current.github_pins, username, new_pins);
 
         save_vault(vault_path, &mut vault, &original, &current);
 
@@ -197,32 +198,24 @@ pub(crate) fn cmd_authorize(
             die(&format_args!("cannot read {}: {e}", path.display()), 1);
         });
         // Take first non-empty line (pub files may have trailing newlines).
+        // authorize_recipient drops the comment field and stores `type base64`.
         let key_line = contents
             .lines()
             .find(|l| !l.trim().is_empty())
             .unwrap_or_else(|| die(&format_args!("empty key file: {}", path.display()), 1));
-        // Strip the comment field if present (ssh-type base64 comment).
-        let key_string = {
-            let parts: Vec<&str> = key_line.splitn(3, ' ').collect();
-            if parts.len() >= 2 {
-                format!("{} {}", parts[0], parts[1])
-            } else {
-                key_line.to_string()
-            }
-        };
 
-        reject_rsa_keys(std::slice::from_ref(&key_string), allow_ssh_rsa);
-        try_or_die(murk_cli::authorize_recipient(
+        reject_rsa_keys(&[key_line.trim().to_string()], allow_ssh_rsa);
+        let stored = try_or_die(murk_cli::authorize_recipient(
             &mut vault,
             &mut current,
-            &key_string,
+            key_line,
             name,
         ));
 
         add_recipients_to_group(
             &mut current,
             group,
-            std::slice::from_ref(&key_string),
+            std::slice::from_ref(&stored),
             &operator_pubkey,
         );
 
@@ -235,7 +228,7 @@ pub(crate) fn cmd_authorize(
     } else {
         // Raw pubkey (age or SSH).
         reject_rsa_keys(&[pubkey.to_string()], allow_ssh_rsa);
-        try_or_die(murk_cli::authorize_recipient(
+        let stored = try_or_die(murk_cli::authorize_recipient(
             &mut vault,
             &mut current,
             pubkey,
@@ -245,22 +238,124 @@ pub(crate) fn cmd_authorize(
         add_recipients_to_group(
             &mut current,
             group,
-            std::slice::from_ref(&pubkey.to_string()),
+            std::slice::from_ref(&stored),
             &operator_pubkey,
         );
 
         save_vault(vault_path, &mut vault, &original, &current);
 
-        let display = name.unwrap_or(pubkey);
+        let display = current.recipients.get(&stored).unwrap_or(&stored);
         eprintln!("{} authorized {}", "◆".magenta(), display.bold());
     }
 }
 
-pub(crate) fn cmd_revoke(recipient: &str, rotate: bool, vault_path: &str) {
-    let (mut vault, murk, _identity, _lock) = load_vault_locked(vault_path);
+pub(crate) fn cmd_revoke(
+    recipient: &str,
+    rotate: bool,
+    values_from: Option<&str>,
+    force: bool,
+    vault_path: &str,
+) {
+    let source = values_from.map_or(ValueSource::Prompt, |p| {
+        ValueSource::Named(read_values_from(p))
+    });
+    let (mut vault, murk, identity, _lock) = load_vault_locked(vault_path);
     let original = murk.clone();
     let mut current = murk;
+    let operator_pubkey = identity.pubkey_string().unwrap_or_else(|e| die(&e, 1));
 
+    let targets = try_or_die(murk_cli::revoke_targets(&vault, &current, recipient));
+
+    // Revoking yourself would leave a vault you can neither read nor sign, so
+    // every other member would see a signature downgrade. Refuse before any
+    // prompt or write, whether the key was named directly or through a name.
+    if targets
+        .iter()
+        .flatten()
+        .any(|pk| murk_cli::same_recipient(pk, &operator_pubkey))
+    {
+        die(
+            &format_args!(
+                "you can't revoke your own key — ask another recipient to run `murk circle revoke \"{operator_pubkey}\"`"
+            ),
+            1,
+        );
+    }
+
+    // A GitHub user's name covers several keys: show them and confirm before
+    // revoking them all.
+    if targets.len() > 1 && !force {
+        eprintln!("{} {recipient} has {} keys:", "◆".magenta(), targets.len());
+        for entries in &targets {
+            eprintln!("  {} {}", "▸".dimmed(), entries[0]);
+        }
+        if !io::stdin().is_terminal() {
+            die(
+                &format_args!(
+                    "refusing to revoke {} keys without confirmation — pass --force to revoke them all",
+                    targets.len()
+                ),
+                1,
+            );
+        }
+        if !confirm(&format!("revoke all {} keys?", targets.len())) {
+            die(&"aborted", 1);
+        }
+    }
+    // Each revoked key's trusted-signer entry, for the external-anchor warning:
+    // its verifying key comes from the loaded registry (an age key that never
+    // signed has none, and was never anyone's anchor).
+    let signer_entries: Vec<String> = targets
+        .iter()
+        .flatten()
+        .map(|pk| murk_cli::canonical_recipient(pk).into_owned())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .filter_map(|key| {
+            if key.starts_with("ssh-ed25519 ") {
+                Some(murk_cli::trust::format_trusted_signer(&key, None))
+            } else {
+                current.signers.iter().find_map(|(s, vk)| {
+                    murk_cli::same_recipient(s, &key)
+                        .then(|| murk_cli::trust::format_trusted_signer(&key, Some(vk)))
+                })
+            }
+        })
+        .collect();
+    // The anchor recorded in the vault can be edited by any trusted signer.
+    // The key files this machine wrote cannot, so add what they list: a grant
+    // whose local key file trusts a revoked key is revoked even if its
+    // recorded anchor was trimmed.
+    let revoked_keys: Vec<String> = targets.iter().flatten().cloned().collect();
+    for (name, grant) in &mut current.grants {
+        let Ok(path) = murk_cli::agent_key_file_path(vault_path, name) else {
+            continue;
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let holds_grant_key = murk_cli::crypto::parse_identity(&text)
+            .and_then(|id| id.pubkey_string())
+            .is_ok_and(|pk| murk_cli::same_recipient(&pk, &grant.pubkey));
+        let Ok(anchor) = murk_cli::agents::anchor_from_key_text(&text) else {
+            continue;
+        };
+        if !holds_grant_key {
+            continue;
+        }
+        for key in anchor.keys() {
+            if revoked_keys
+                .iter()
+                .any(|r| murk_cli::same_recipient(r, key))
+                && !grant
+                    .anchors
+                    .iter()
+                    .any(|a| murk_cli::same_recipient(a, key))
+            {
+                grant.anchors.push(key.clone());
+            }
+        }
+    }
     let result = try_or_die(murk_cli::revoke_recipient(
         &mut vault,
         &mut current,
@@ -269,24 +364,78 @@ pub(crate) fn cmd_revoke(recipient: &str, rotate: bool, vault_path: &str) {
 
     // Record that the exposed keys now owe a rotation before persisting, so the
     // obligation survives the user declining the prompt below (or the process
-    // dying). An in-session rotation clears the marker again via `add_secret`.
-    murk_cli::mark_revoked(&mut vault, &result.exposed_keys, chrono::Utc::now());
+    // dying). An in-session rotation clears the marker again via `rotate_secret`.
+    // A key the revoked recipient reached only through their own override has
+    // nothing left to rotate once that override is removed, so it is not marked.
+    let owed: Vec<String> = result
+        .exposed_keys
+        .iter()
+        .filter(|k| {
+            vault.secrets.get(*k).is_some_and(|e| {
+                !e.shared.is_empty() || e.grouped.keys().any(|g| result.exposed_groups.contains(g))
+            })
+        })
+        .cloned()
+        .collect();
+    murk_cli::mark_revoked(&mut vault, &owed, chrono::Utc::now());
+    // A grant revoked because it trusted the revoked signer: the agent's key
+    // can still decrypt its copies from git history, as after `agent revoke`.
+    let grant_owed: Vec<String> = result
+        .revoked_grants
+        .iter()
+        .flat_map(|(_, g)| g.scope.iter().cloned())
+        .collect();
+    murk_cli::mark_revoked(&mut vault, &grant_owed, chrono::Utc::now());
 
-    // Persist the removal first so the recipient is durably revoked even if the
-    // user aborts the rotation prompts below.
-    save_vault(vault_path, &mut vault, &original, &current);
+    // With --rotate, check the rotation batch against the post-revoke state
+    // before writing anything, so refused input leaves the vault untouched.
+    let plan = |vault: &murk_cli::types::Vault, current: &murk_cli::types::Murk| {
+        let pubkey = try_or_die(identity.pubkey_string());
+        let plans = plan_exposed(
+            vault,
+            current,
+            &pubkey,
+            &result.exposed_keys,
+            &result.exposed_groups,
+        );
+        (pubkey, plans)
+    };
+    let mut checked = rotate.then(|| plan(&vault, &current));
+    if let Some((_, plans)) = &checked {
+        let retry = format!(
+            "to revoke now and rotate afterwards, run `murk circle revoke {recipient}` without --rotate, then `murk rotate --all --values-from FILE`"
+        );
+        check_batch(&vault, plans, &source, Some(&retry));
+    }
 
-    let display = result.display_name.as_deref().unwrap_or(recipient);
-    eprintln!(
-        "{} removed {} from recipients",
-        "◆".magenta(),
-        display.bold(),
-    );
+    // Group values the operator can't read can't be re-encrypted on save, so
+    // their current ciphertext still opens with the revoked key until a group
+    // member rotates them. They stay marked (above); say so.
+    let mut stale: Vec<(String, String)> = vault
+        .secrets
+        .iter()
+        .flat_map(|(k, e)| {
+            let readable = current.grouped.get(k);
+            e.grouped
+                .keys()
+                .filter(|g| result.exposed_groups.contains(g))
+                .filter(move |g| !readable.is_some_and(|m| m.contains_key(*g)))
+                .map(move |g| (g.clone(), k.clone()))
+        })
+        .collect();
+    stale.sort();
 
+    let display =
+        murk_cli::terminal_text(result.display_name.as_deref().unwrap_or(recipient), false);
+    let display = display.as_ref();
+
+    // Decide on and collect the rotation before writing, so one save covers
+    // the revoke and the rotated values: a refused or aborted batch writes
+    // nothing, and the command never saves twice from one loaded state.
+    let mut outcome = None;
     if !result.exposed_keys.is_empty() {
         let n = result.exposed_keys.len();
         let plural = if n == 1 { "" } else { "s" };
-        eprintln!();
         eprintln!(
             "{} {display} had access to {n} secret{plural} — rotate them:",
             "⚠".yellow(),
@@ -300,15 +449,97 @@ pub(crate) fn cmd_revoke(recipient: &str, rotate: bool, vault_path: &str) {
         let do_rotate = rotate
             || (io::stdin().is_terminal()
                 && confirm(&format!("rotate {n} exposed secret{plural} now?")));
-
         if do_rotate {
-            rotate_exposed(vault_path, &mut vault, &current, &result.exposed_keys);
-        } else {
-            eprintln!(
-                "  {}",
-                "run `murk rotate --all` to rotate each secret".dimmed()
-            );
+            let (pubkey, plans) = checked.take().unwrap_or_else(|| plan(&vault, &current));
+            outcome = Some(rotate_exposed(
+                &mut vault,
+                &mut current,
+                &pubkey,
+                &plans,
+                &source,
+            ));
         }
+    }
+
+    save_vault(vault_path, &mut vault, &original, &current);
+
+    eprintln!(
+        "{} removed {} from recipients",
+        "◆".magenta(),
+        display.bold(),
+    );
+    for (group, key) in &stale {
+        eprintln!(
+            "{} you are not in group {group}, so {} could not be re-encrypted: {display} can still decrypt its current value until a member of {group} rotates it (`murk rotate --list` keeps listing it)",
+            "⚠".yellow(),
+            key.bold(),
+        );
+    }
+    match &outcome {
+        Some(outcome) => {
+            outcome.report();
+            outcome.report_total();
+        }
+        None if !result.exposed_keys.is_empty() => eprintln!(
+            "  {}",
+            "run `murk rotate --all` to rotate each secret".dimmed()
+        ),
+        None => {}
+    }
+    for (name, grant) in &result.revoked_grants {
+        eprintln!(
+            "{} revoked agent grant {} ({}): its key file trusts {display} as a signer",
+            "⚠".yellow(),
+            name.bold(),
+            grant.scope.join(", "),
+        );
+        // The revoked key file still trusts the removed signer, who can sign a
+        // vault from before this revoke in which the grant is live. Delete it,
+        // so an agent pointed at it fails closed until the grant is re-minted.
+        let path = murk_cli::agent_key_file_path(vault_path, name).ok();
+        let ours = path.as_ref().is_some_and(|p| {
+            std::fs::read_to_string(p).is_ok_and(|text| {
+                murk_cli::crypto::parse_identity(&text)
+                    .and_then(|id| id.pubkey_string())
+                    .is_ok_and(|pk| murk_cli::same_recipient(&pk, &grant.pubkey))
+            })
+        });
+        match path {
+            Some(p) if ours => match std::fs::remove_file(&p) {
+                Ok(()) => eprintln!(
+                    "  {}",
+                    format!(
+                        "deleted its key file {}",
+                        murk_cli::home_short(&p.display().to_string())
+                    )
+                    .dimmed()
+                ),
+                Err(e) => eprintln!(
+                    "{} could not delete its key file {}: {e} — delete it by hand",
+                    "✗".red(),
+                    p.display()
+                ),
+            },
+            _ => eprintln!(
+                "  {}",
+                "delete every copy of its key file (one written with --out, or copied to the agent)"
+                    .dimmed()
+            ),
+        }
+    }
+    if !result.revoked_grants.is_empty() {
+        eprintln!(
+            "  {}",
+            "re-mint each with `murk agent grant --name NAME --only KEY… --renew` (or `murk agent connect`); the new key file no longer trusts them"
+                .dimmed()
+        );
+    }
+    if !signer_entries.is_empty() {
+        eprintln!(
+            "{} update every external trust anchor naming {display}: remove {} from MURK_TRUSTED_SIGNERS in CI and anywhere else it is set",
+            "⚠".yellow(),
+            signer_entries.join(", "),
+        );
     }
     eprintln!();
     eprintln!(
@@ -444,6 +675,16 @@ pub(crate) fn cmd_group(sub: GroupCommand) {
                         );
                         return;
                     }
+                    // The removed member could read the group's current values
+                    // and can still decrypt them from git history, so each one
+                    // owes a rotation, as after a revoke.
+                    let owed: Vec<String> = vault
+                        .secrets
+                        .iter()
+                        .filter(|(_, e)| e.grouped.contains_key(&name))
+                        .map(|(k, _)| k.clone())
+                        .collect();
+                    murk_cli::mark_revoked(&mut vault, &owed, chrono::Utc::now());
                     save_vault(&vault_path, &mut vault, &original, &current);
                     eprintln!(
                         "{} removed {} from group {}",
@@ -451,9 +692,26 @@ pub(crate) fn cmd_group(sub: GroupCommand) {
                         member.bold(),
                         name.bold()
                     );
+                    if !owed.is_empty() {
+                        let plural = if owed.len() == 1 { "" } else { "s" };
+                        eprintln!();
+                        eprintln!(
+                            "{} {member} could read {} secret{plural} in {name} — rotate them:",
+                            "⚠".yellow(),
+                            owed.len(),
+                        );
+                        for key in &owed {
+                            eprintln!("  {} {}", "▸".dimmed(), key.bold());
+                        }
+                        eprintln!(
+                            "  {}",
+                            "run `murk rotate KEY` for each; `murk rotate --list` tracks them"
+                                .dimmed()
+                        );
+                    }
                 }
                 None => {
-                    try_or_die(murk_cli::delete_group(&vault, &mut current, &name));
+                    try_or_die(murk_cli::delete_group(&vault, &mut current, &name, &pubkey));
                     save_vault(&vault_path, &mut vault, &original, &current);
                     eprintln!("{} deleted group {}", "◆".magenta(), name.bold());
                 }
@@ -466,8 +724,10 @@ pub(crate) fn cmd_policy(sub: PolicyCommand) {
     match sub {
         PolicyCommand::Show { json, vault } => {
             let vault_path = murk_cli::resolve_vault_path(&vault);
-            // Policy lives in the plaintext header — no key needed to read it.
+            // Policy lives in the plaintext header — no key needed to read it,
+            // and with none nothing checks that it is the policy that was set.
             let v = murk_cli::vault::read(Path::new(&vault_path)).unwrap_or_else(|e| die(&e, 1));
+            warn_if_keyless(&vault_path);
             let tags = v.policy.as_ref().map(|p| p.agent_allow_tags.clone());
             if json {
                 let out = serde_json::json!({ "agent_allow_tags": tags });
@@ -527,10 +787,15 @@ pub(crate) fn cmd_recipients(json: bool, vault_path: &str) {
     let path = Path::new(vault_path);
     let vault = try_or_die(vault::read(path));
 
-    let secret_key = murk_cli::resolve_key_for_vault(vault_path)
-        .ok()
-        .map(|s| s.expose_secret().to_string());
-    let entries = try_or_die(murk_cli::list_recipients(&vault, secret_key.as_deref()));
+    // Borrowed from the SecretString, never copied into a plain String.
+    let secret_key = murk_cli::resolve_key_for_vault(vault_path).ok();
+    if secret_key.is_none() {
+        warn_unverified();
+    }
+    let entries = try_or_die(murk_cli::list_recipients(
+        &vault,
+        secret_key.as_ref().map(|s| s.expose_secret()),
+    ));
 
     if json {
         let list: Vec<serde_json::Value> = entries
@@ -573,16 +838,17 @@ pub(crate) fn cmd_recipients(json: bool, vault_path: &str) {
     }
 
     // Compute name column width for alignment.
+    // Names are header text: escaped so they can't drive the terminal.
     let name_width = groups
         .iter()
-        .map(|(name, _)| name.map_or(0, |n| n.len()))
+        .map(|(name, _)| name.map_or(0, |n| murk_cli::terminal_text(n, false).len()))
         .max()
         .unwrap_or(0);
 
     for (name, group) in &groups {
         let is_self = group.iter().any(|e| e.is_self);
         let marker = if is_self { "◆" } else { " " };
-        let label = name.unwrap_or("");
+        let label = murk_cli::terminal_text(name.unwrap_or(""), false);
         let label_padded = format!("{label:<name_width$}");
 
         let key_type = murk_cli::key_type_label(&group[0].pubkey);

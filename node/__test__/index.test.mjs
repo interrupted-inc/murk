@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import assert from 'node:assert'
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { add, exportAll, get, hasIdentity, load } from '../index.js'
@@ -15,11 +15,21 @@ const murkBin = join(process.cwd(), '..', 'target', 'release', 'murk')
 // arguments can never be reinterpreted as shell syntax.
 const PATH_WITH_TARGET = `${join(process.cwd(), '..', 'target', 'release')}:${process.env.PATH}`
 
+// murk keeps keys and trust pins under HOME: never touch the real one. The
+// binding reads HOME from this process's environment, the binary inherits it.
+const testHome = mkdtempSync(join(tmpdir(), 'murk-node-home-'))
+process.env.HOME = testHome
+
+// `extraEnv` values of `null` remove that variable from the child's environment.
 function runMurk(dir, args, input = '', extraEnv = {}) {
+  const env = { ...process.env, PATH: PATH_WITH_TARGET, ...extraEnv }
+  for (const [name, value] of Object.entries(env)) {
+    if (value === null) delete env[name]
+  }
   return execFileSync(murkBin, args, {
     cwd: dir,
     input,
-    env: { ...process.env, PATH: PATH_WITH_TARGET, ...extraEnv },
+    env,
     stdio: ['pipe', 'pipe', 'pipe'],
   })
 }
@@ -48,7 +58,7 @@ function readKeyFromDotenv(dir) {
 function setupVault() {
   const dir = mkdtempSync(join(tmpdir(), 'murk-node-test-'))
 
-  runMurk(dir, ['init', '--vault', '.murk'], 'testuser\n')
+  runMurk(dir, ['init', '--vault', '.murk'], 'testuser\n', { MURK_KEY: null })
   const murkKey = readKeyFromDotenv(dir)
 
   const keyEnv = { MURK_KEY: murkKey }
@@ -67,7 +77,7 @@ function setupVault() {
 function setupAgentVault() {
   const dir = mkdtempSync(join(tmpdir(), 'murk-node-agent-'))
 
-  runMurk(dir, ['init', '--vault', '.murk'], 'agentowner\n')
+  runMurk(dir, ['init', '--vault', '.murk'], 'agentowner\n', { MURK_KEY: null })
   const opKey = readKeyFromDotenv(dir)
 
   const opEnv = { MURK_KEY: opKey }
@@ -106,6 +116,41 @@ function setupAgentVault() {
     runMurk(dir, ['policy', 'set', '--allow-tag', 'prod', '--vault', '.murk'], '', opEnv)
 
   return { dir, opKey, agentKey, tightenPolicy }
+}
+
+// A vault whose operator is the only member of group `backend`, holding a
+// group-only key GROUP_DB, with a second recipient (`outsider`) authorized
+// outside the group.
+function setupGroupVault() {
+  const dir = mkdtempSync(join(tmpdir(), 'murk-node-group-'))
+  // The suite has set MURK_KEY by now; `murk init` would reuse it.
+  const fresh = { MURK_KEY: null }
+  runMurk(dir, ['init', '--vault', '.murk'], 'groupowner\n', fresh)
+  const opKey = readKeyFromDotenv(dir)
+  const opEnv = { MURK_KEY: opKey }
+
+  const outsiderDir = mkdtempSync(join(tmpdir(), 'murk-node-outsider-'))
+  runMurk(outsiderDir, ['init', '--vault', '.murk'], 'outsider\n', fresh)
+  const outsiderKey = readKeyFromDotenv(outsiderDir)
+  const outsiderPk = JSON.parse(readFileSync(join(outsiderDir, '.murk'), 'utf8')).recipients[0]
+  rmSync(outsiderDir, { recursive: true, force: true })
+
+  runMurk(
+    dir,
+    ['circle', 'authorize', outsiderPk, '--name', 'outsider', '--vault', '.murk'],
+    '',
+    opEnv,
+  )
+  runMurk(dir, ['group', 'create', 'backend', '--vault', '.murk'], '', opEnv)
+  runMurk(dir, ['add', 'GROUP_DB', '--group', 'backend', '--vault', '.murk'], 'old-db\n', opEnv)
+
+  const path = join(dir, '.murk')
+  // Base tiers of a key in the vault file: [has shared value, group names].
+  const storedTiers = (key) => {
+    const entry = JSON.parse(readFileSync(path, 'utf8')).secrets[key]
+    return [Boolean(entry.shared), Object.keys(entry.grouped ?? {})]
+  }
+  return { dir, path, opKey, outsiderKey, storedTiers }
 }
 
 let testDir, testKey
@@ -279,6 +324,63 @@ test('vault.describe documents a key without a value', () => {
   assert.strictEqual(reloaded.get('DOCUMENTED'), null)
 })
 
+// Updating an existing key without a tier keeps it where it is, so a routine
+// write never widens who can read it.
+console.log('\nSetting up group vault...')
+const grp = setupGroupVault()
+
+test('vault.add without a tier keeps a group-only key in its group', () => {
+  process.env.MURK_KEY = grp.opKey
+  load(grp.path).add('GROUP_DB', 'new-db')
+  assert.strictEqual(get('GROUP_DB', grp.path), 'new-db')
+  assert.deepStrictEqual(grp.storedTiers('GROUP_DB'), [false, ['backend']])
+  process.env.MURK_KEY = grp.outsiderKey
+  assert.strictEqual(get('GROUP_DB', grp.path), null)
+})
+
+test("vault.add with tier 'everyone' moves a group key to the shared tier", () => {
+  process.env.MURK_KEY = grp.opKey
+  load(grp.path).add('MOVED_DB', 'old', { tier: 'backend' })
+  load(grp.path).add('MOVED_DB', 'open', { tier: 'everyone' })
+  assert.deepStrictEqual(grp.storedTiers('MOVED_DB'), [true, []])
+  process.env.MURK_KEY = grp.outsiderKey
+  assert.strictEqual(get('MOVED_DB', grp.path), 'open')
+})
+
+test("vault.add by a non-member to a group's key throws and changes nothing", () => {
+  const before = readFileSync(grp.path, 'utf8')
+  process.env.MURK_KEY = grp.outsiderKey
+  assert.throws(
+    () => load(grp.path).add('GROUP_DB', 'outsider-db'),
+    /held by group backend, which you are not a member of/,
+  )
+  assert.strictEqual(readFileSync(grp.path, 'utf8'), before)
+  process.env.MURK_KEY = grp.opKey
+  assert.strictEqual(get('GROUP_DB', grp.path), 'new-db')
+})
+
+process.env.MURK_KEY = testKey
+
+test('add and describe refuse text that could forge or reorder output', () => {
+  const vault = load()
+  assert.throws(
+    () => vault.add('SPOOF', 'x', { desc: 'ok\rforged' }),
+    /schema\.SPOOF\.description: contains control/,
+  )
+  assert.throws(
+    () => vault.add('SPOOF', 'x', { tags: ['a\u202eb'] }),
+    /schema\.SPOOF\.tags\[0\]: contains invisible/,
+  )
+  assert.throws(
+    () => vault.describe('SPOOF', 'a\u200bb'),
+    /schema\.SPOOF\.description: contains invisible/,
+  )
+  assert.strictEqual(load().has('SPOOF'), false)
+  // Newlines are fine in a description.
+  vault.describe('MULTILINE', 'first line\nsecond line')
+  assert.strictEqual(load().has('MULTILINE'), true)
+})
+
 // Agent policy enforcement: a granted agent identity is gated by the vault's
 // policy from the binding, just like the CLI gates it at `agent exec`.
 console.log('\nSetting up agent policy vault...')
@@ -302,23 +404,54 @@ test('agent export returns only its scoped, allowed keys', () => {
   assert.strictEqual(secrets.AGENT_DB, 'postgres://agent')
 })
 
-// Write path enforces the same policy as the read path: an agent writing a key
-// the policy forbids fails closed, and the vault on disk is left untouched.
-test('agent add of a policy-forbidden key throws and does not persist', () => {
+// Write path: a granted agent can't write at all, whatever the key or tier, and
+// the vault on disk is left byte-identical.
+test('agent add and describe are refused and leave the vault unchanged', () => {
+  const before = readFileSync(agentVault)
   process.env.MURK_KEY = agent.agentKey
-  assert.throws(() => add('EXFIL', 'stolen', { tags: ['prod'] }, agentVault), /policy forbids/)
-  // Nothing was written: the operator load never sees the forbidden key.
-  process.env.MURK_KEY = agent.opKey
-  assert.strictEqual(load(agentVault).has('EXFIL'), false)
+  const readOnly = /agent grants are read-only/
+  const writes = [
+    ['AGENT_WRITE', { tier: 'me', tags: ['agents'] }],
+    ['AGENT_WRITE', { tier: 'everyone', tags: ['agents'] }],
+    ['EXFIL', { tags: ['prod'] }],
+  ]
+  for (const [key, opts] of writes) {
+    assert.throws(() => add(key, 'agent-authored', opts, agentVault), readOnly)
+  }
+  assert.throws(
+    () => load(agentVault).describe('AGENT_DB', 'changed', { tags: ['agents'] }),
+    readOnly,
+  )
+  assert.deepStrictEqual(readFileSync(agentVault), before)
+  // Reads still work for the agent.
+  assert.strictEqual(get('AGENT_DB', agentVault), 'postgres://agent')
 })
 
-test('agent add of a policy-allowed scoped key succeeds and round-trips', () => {
-  // A shared ("everyone") write would encrypt to the operator only — grants are
-  // excluded from the shared layer — so the agent couldn't read it back. A `me`
-  // write encrypts to the agent itself, so it round-trips through the policy gate.
-  process.env.MURK_KEY = agent.agentKey
-  add('AGENT_WRITE', 'agent-authored', { tier: 'me', tags: ['agents'] }, agentVault)
-  assert.strictEqual(get('AGENT_WRITE', agentVault), 'agent-authored')
+test('an expired grant key is refused by the binding', () => {
+  runMurk(
+    agent.dir,
+    [
+      'agent',
+      'grant',
+      '--name',
+      'short',
+      '--only',
+      'AGENT_DB',
+      '--ttl',
+      '1s',
+      '--out',
+      'short.key',
+      '--vault',
+      '.murk',
+    ],
+    '',
+    { MURK_KEY: agent.opKey },
+  )
+  const shortKey = readFileSync(join(agent.dir, 'short.key'), 'utf8')
+  assert.match(shortKey, /^# murk-trusted-signer: /)
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1100)
+  process.env.MURK_KEY = shortKey
+  assert.throws(() => get('AGENT_DB', agentVault), /grant short expired/)
 })
 
 test('tightening the policy retroactively blocks the agent get', () => {
@@ -332,9 +465,242 @@ test('tightening the policy retroactively blocks the agent export', () => {
   assert.throws(() => load(agentVault).export(), /policy forbids/)
 })
 
+// ── Trust: the binding applies the CLI's rules ──
+//
+// One HOME per person (the trust pin lives under HOME). Each scenario checks
+// that the binding accepts or refuses exactly as `murk get` does, with the
+// same message, and that a refusal is an error with code 'MURK_TRUST'.
+
+const CONTEXT_VARS = [
+  'MURK_KEY',
+  'MURK_KEY_FILE',
+  'MURK_VAULT',
+  'MURK_AGENT',
+  'MURK_STRICT',
+  'MURK_NO_SIGNER_PIN',
+  'MURK_TRUSTED_SIGNERS',
+  'CI',
+]
+
+function person(base, name) {
+  const home = join(base, `${name}-home`)
+  mkdirSync(home)
+  const env = (extra) => {
+    const e = { ...process.env, PATH: PATH_WITH_TARGET, HOME: home, NO_COLOR: '1' }
+    for (const v of CONTEXT_VARS) delete e[v]
+    return { ...e, ...extra }
+  }
+  const keyFile = () => {
+    const dir = join(home, '.config', 'murk', 'keys')
+    return join(dir, readdirSync(dir)[0])
+  }
+  return {
+    home,
+    keyFile,
+    murk: (dir, args, input = '', extra = {}) =>
+      execFileSync(murkBin, args, { cwd: dir, input, env: env(extra), stdio: 'pipe' }).toString(),
+    // The CLI's exit status and output, for a command expected to fail.
+    attempt: (dir, args, extra = {}) =>
+      spawnSync(murkBin, args, { cwd: dir, env: env(extra), encoding: 'utf8' }),
+    // This person's trusted-signer entry (`age1…:<verifying key>`).
+    signerEntry: (dir) =>
+      execFileSync(murkBin, ['trust', '--print-key'], {
+        cwd: dir,
+        env: env({ MURK_KEY_FILE: keyFile() }),
+        stdio: 'pipe',
+      })
+        .toString()
+        .trim(),
+  }
+}
+
+// Run `fn` with the binding acting as `who` in `repo`: their HOME plus `extra`.
+function as(who, repo, extra, fn) {
+  const saved = { ...process.env }
+  const cwd = process.cwd()
+  for (const v of CONTEXT_VARS) delete process.env[v]
+  Object.assign(process.env, { HOME: who.home }, extra)
+  process.chdir(repo)
+  try {
+    return fn()
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+    process.chdir(cwd)
+  }
+}
+
+function refusal(fn = () => load()) {
+  try {
+    fn()
+  } catch (e) {
+    assert.strictEqual(e.code, 'MURK_TRUST', e.message)
+    return e.message
+  }
+  assert.fail('expected the vault to be refused')
+}
+
+// The CLI refused with this exact message: its first line, then hints.
+function assertSameAsCli(message, cli) {
+  const [first, ...rest] = message.split('\n')
+  assert.notStrictEqual(cli.status, 0)
+  assert.strictEqual(cli.stdout, '')
+  assert.strictEqual(cli.stderr, `✕ ${first}\n${rest.map((h) => `  hint ${h}\n`).join('')}`)
+}
+
+const trustBases = []
+
+// Alice's repo, a signed vault holding DB_URL=prod-db, pinned on her machine.
+function aliceRepo() {
+  const base = mkdtempSync(join(tmpdir(), 'murk-node-trust-'))
+  trustBases.push(base)
+  const alice = person(base, 'alice')
+  const repo = join(base, 'repo')
+  mkdirSync(repo)
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo })
+  alice.murk(repo, ['init'], 'alice\n')
+  alice.murk(repo, ['add', 'DB_URL'], 'prod-db\n')
+  const alicePk = alice.signerEntry(repo).split(':')[0]
+  return { base, alice, alicePk, repo }
+}
+
+// Mallory's own vault, listing Alice as a recipient, signed by Mallory.
+function malloryVault(base, alicePk) {
+  const mallory = person(base, 'mallory')
+  const forge = join(base, 'forge')
+  mkdirSync(forge)
+  mallory.murk(forge, ['init'], 'mallory\n')
+  mallory.murk(forge, ['circle', 'authorize', alicePk, '--name', 'alice'])
+  mallory.murk(forge, ['add', 'DB_URL'], 'postgres://attacker\n')
+  return join(forge, '.murk')
+}
+
+function plant(forged, repo, { stripSignature = false } = {}) {
+  const vault = JSON.parse(readFileSync(forged, 'utf8'))
+  if (stripSignature) delete vault.sig
+  writeFileSync(join(repo, '.murk'), JSON.stringify(vault, null, 2))
+}
+
+test('a forged unsigned vault is refused like the CLI refuses it', () => {
+  const { base, alice, alicePk, repo } = aliceRepo()
+  plant(malloryVault(base, alicePk), repo, { stripSignature: true })
+  const laptop = person(base, 'alice-laptop')
+  const keyEnv = { MURK_KEY_FILE: alice.keyFile() }
+
+  const message = as(laptop, repo, keyEnv, () => {
+    refusal(() => get('DB_URL'))
+    refusal(() => exportAll())
+    return refusal()
+  })
+
+  assert.match(message, /is unsigned/)
+  assertSameAsCli(message, laptop.attempt(repo, ['get', 'DB_URL'], keyEnv))
+})
+
+test('a self-enrolled signer is refused on a pinned machine, reads and writes', () => {
+  const { base, alice, alicePk, repo } = aliceRepo()
+  plant(malloryVault(base, alicePk), repo)
+  const planted = readFileSync(join(repo, '.murk'))
+  const pins = join(alice.home, '.config', 'murk', 'signer-pins')
+  const pinState = () => readdirSync(pins).map((f) => [f, readFileSync(join(pins, f), 'utf8')])
+  const before = pinState()
+  const keyEnv = { MURK_KEY_FILE: alice.keyFile() }
+
+  const message = as(alice, repo, keyEnv, () => {
+    refusal(() => add('NEW_SECRET', 'for-alice-only'))
+    return refusal()
+  })
+
+  assert.match(message, /not a trusted signer/)
+  assert.deepStrictEqual(pinState(), before)
+  assert.deepStrictEqual(readFileSync(join(repo, '.murk')), planted)
+  assertSameAsCli(message, alice.attempt(repo, ['get', 'DB_URL'], keyEnv))
+})
+
+test('a vault is accepted after the trust step', () => {
+  const { base, alice, repo } = aliceRepo()
+  const laptop = person(base, 'alice-laptop')
+  const keyEnv = { MURK_KEY_FILE: alice.keyFile() }
+
+  const message = as(laptop, repo, keyEnv, () => refusal())
+  assert.match(message, /not trusted on this machine yet/)
+
+  laptop.murk(repo, ['trust', '--yes'], '', keyEnv)
+  const vault = as(laptop, repo, keyEnv, () => load())
+  assert.strictEqual(vault.get('DB_URL'), 'prod-db')
+  assert.deepStrictEqual(vault.warnings, [])
+})
+
+function grantKey(alice, repo) {
+  alice.murk(repo, ['agent', 'grant', '--name', 'ci', '--only', 'DB_URL', '--out', 'agent.key'])
+  return readFileSync(join(repo, 'agent.key'), 'utf8')
+}
+
+test('a grant reads through its key-file anchor', () => {
+  const { base, alice, repo } = aliceRepo()
+  const key = grantKey(alice, repo)
+  assert.match(key, /^# murk-trusted-signer: /)
+  const runner = person(base, 'runner')
+
+  assert.strictEqual(
+    as(runner, repo, { MURK_KEY: key }, () => get('DB_URL')),
+    'prod-db',
+  )
+  // A grant never touches the pin.
+  assert.deepStrictEqual(readdirSync(runner.home), [])
+})
+
+test('a grant without its anchor is refused with the re-mint message', () => {
+  const { base, alice, repo } = aliceRepo()
+  const bare = grantKey(alice, repo)
+    .split('\n')
+    .filter((line) => !line.startsWith('#'))
+    .join('\n')
+  const runner = person(base, 'runner')
+
+  const message = as(runner, repo, { MURK_KEY: bare }, () => refusal())
+
+  assert.match(message, /re-mint the grant/)
+  assertSameAsCli(message, runner.attempt(repo, ['get', 'DB_URL'], { MURK_KEY: bare }))
+  // MURK_TRUSTED_SIGNERS is the other anchor a grant can use.
+  const signers = { MURK_KEY: bare, MURK_TRUSTED_SIGNERS: alice.signerEntry(repo) }
+  assert.strictEqual(
+    as(runner, repo, signers, () => get('DB_URL')),
+    'prod-db',
+  )
+})
+
+const hasSshKeygen = spawnSync('ssh-keygen', ['-?']).error === undefined
+test('an unsigned vault read by a key that cannot sign carries the CLI warning', () => {
+  if (!hasSshKeygen) return
+  const { base, alice, repo } = aliceRepo()
+  const rsa = join(base, 'rsa')
+  execFileSync('ssh-keygen', ['-q', '-t', 'rsa', '-b', '2048', '-N', '', '-f', rsa])
+  const rsaPub = readFileSync(`${rsa}.pub`, 'utf8').split(' ').slice(0, 2).join(' ')
+  alice.murk(repo, ['circle', 'authorize', rsaPub, '--name', 'rsa-dev', '--allow-ssh-rsa'])
+  const dev = person(base, 'rsa-dev')
+  const rsaEnv = { MURK_KEY_FILE: rsa }
+  dev.murk(repo, ['trust', '--yes'], '', rsaEnv)
+  dev.murk(repo, ['add', 'DB_URL'], 'from-rsa\n', rsaEnv)
+
+  const vault = as(dev, repo, rsaEnv, () => load())
+
+  assert.strictEqual(vault.get('DB_URL'), 'from-rsa')
+  assert.strictEqual(vault.warnings.length, 1)
+  assert.match(vault.warnings[0], /vault is unsigned and your key cannot sign/)
+  const cli = dev.attempt(repo, ['get', 'DB_URL'], rsaEnv)
+  assert.ok(cli.stderr.includes(vault.warnings[0]), cli.stderr)
+  // On Alice's machine the same vault is a stripped signature: refused.
+  const message = as(alice, repo, { MURK_KEY_FILE: alice.keyFile() }, () => refusal())
+  assert.match(message, /is now unsigned/)
+})
+
 // Cleanup
 rmSync(testDir, { recursive: true, force: true })
 rmSync(agent.dir, { recursive: true, force: true })
+rmSync(grp.dir, { recursive: true, force: true })
+for (const base of trustBases) rmSync(base, { recursive: true, force: true })
+rmSync(testHome, { recursive: true, force: true })
 
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

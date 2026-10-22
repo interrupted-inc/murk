@@ -5,6 +5,10 @@ sidebar:
   order: 9
 ---
 
+:::caution[Experimental]
+The merge driver and `murk diff` are experimental. Few tests run a real git merge, so review a merged vault before you push it. `murk diff` is new in its present form: it also reports recipient, signer, policy, grant and group changes, and its output may change in a minor release.
+:::
+
 `.murk` is a single JSON-ish file with encrypted values, which means a naive
 git merge on it doesn't work the way it would for plaintext. git has no
 idea two different encrypted blobs might represent non-conflicting changes
@@ -26,42 +30,161 @@ the driver definition to `.git/config` and pointing `.murk` at it via
 something that travels with the repo automatically — everyone who works on
 the vault needs to run it in their own checkout).
 
-Once configured, git invokes `murk merge-driver ANCESTOR OURS THEIRS`
+Once configured, git invokes `murk merge-driver ANCESTOR OURS THEIRS PATH`
 automatically during a merge or rebase that touches `.murk`, instead of
-falling back to a text-based three-way merge on the raw file. It merges
-non-conflicting secret changes (different keys added or changed on each
-side) automatically. It does not decide to vouch for the merged content:
-it leaves the result **unsigned** (`sig: null`), carrying the existing signer
-registry forward. Re-sign it by running any write command (e.g. `murk add`,
-`murk rotate`) with a signing-capable key after reviewing what actually
-changed:
+falling back to a text-based three-way merge on the raw file. `PATH` is the
+vault's path (git's `%P`), so the driver reads the right trust pin. It
+merges non-conflicting secret changes (different keys added or changed on
+each side) automatically. It decrypts secret values only when both sides
+changed the recipients in the same way. Every ciphertext then differs from the
+ancestor, so it compares the values to find which side changed each secret.
+
+Run it with your key available (`MURK_KEY`, `MURK_KEY_FILE`, or the stored
+key for a vault named `.murk`; for a vault with another name, set
+`MURK_KEY_FILE`). With a key, it checks **both sides** the way a load does: MAC, a
+valid signature, a signer this machine trusts, not an agent grant, the same
+vault id, and, for a side that changed the vault, a save counter above the
+common ancestor's. It authenticates the **common ancestor** too, because the
+ancestor decides what counts as a change and which group memberships the
+sides are judged against. A parent an attacker chose (a cherry-pick, a
+`git apply --3way`) could otherwise shape the merge. An ancestor your key
+can't read is merged conservatively: any difference in the encrypted meta is
+a conflict. An ancestor that fails its checks is refused. An unsigned
+ancestor from before 0.14 is the exception: murk can't check it, and accepts
+it as history. A forged one, in a commit that you cherry-pick or rebase, can
+set values back to an older revision without a conflict. Check what you
+merged with `murk diff` (below) before you push.
+
+Until this machine has accepted or saved the vault in 0.14 form, it can't
+tell an older 0.13 revision on a branch from a newer one either. Make the
+first 0.14 save before you merge branches that still carry 0.13 vaults.
+
+If the ancestor or a side fails, the merge is a conflict that names it, and
+the driver writes no fresh MAC or signature. Otherwise the driver writes the
+merged vault with a fresh MAC and signs it with your key (it stays unsigned
+only if your key can't sign), numbered above both sides and everything this
+machine has accepted. Without a key it can't verify or sign, so it refuses
+any merge that would need new integrity data. It exits 1 and git reports a
+conflict. Abort the merge (`git merge --abort`) and run it again with your
+key available.
+
+Because the merged vault is signed by your key, it has to pass the group
+rule a load applies: a change to a group's membership needs a signature from
+a member of that group. A merge that changes a group's membership, when your
+key isn't in that group, is a conflict that says so. A member of the group
+has to do that merge.
+
+Because the result is signed in your name, check what you merged:
 
 ```bash
-murk diff HEAD@{1}   # or whatever ref makes sense for your merge
+git diff HEAD@{1} -- .murk   # recipients, schema, policy and ciphertext entries
+murk diff HEAD@{1}           # who can read or sign it, and which secrets changed
 ```
+
+`murk diff` prints the structural changes first, one line each, then one line
+per secret: `+` added, `-` removed, `~` changed, by key name only. It prints
+values only with `--show-values`.
+
+```
++ recipient bob@example.com (age1wzsw…8ns8)
+~ policy
++ group ops member alice@example.com (age1y8ne…rqke)
+- API_KEY
+~ DATABASE_URL
++ NEW_TOKEN
+```
+
+A vault signed by a different key than before shows `~ signer`, with the old
+and new signer, and a recipient whose signing key changed shows
+`~ signing key of …`. Add `--json` for a script to read: one object with a
+`secrets` array and a `changes` array.
 
 `murk diff [REF]` shows which secrets changed relative to a git ref
 (defaults to `HEAD`) without printing values, unless you pass
-`--show-values`. Use it to sanity-check a merge before you trust it.
+`--show-values`. It also lists recipient additions and removals, signer and
+signing-key changes, and policy, grant and group-member changes. It runs on a
+vault this machine doesn't trust yet (with a warning), since it's the review
+step before `murk trust`, and it verifies the revision at `REF` before it
+shows anything from it.
+
+### Upgrading an older driver config
+
+Before 0.14, `murk setup-merge-driver` wrote `murk merge-driver %O %A %B`
+with no path. A driver configured that way still runs, but it falls back to
+`.murk` and can't find the pin for a vault with another name. Re-run
+`murk setup-merge-driver` in each clone to add `%P`.
+
+### Merges that never run the driver
+
+Server-side merges (the GitHub web UI, merge queues) don't run the driver.
+The textual merge either conflicts or produces a vault that fails
+verification on the next load. murk never serves a vault it can't verify,
+so a bad server-side merge shows up as a refusal, not as wrong values. Run
+the merge locally if a vault changed on both sides.
+
+## Conflicts
+
+The driver reports a conflict, and git stops the merge, when:
+
+- both sides added or changed the same key,
+- one side removed a key that the other side kept or changed,
+- only one side added or removed a recipient (authorize and revoke teammates
+  on the main branch, not on a side branch that also changes secrets; a revoke
+  on a side branch already makes this machine refuse the revoked key's
+  signatures on every branch, main included),
+- one side changed a secret while the other side changed recipients,
+- both sides changed the recipients in the same way, and both added the same
+  secret, or a secret changed differently on each side, or one side removed a
+  secret the other changed. In this case, with an unsigned ancestor from
+  before 0.14, any secret whose value differs between the sides conflicts, and so does a secret
+  with a value your key can't read (a group you're not in), because the
+  driver can't compare it,
+- both sides changed the agent policy differently,
+- a side, or the common ancestor, fails the checks above (MAC, signature,
+  trusted signer, grant key, vault id, save counter),
+- the merge changes a group's membership and your key is not in that group.
+
+The driver lists each conflicting field and exits 1. The `.murk` it leaves
+holds the merge of both sides' secrets and recipients, keeps our side's
+metadata and has no signature. Don't commit it, and don't accept it with
+`murk trust`.
+Take one side (`git checkout --ours .murk` or `--theirs`) and redo the other
+side's changes with murk (`murk add KEY`, `murk circle authorize` or
+`murk circle revoke`, checking the result with `murk circle`). Then
+`git add .murk` and commit. If the side you take is older than what this
+machine accepted on the branch, a load refuses it as rolled back until
+`murk trust`. Taking our side and redoing theirs avoids that.
 
 ## SSH keys as recipients
 
-You don't need a separate age keypair if you already have an SSH key. murk
-accepts SSH public keys directly as recipients, right alongside `age1...`
-keys in the same recipient list:
+You can use an SSH key instead of a separate age keypair. murk accepts SSH
+public keys directly as recipients, right alongside `age1...` keys in the same
+recipient list:
 
 ```bash
 murk circle authorize ssh:~/.ssh/id_ed25519.pub --name you@example.com
 ```
+
+To decrypt with the matching private key, point `MURK_KEY_FILE` at it:
+
+```bash
+export MURK_KEY_FILE=~/.ssh/id_ed25519
+```
+
+murk does not search `~/.ssh` on its own. It needs an unencrypted, supported
+SSH private key that only you can read (mode `600`). It cannot read a
+passphrase-protected key (`encrypted SSH keys are not yet supported`). Use an
+unencrypted key, for example one kept only for murk, or use an age key.
 
 `circle authorize` also accepts bare `ssh:` (defaulting to
 `~/.ssh/id_ed25519.pub`), or `github:username` to pull SSH keys straight
 from a GitHub account. See [working in teams](/guides/teams/) for the
 GitHub-based flow and its pinning behavior.
 
-murk accepts `ssh-ed25519` keys by default. murk rejects `ssh-rsa` keys
-unless you pass `--allow-ssh-rsa`: ed25519 is recommended, and this default
-nudges teams away from the weaker key type.
+murk accepts `ssh-ed25519` keys by default. It refuses to authorize an
+`ssh-rsa` key unless you pass `--allow-ssh-rsa`, because ed25519 is strongly
+recommended (see RUSTSEC-2023-0071). With `github:username`, murk skips RSA
+keys with a warning instead, and fails only if every key is RSA.
 
 ### Signing behavior differs by key type
 
@@ -70,10 +193,13 @@ nudges teams away from the weaker key type.
   itself, so the signature is self-authenticating: no separate registry
   entry needed.
 - **`ssh-rsa`** keys cannot sign (age exposes no signing scalar for RSA).
-  Writes made with an `ssh-rsa` identity leave the vault unsigned: a
-  warning on next load, not a hard failure. This is the same "sign when
+  Writes made with an `ssh-rsa` identity leave the vault unsigned. A machine
+  whose own key can sign refuses that vault until a signing teammate reviews
+  it and runs `murk trust`, which re-signs it. The `ssh-rsa` holder's own
+  machine loads an unsigned vault with a warning, and `murk verify` reports it
+  as a finding. This is the same "sign when
   capable" behavior hardware-backed identities have. See [hardware
-  keys](/guides/hardware-keys/) and the [threat
+  keys](/guides/hardware-keys/#mixed-teams) and the [threat
   model](/security/threat-model/) for the full signing story.
 
 ## Related
@@ -82,4 +208,4 @@ nudges teams away from the weaker key type.
   and [`murk circle authorize`](/reference/cli/#murk-circle-authorize) for
   the full flag surface.
 - [Recipients & signatures](/concepts/recipients-signatures/) for how the
-  recipient list and signer registry fit together.
+  recipient list, signatures and the trust pin fit together.

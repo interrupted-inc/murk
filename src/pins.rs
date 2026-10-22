@@ -1,175 +1,322 @@
 // SPDX-FileCopyrightText: murk contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Trust-on-first-use pinning of a vault's signer registry.
+//! The local trust pin: what this machine last accepted for a vault.
 //!
-//! The signer registry (`Meta::signers`, pubkey → Ed25519 verifying key) lives
-//! in the encrypted meta blob, which anyone can re-encrypt using the public
-//! recipient keys. So on its own it's attacker-mutable: a repo-writer could
-//! register their *own* verifying key under an existing recipient's pubkey and
-//! sign with their own key, forging that recipient's signature.
+//! A vault carries its own recipient list, so "signed by a recipient" proves
+//! nothing against someone who can write the file: they list their own key and
+//! sign with it. Trust has to be anchored outside the repo. The pin is that
+//! anchor — a per-vault record under `~/.config/murk/signer-pins/` holding:
 //!
-//! This pin closes that. For a native age key the mapping pubkey → verifying key
-//! is a fixed derivation (see [`crate::signing`]), so a given pubkey must always
-//! carry the *same* verifying key. We record the mapping locally on first sight
-//! and flag any later change for an existing pubkey — which is never legitimate
-//! and indicates the registry was tampered with. New pubkeys are trust-on-first-
-//! use (like GitHub key pinning): recorded, not rejected.
+//! - `trusted`: the keys allowed to sign the next version (the non-grant
+//!   recipients of the last vault this machine accepted);
+//! - `grants`: every agent-grant key ever seen, which never count as signers;
+//! - `groups`: group membership as last accepted, so a membership change by a
+//!   non-member is refused;
+//! - `vault_id` and `generation`: the vault's identity and the highest save
+//!   counter accepted, so another vault's file or an older revision is refused;
+//! - `was_signed`: whether a signed version was ever accepted, so a stripped
+//!   signature is refused;
+//! - `signers`: confirmed verifying keys of age signers, and `added_by`: for
+//!   an entry pinned on another signer's word, that signer — the entry stops
+//!   counting once they are removed;
+//! - `removed`: keys removed from the vault, with the generation they were
+//!   removed at, so an older revision cannot bring them back;
+//! - `head` and `branch_heads`: fingerprints of the vaults accepted at the
+//!   marks, so a different vault with the same counter is seen as a fork.
 //!
-//! The pin is local state under `~/.config/murk/signer-pins/`; it does not travel
-//! with the repo. It is best-effort — a missing home dir or unreadable pin never
-//! blocks a load, it just skips the check.
+//! The pin is written only by an accepted load, an explicit `murk trust`, or
+//! this machine's own save — never from an unverified vault. See
+//! [`crate::trust`] for the rules applied against it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct SignerPin {
-    /// pubkey → base64 Ed25519 verifying key, as first seen.
-    signers: BTreeMap<String, String>,
-    /// Whether this vault has ever loaded with a valid signature on this machine.
-    /// Monotonic: once true, a later unsigned load is a downgrade.
+/// Format version of a trust pin. Pins without it (murk ≤ 0.13 trust-on-first-
+/// use registry pins) carry no trust decision; only their `was_signed` bit is
+/// kept.
+pub const PIN_VERSION: u32 = 2;
+
+/// What this machine last accepted for one vault. See the module docs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrustPin {
     #[serde(default)]
-    was_signed: bool,
+    pub v: u32,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vault_id: String,
+    #[serde(default)]
+    pub generation: u64,
+    /// Highest counter accepted per git branch. The rollback check compares
+    /// with the branch the vault is checked out on, so moving to an older
+    /// branch is not a rollback but a branch going backwards is. `generation`
+    /// is the highest overall, used for vaults outside a repository and to
+    /// number the next save.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub branches: BTreeMap<String, u64>,
+    /// Every key that was ever a trusted signer here. A historical revision
+    /// (`murk diff` against a git ref) verifies if its signer is in this set,
+    /// so a teammate revoked since still verifies for their old revisions.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub ever_trusted: BTreeSet<String>,
+    /// Canonical recipient keys (see [`crate::recipients::canonical_recipient`])
+    /// trusted to sign this vault.
+    #[serde(default)]
+    pub trusted: BTreeSet<String>,
+    /// Canonical keys of every agent grant seen on an accepted version.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub grants: BTreeSet<String>,
+    /// Group name → canonical member keys, as last accepted.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub groups: BTreeMap<String, BTreeSet<String>>,
+    /// Canonical pubkey → base64 verifying key of an age signer.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub signers: BTreeMap<String, String>,
+    /// For a `signers` entry this machine pinned from a signer registry on
+    /// another signer's word: canonical recipient → that signer. The entry
+    /// counts only while that signer is trusted (see [`TrustPin::pinned_key`]).
+    /// An entry without one was confirmed here: with `murk trust`, or as this
+    /// machine's own key.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub added_by: BTreeMap<String, String>,
+    /// Keys an accepted vault removed: canonical key → the generation of the
+    /// vault that removed it. Where the removal applies (see `removed_on`), a
+    /// vault listing the key at that generation or below, or signed by it, is
+    /// refused; a newer vault from a trusted signer that lists it again there,
+    /// or `murk trust --re-add`, takes it out.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub removed: BTreeMap<String, u64>,
+    /// The branches whose accepted history contains each removal: the branch
+    /// it was made or accepted on, and every branch where an accepted vault at
+    /// or after the removal no longer lists the key. A removal also applies
+    /// outside git, on a detached HEAD and on a branch this machine has no
+    /// mark for (unless the vault is from before the removal, see
+    /// `removed_at_commit`); a key in `removed` with no entry here applies
+    /// everywhere.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub removed_on: BTreeMap<String, BTreeSet<String>>,
+    /// The commit checked out when this machine made or accepted each
+    /// removal: canonical key → full commit id. A vault the key signed, or
+    /// one listing it on a branch the removal has not reached, counts as
+    /// from before the removal only when git shows its commit is this one or
+    /// an ancestor of it and the vault file is as committed there. A removal
+    /// with no entry here (outside git, or recorded by an older murk) has no
+    /// such exception.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub removed_at_commit: BTreeMap<String, String>,
+    /// Fingerprint ([`crate::trust::vault_fingerprint`]) of the vault accepted
+    /// at `generation`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub head: String,
+    /// Fingerprint of the vault accepted at each branch's mark.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub branch_heads: BTreeMap<String, String>,
+    /// Whether a signed version of this vault was ever accepted here.
+    #[serde(default)]
+    pub was_signed: bool,
 }
 
-/// Result of reconciling a vault's current signer registry against the local pin.
-#[derive(Debug, PartialEq, Eq)]
-pub enum PinVerdict {
-    /// No conflict. `first_use` lists signer pubkeys seen for the first time on
-    /// this machine (newly pinned) — their key is trust-on-first-use, not yet
-    /// anchored. A pubkey absent from `first_use` matched an existing pin, so its
-    /// key is anchored by a prior trusted load.
-    Ok {
-        first_use: BTreeSet<String>,
-        /// True when the vault was signed before on this machine but loaded
-        /// unsigned now — a stripped signature, or a merge result not yet
-        /// re-signed. Not a hard conflict; the loader warns, strict refuses.
-        downgraded: bool,
-    },
-    /// An existing pubkey's verifying key changed since it was pinned. Never
-    /// legitimate: the registry was altered to forge this recipient's signature.
-    Conflict { signer: String },
+impl TrustPin {
+    /// Whether this pin records a trust decision (a `murk trust`, an accepted
+    /// load, or an own save), as opposed to a legacy or empty record.
+    pub fn has_trust(&self) -> bool {
+        self.v >= PIN_VERSION && !self.trusted.is_empty()
+    }
+
+    /// The verifying key pinned for `key` (canonical), if it still counts: an
+    /// entry pinned on another signer's word counts only while that signer is
+    /// trusted here.
+    pub fn pinned_key(&self, key: &str) -> Option<&String> {
+        let vk = self.signers.get(key)?;
+        match self.added_by.get(key) {
+            Some(adder) if !self.trusted.contains(adder) => None,
+            _ => Some(vk),
+        }
+    }
 }
 
-/// Path to the pin file for a vault: `~/.config/murk/signer-pins/<vault-hash>.json`.
-/// The hash matches the scheme used for key auto-discovery (lexical abs path).
-fn pin_path(vault_path: &str) -> Option<PathBuf> {
-    use sha2::{Digest, Sha256};
+/// Path to the pin file for a vault: `~/.config/murk/signer-pins/<hash>.json`.
+///
+/// Inside a git checkout the hash is over the repository's common git
+/// directory plus the vault's path in the checkout, so every worktree of the
+/// repository shares one pin. Elsewhere it is over the vault's absolute path
+/// with its directory resolved (`fs::canonicalize`), so `.murk`, `./.murk` and
+/// a path through a symlinked directory share one pin.
+pub fn pin_path(vault_path: &str) -> Option<PathBuf> {
+    pin_paths(vault_path).into_iter().next()
+}
 
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .ok()?;
-
+/// Where a pin for `vault_path` may live, preferred first: the repository
+/// identity (see [`pin_path`]), then the resolved absolute path, then the
+/// lexical absolute path murk ≤ 0.13 used. Reads take the first that exists,
+/// so a vault that was created before `git init`, or pinned by an older
+/// release, keeps its pin; writes always go to the first.
+fn pin_paths(vault_path: &str) -> Vec<PathBuf> {
+    if std::env::var_os("MURK_NO_SIGNER_PIN").is_some() {
+        return Vec::new();
+    }
+    let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) else {
+        return Vec::new();
+    };
     let p = std::path::Path::new(vault_path);
     let abs = if p.is_absolute() {
         p.to_path_buf()
     } else {
-        std::env::current_dir().ok()?.join(p)
+        match std::env::current_dir() {
+            Ok(cwd) => cwd.join(p),
+            Err(_) => return Vec::new(),
+        }
     };
-    let hash = Sha256::digest(abs.to_string_lossy().as_bytes());
-    let short: String = hash.iter().take(8).fold(String::new(), |mut s, b| {
+    // The vault's directory resolved to its real path, in the plain form (see
+    // `git::real_dir`): on Windows, `fs::canonicalize`'s verbatim `\\?\` form
+    // matched no other spelling, so neither the work-tree root nor a sibling
+    // checkout was ever found from it.
+    let resolved = crate::git::real_parent(&abs);
+    let mut identities = Vec::new();
+    if let Some(repo) = crate::git::repository_vault_identity(&resolved) {
+        identities.push(repo);
+    }
+    // The same vault in a sibling worktree, pinned by path before the
+    // repository existed (or by murk ≤ 0.13): accept that pin too, under the
+    // same real-path spelling it was written with (git records a sibling's
+    // path in its own spelling, `/`-separated on Windows).
+    let siblings: Vec<PathBuf> = crate::git::worktree_root(resolved.parent().unwrap_or(&resolved))
+        .and_then(|root| {
+            let relative = resolved.strip_prefix(&root).ok()?.to_path_buf();
+            Some(
+                crate::git::sibling_worktrees(&root)
+                    .into_iter()
+                    .map(|w| crate::git::real_parent(&w.join(&relative)))
+                    .collect(),
+            )
+        })
+        .unwrap_or_default();
+    identities.push(resolved);
+    identities.push(abs);
+    identities.extend(siblings);
+    identities.dedup();
+
+    let dir = std::path::Path::new(&home)
+        .join(".config")
+        .join("murk")
+        .join("signer-pins");
+    identities
+        .iter()
+        .map(|identity| dir.join(format!("{}.json", short_hash(identity))))
+        .collect()
+}
+
+fn short_hash(path: &std::path::Path) -> String {
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(path.to_string_lossy().as_bytes());
+    hash.iter().take(8).fold(String::new(), |mut s, b| {
         use std::fmt::Write;
         let _ = write!(s, "{b:02x}");
         s
-    });
-
-    Some(
-        std::path::Path::new(&home)
-            .join(".config")
-            .join("murk")
-            .join("signer-pins")
-            .join(format!("{short}.json")),
-    )
+    })
 }
 
-/// Whether signer pinning can actually anchor a signature on this machine —
-/// false when opted out (`MURK_NO_SIGNER_PIN`) or when there is no home dir to
-/// store the pin. When false, a present signature is trust-only, never anchored,
-/// so callers can surface the blind spot rather than letting it pass silently.
+/// Whether a trust pin can be stored on this machine — false when opted out
+/// (`MURK_NO_SIGNER_PIN`) or when there is no home directory. Trust then comes
+/// only from `MURK_TRUSTED_SIGNERS`.
 pub fn signer_pin_available() -> bool {
     std::env::var_os("MURK_NO_SIGNER_PIN").is_none()
         && (std::env::var_os("HOME").is_some() || std::env::var_os("USERPROFILE").is_some())
 }
 
-/// Reconcile the vault's current signer registry against the local pin.
-///
-/// Returns `Conflict` when an already-pinned pubkey now maps to a different
-/// verifying key. Otherwise records any new pubkeys and returns `Ok` with the
-/// set of first-seen (trust-on-first-use) signers, plus `downgraded` — the vault
-/// was signed before on this machine but is unsigned now. `currently_signed` is
-/// whether this load carried a valid signature. When pinning is unavailable
-/// (opted out, or no home dir) every signer is first-use and no downgrade is
-/// reported, since nothing is anchored.
-pub fn reconcile(
-    vault_path: &str,
-    signers: &BTreeMap<String, String>,
-    currently_signed: bool,
-) -> PinVerdict {
-    // No anchor available → nothing is anchored and we can't detect a downgrade.
-    let all_unanchored = || PinVerdict::Ok {
-        first_use: signers.keys().cloned().collect(),
-        downgraded: false,
-    };
-    if std::env::var_os("MURK_NO_SIGNER_PIN").is_some() {
-        return all_unanchored();
-    }
-    let Some(path) = pin_path(vault_path) else {
-        return all_unanchored();
-    };
-
-    let mut pin: SignerPin = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
-
-    // Any existing pubkey whose verifying key changed is tampering.
-    for (pubkey, vk) in signers {
-        if let Some(pinned) = pin.signers.get(pubkey)
-            && pinned != vk
-        {
-            return PinVerdict::Conflict {
-                signer: pubkey.clone(),
-            };
+/// Read the pin for `vault_path`. `Ok(None)` when pinning is unavailable or no
+/// pin exists yet. A pin that exists but cannot be read or parsed is an error:
+/// silently treating it as empty would forget a rollback high-water mark.
+pub fn read(vault_path: &str) -> Result<Option<TrustPin>, String> {
+    let mut found = None;
+    for path in pin_paths(vault_path) {
+        match std::fs::read_to_string(&path) {
+            Ok(c) => {
+                found = Some((path, c));
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("cannot read trust pin {}: {e}", path.display())),
         }
     }
+    let Some((path, contents)) = found else {
+        return Ok(None);
+    };
+    let mut pin: TrustPin = serde_json::from_str(&contents).map_err(|e| {
+        format!(
+            "trust pin {} is corrupt ({e}) — delete it and run `murk trust`",
+            path.display()
+        )
+    })?;
+    if pin.v < PIN_VERSION {
+        // A murk ≤ 0.13 pin: its registry entries were recorded trust-on-first-
+        // use from unverified vaults, so they carry no trust. Keep only the
+        // downgrade bit.
+        pin = TrustPin {
+            was_signed: pin.was_signed,
+            ..TrustPin::default()
+        };
+    }
+    drop_unusable_signer_keys(&mut pin, &path);
+    Ok(Some(pin))
+}
 
-    // A vault signed before but unsigned now has been downgraded — the signature
-    // was stripped, or it's a merge result awaiting re-signing.
-    let downgraded = pin.was_signed && !currently_signed;
+/// Drop from `pin` every 32-byte signing key [`crate::signing::checked_verifying_key`]
+/// refuses (weak, non-canonical or off the curve: a pinned verifying key, or
+/// an ssh-ed25519 signer, whose key is its own verifying key), warning once
+/// per pin file. murk never pins such a key, so one here was written by
+/// something else; trusting it would let a forged signature verify. The next
+/// pin write leaves it out. A value that is not a 32-byte key at all is left
+/// alone: it never verifies a signature.
+fn drop_unusable_signer_keys(pin: &mut TrustPin, path: &std::path::Path) {
+    use crate::signing::is_refused_signing_key as refused;
+    static WARNED: std::sync::Mutex<BTreeSet<PathBuf>> = std::sync::Mutex::new(BTreeSet::new());
 
-    // No conflict — extend the pin with any newly seen signers (TOFU), and report
-    // them as first-use so callers don't over-trust an unanchored key.
-    let mut first_use = BTreeSet::new();
-    for (pubkey, vk) in signers {
-        if !pin.signers.contains_key(pubkey) {
-            pin.signers.insert(pubkey.clone(), vk.clone());
-            first_use.insert(pubkey.clone());
+    let refused_ssh = |k: &String| k.starts_with("ssh-ed25519 ") && refused(k);
+    let mut dropped: BTreeSet<String> = pin
+        .trusted
+        .iter()
+        .chain(&pin.ever_trusted)
+        .filter(|k| refused_ssh(k))
+        .cloned()
+        .collect();
+    pin.trusted.retain(|k| !refused_ssh(k));
+    pin.ever_trusted.retain(|k| !refused_ssh(k));
+    pin.signers.retain(|k, vk| {
+        let bad = refused(vk);
+        if bad {
+            dropped.insert(k.clone());
         }
+        !bad
+    });
+    if dropped.is_empty() {
+        return;
     }
-
-    // Record having-been-signed once, monotonically.
-    let newly_signed = currently_signed && !pin.was_signed;
-    if newly_signed {
-        pin.was_signed = true;
-    }
-    if !first_use.is_empty() || newly_signed {
-        write_pin(&path, &pin);
-    }
-
-    PinVerdict::Ok {
-        first_use,
-        downgraded,
+    let first = WARNED
+        .lock()
+        .map_or(true, |mut w| w.insert(path.to_path_buf()));
+    if first {
+        let keys: Vec<String> = dropped.iter().map(|k| crate::truncate_pubkey(k)).collect();
+        eprintln!(
+            "warn trust pin {} holds a weak or invalid signing key for {}; ignoring it — run `murk trust` to re-pin",
+            path.display(),
+            keys.join(", ")
+        );
     }
 }
 
-fn write_pin(path: &std::path::Path, pin: &SignerPin) {
-    let Some(parent) = path.parent() else { return };
-    if std::fs::create_dir_all(parent).is_err() {
-        return;
-    }
+/// Write the pin for `vault_path`. Errors when pinning is unavailable or the
+/// write fails, so a caller recording an explicit trust decision can say so.
+pub fn write(vault_path: &str, pin: &TrustPin) -> Result<(), String> {
+    let path = pin_path(vault_path).ok_or_else(|| {
+        "no trust pin can be stored (MURK_NO_SIGNER_PIN is set or there is no HOME) — set MURK_TRUSTED_SIGNERS instead".to_string()
+    })?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("invalid trust pin path {}", path.display()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -179,11 +326,53 @@ fn write_pin(path: &std::path::Path, pin: &SignerPin) {
         }
         let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
     }
-    let Ok(json) = serde_json::to_string_pretty(pin) else {
-        return;
+    let mut pin = pin.clone();
+    pin.v = PIN_VERSION;
+    let json = serde_json::to_string_pretty(&pin).map_err(|e| format!("trust pin: {e}"))?;
+    write_pin_file(&path, json.as_bytes())
+        .map_err(|e| format!("cannot write trust pin {}: {e}", path.display()))
+}
+
+/// Read, change and write the pin for `vault_path` under an exclusive lock
+/// (`<pin>.lock`), so concurrent murk processes — worktrees of one repository
+/// share a pin — never write from a stale read: a lowered rollback mark, or
+/// keys and grants another process just learned, lost. `f` gets the pin as
+/// it is now and returns the pin to write, or `None` to leave it, or an error
+/// to report.
+pub fn update<F>(vault_path: &str, f: F) -> Result<(), String>
+where
+    F: FnOnce(Option<&TrustPin>) -> Result<Option<TrustPin>, String>,
+{
+    use fs2::FileExt;
+
+    let path = pin_path(vault_path).ok_or_else(|| {
+        "no trust pin can be stored (MURK_NO_SIGNER_PIN is set or there is no HOME) — set MURK_TRUSTED_SIGNERS instead".to_string()
+    })?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("invalid trust pin path {}", path.display()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    let lock_path = path.with_extension("lock");
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).truncate(false).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let lock = opts
+        .open(&lock_path)
+        .map_err(|e| format!("cannot open {}: {e}", lock_path.display()))?;
+    lock.lock_exclusive()
+        .map_err(|e| format!("cannot lock {}: {e}", lock_path.display()))?;
+    let current = read(vault_path)?;
+    let result = match f(current.as_ref())? {
+        Some(pin) => write(vault_path, &pin),
+        None => Ok(()),
     };
-    // Best-effort like the rest of the pin; a failed write just skips anchoring.
-    let _ = write_pin_file(path, json.as_bytes());
+    let _ = FileExt::unlock(&lock);
+    result
 }
 
 /// Write the pin file atomically: a `0600` temp file in the same directory,
@@ -198,10 +387,7 @@ fn write_pin_file(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()
     if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            format!(
-                "signer pin is a symlink — refusing to follow: {}",
-                path.display()
-            ),
+            "the pin is a symlink — refusing to follow it",
         ));
     }
     let dir = path.parent().unwrap_or(std::path::Path::new("."));
@@ -241,148 +427,44 @@ mod tests {
         out
     }
 
-    fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
-    }
-
-    /// The set of first-use signers from an `Ok` verdict (panics on `Conflict`).
-    fn first_use_of(v: PinVerdict) -> BTreeSet<String> {
-        match v {
-            PinVerdict::Ok { first_use, .. } => first_use,
-            PinVerdict::Conflict { signer } => panic!("unexpected conflict: {signer}"),
-        }
-    }
-
-    /// The `downgraded` flag from an `Ok` verdict (panics on `Conflict`).
-    fn downgraded_of(v: PinVerdict) -> bool {
-        match v {
-            PinVerdict::Ok { downgraded, .. } => downgraded,
-            PinVerdict::Conflict { signer } => panic!("unexpected conflict: {signer}"),
-        }
-    }
-
     #[test]
-    fn first_use_then_anchored() {
+    fn legacy_pin_keeps_only_the_downgrade_bit() {
         with_home(|_| {
-            let s = map(&[("age1alice", "vkALICE")]);
-            // First sight: reported as first-use (not yet anchored).
-            assert_eq!(
-                first_use_of(reconcile("/proj/.murk", &s, true)),
-                BTreeSet::from(["age1alice".to_string()])
+            let path = pin_path("/proj/.murk").unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                r#"{"signers":{"age1mallory":"vkMALLORY"},"was_signed":true}"#,
+            )
+            .unwrap();
+            let pin = read("/proj/.murk").unwrap().unwrap();
+            assert!(pin.was_signed);
+            assert!(
+                pin.signers.is_empty(),
+                "TOFU registry entries carry no trust"
             );
-            // Second sight: matched the pin → anchored, so no longer first-use.
-            assert!(first_use_of(reconcile("/proj/.murk", &s, true)).is_empty());
+            assert!(!pin.has_trust());
         });
     }
 
     #[test]
-    fn only_the_new_signer_is_first_use() {
+    fn corrupt_pin_is_an_error_not_an_empty_pin() {
         with_home(|_| {
-            reconcile("/proj/.murk", &map(&[("age1alice", "vkALICE")]), true);
-            // Bob joins: alice is now anchored, only bob is first-use.
-            assert_eq!(
-                first_use_of(reconcile(
-                    "/proj/.murk",
-                    &map(&[("age1alice", "vkALICE"), ("age1bob", "vkBOB")]),
-                    true
-                )),
-                BTreeSet::from(["age1bob".to_string()])
-            );
+            let path = pin_path("/proj/.murk").unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "{not json").unwrap();
+            assert!(read("/proj/.murk").unwrap_err().contains("corrupt"));
         });
     }
 
     #[test]
-    fn changed_verifying_key_for_existing_pubkey_conflicts() {
-        with_home(|_| {
-            reconcile("/proj/.murk", &map(&[("age1alice", "vkALICE")]), true);
-            // Attacker registers a different verifying key under alice's pubkey.
-            assert_eq!(
-                reconcile("/proj/.murk", &map(&[("age1alice", "vkATTACKER")]), true),
-                PinVerdict::Conflict {
-                    signer: "age1alice".into()
-                }
-            );
-        });
-    }
-
-    #[test]
-    fn pins_are_per_vault_path() {
-        with_home(|_| {
-            reconcile("/a/.murk", &map(&[("age1alice", "vkALICE")]), true);
-            // A different vault with the same pubkey but a different key: no
-            // cross-contamination — separate pin file, so no conflict.
-            assert_eq!(
-                first_use_of(reconcile(
-                    "/b/.murk",
-                    &map(&[("age1alice", "vkOTHER")]),
-                    true
-                )),
-                BTreeSet::from(["age1alice".to_string()])
-            );
-        });
-    }
-
-    #[test]
-    fn opt_out_disables_the_check_and_anchoring() {
-        with_home(|_| {
-            reconcile("/proj/.murk", &map(&[("age1alice", "vkALICE")]), true);
-            unsafe { std::env::set_var("MURK_NO_SIGNER_PIN", "1") };
-            // Opted out: even a changed key passes, and nothing is anchored
-            // (every signer reported first-use).
-            assert_eq!(
-                first_use_of(reconcile(
-                    "/proj/.murk",
-                    &map(&[("age1alice", "vkATTACKER")]),
-                    true
-                )),
-                BTreeSet::from(["age1alice".to_string()])
-            );
-            unsafe { std::env::remove_var("MURK_NO_SIGNER_PIN") };
-        });
-    }
-
-    #[test]
-    fn signed_then_unsigned_is_a_downgrade() {
-        with_home(|_| {
-            let s = map(&[("age1alice", "vkALICE")]);
-            // First load carried a signature — records was_signed.
-            assert!(!downgraded_of(reconcile("/proj/.murk", &s, true)));
-            // Later load is unsigned → flagged as a downgrade.
-            assert!(downgraded_of(reconcile("/proj/.murk", &map(&[]), false)));
-        });
-    }
-
-    #[test]
-    fn never_signed_unsigned_is_not_a_downgrade() {
-        with_home(|_| {
-            // A vault only ever loaded unsigned (hardware/ssh-rsa team): no signal.
-            assert!(!downgraded_of(reconcile("/proj/.murk", &map(&[]), false)));
-            assert!(!downgraded_of(reconcile("/proj/.murk", &map(&[]), false)));
-        });
-    }
-
-    #[test]
-    fn re_signing_clears_the_downgrade() {
-        with_home(|_| {
-            let s = map(&[("age1alice", "vkALICE")]);
-            reconcile("/proj/.murk", &s, true);
-            // Unsigned right after a merge → downgrade flagged.
-            assert!(downgraded_of(reconcile("/proj/.murk", &map(&[]), false)));
-            // Re-signed → cleared.
-            assert!(!downgraded_of(reconcile("/proj/.murk", &s, true)));
-        });
-    }
-
-    #[test]
-    fn opt_out_suppresses_downgrade_detection() {
-        with_home(|_| {
-            reconcile("/proj/.murk", &map(&[("age1alice", "vkALICE")]), true);
-            unsafe { std::env::set_var("MURK_NO_SIGNER_PIN", "1") };
-            assert!(!downgraded_of(reconcile("/proj/.murk", &map(&[]), false)));
-            unsafe { std::env::remove_var("MURK_NO_SIGNER_PIN") };
+    fn dot_prefixed_paths_share_one_pin() {
+        with_home(|home| {
+            let dir = std::path::Path::new(home).join("repo");
+            std::fs::create_dir_all(&dir).unwrap();
+            let a = dir.join(".murk");
+            let b = dir.join(".").join(".murk");
+            assert_eq!(pin_path(a.to_str().unwrap()), pin_path(b.to_str().unwrap()));
         });
     }
 
@@ -396,7 +478,7 @@ mod tests {
             std::fs::write(&target, "original").unwrap();
             std::os::unix::fs::symlink(&target, &path).unwrap();
 
-            reconcile("/proj/.murk", &map(&[("age1alice", "vkALICE")]), true);
+            assert!(write("/proj/.murk", &TrustPin::default()).is_err());
 
             assert_eq!(std::fs::read_to_string(&target).unwrap(), "original");
             assert!(
@@ -413,7 +495,7 @@ mod tests {
     fn new_pin_file_is_owner_only() {
         use std::os::unix::fs::PermissionsExt;
         with_home(|_| {
-            reconcile("/proj/.murk", &map(&[("age1alice", "vkALICE")]), true);
+            write("/proj/.murk", &TrustPin::default()).unwrap();
             let mode = std::fs::metadata(pin_path("/proj/.murk").unwrap())
                 .unwrap()
                 .permissions()

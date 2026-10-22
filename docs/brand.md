@@ -20,7 +20,9 @@ it, don't add to it.
 
 Two surfaces, two rules:
 
-- **The live CLI emits semantic ANSI, never a fixed hex.** The mark and every
+- **The live CLI emits semantic ANSI.** Use semantic terminal colors for new
+  CLI output, never a fixed hex. The `murk info` nameplate currently uses a
+  fixed RGB color and is an exception. The mark and every
   status color go through the `colored` crate's semantic helpers (see
   [cli-style.md](./cli-style.md)). The `◆` mark is ANSI magenta (SGR 35); the
   *terminal* decides the actual RGB from the user's theme. That's intentional —
@@ -42,10 +44,10 @@ to the brand purple.
 | Role             | Glyph | CLI emits (ANSI)    | Brand hex             |
 |------------------|-------|---------------------|-----------------------|
 | brand mark       | ◆     | magenta (SGR 35)    | `#8760FF` (fixed)     |
-| scoped mote      | ✦     | yellow (SGR 33)     | `#f9e2af`             |
+| scoped mote      | ✦     | faint (SGR 2)       | `#6c7086` (assets only) |
 | ok / recipient   |       | green bold (1;32)   | `#a6e3a1`             |
-| warn             | ⚠     | yellow bold (1;33)  | `#f9e2af`             |
-| error            | ✕     | red bold (1;31)     | `#f38ba8`             |
+| warn             | ⚠     | yellow (33); the `warn` word is yellow bold (1;33) | `#f9e2af` |
+| error            | ✕     | red (31)            | `#f38ba8`             |
 | hint             |       | cyan bold (1;36)    | `#94e2d5`             |
 | dimmed           |       | faint (SGR 2)       | `#6c7086` (assets only) |
 | foreground       |       | default fg (39)     | `#cdd6f4`             |
@@ -69,11 +71,13 @@ lockup is the diamond followed by the lowercase wordmark: **◆ murk**.
 |------------------------|--------|
 | Mocha base `#1e1e2e`   | 4.02:1 |
 | White                  | 4.08:1 |
-| GitHub dark            | 4.64:1 |
+| GitHub dark `#0d1117`  | 4.64:1 |
 
-All clear the **3:1** bar for graphics and large marks (safe on light and dark
-READMEs), but fall under the **4.5:1** bar for small body text. Use the purple
-as a **mark or accent only** — never for small text on a dark background.
+All three clear the **3:1** bar for graphics and large marks, so the purple is
+safe as a mark on light and dark READMEs. Mocha base and white fall under the
+**4.5:1** bar for small text, and GitHub dark clears it by a narrow margin. Use
+the purple for **marks and accents**. Do not set small text in it on any
+background.
 
 ## Voice
 

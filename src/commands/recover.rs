@@ -16,7 +16,12 @@ pub(crate) fn restored_key_is_recipient(secret_key: &str, vault_contents: &str) 
     let vault = vault::parse(vault_contents).ok()?;
     let identity = murk_cli::crypto::parse_identity(secret_key).ok()?;
     let pubkey = identity.pubkey_string().ok()?;
-    Some(vault.recipients.contains(&pubkey))
+    Some(
+        vault
+            .recipients
+            .iter()
+            .any(|pk| murk_cli::same_recipient(pk, &pubkey)),
+    )
 }
 
 pub(crate) fn cmd_restore(vault: &str) {

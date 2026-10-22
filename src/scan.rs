@@ -16,17 +16,40 @@ pub struct ScanFinding {
     pub path: String,
 }
 
+/// The outcome of a scan: leaks found, and entries under the scanned paths that
+/// could not be read (so the scan is incomplete for them).
+#[derive(Debug, Default)]
+pub struct ScanReport {
+    pub findings: Vec<ScanFinding>,
+    /// `(path, reason)` for each directory or file that could not be read.
+    pub unreadable: Vec<(String, String)>,
+}
+
+/// Check that `path` exists and can be read (listed, for a directory), so a
+/// mistyped or inaccessible scan target is an error rather than an empty scan.
+pub fn check_scan_path(path: &str) -> Result<(), String> {
+    let fail = |e: std::io::Error| format!("cannot scan {path}: {e}");
+    let meta = std::fs::metadata(path).map_err(fail)?;
+    if meta.is_dir() {
+        std::fs::read_dir(path).map_err(fail)?;
+    } else {
+        std::fs::File::open(path).map_err(fail)?;
+    }
+    Ok(())
+}
+
 /// Scan files under the given paths for leaked secret values.
 ///
 /// Skips hidden directories, `target/`, `node_modules/`, `.murk` files,
-/// `.lock` files, and binary/unreadable files. Values shorter than
-/// `min_length` are skipped to reduce false positives.
+/// `.lock` files, and binary (non-UTF-8) files. Values shorter than
+/// `min_length` are skipped to reduce false positives. Directories and files
+/// that can't be read are reported in [`ScanReport::unreadable`].
 pub fn scan_for_leaks(
     paths: &[&str],
     secrets: &BTreeMap<String, Zeroizing<String>>,
     min_length: usize,
-) -> Vec<ScanFinding> {
-    let mut findings = Vec::new();
+) -> ScanReport {
+    let mut report = ScanReport::default();
 
     for base in paths {
         let walker = walkdir::WalkDir::new(base)
@@ -40,7 +63,20 @@ pub fn scan_for_leaks(
                 true
             });
 
-        for entry in walker.flatten() {
+        for entry in walker {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => {
+                    let path = e
+                        .path()
+                        .map_or_else(|| (*base).to_string(), |p| p.display().to_string());
+                    let reason = e
+                        .io_error()
+                        .map_or_else(|| e.to_string(), ToString::to_string);
+                    report.unreadable.push((path, reason));
+                    continue;
+                }
+            };
             if !entry.file_type().is_file() {
                 continue;
             }
@@ -51,8 +87,16 @@ pub fn scan_for_leaks(
                 continue;
             }
 
-            let Ok(content) = std::fs::read_to_string(path) else {
-                continue;
+            let content = match std::fs::read_to_string(path) {
+                Ok(content) => content,
+                // Not UTF-8: a binary file, skipped by design.
+                Err(e) if e.kind() == std::io::ErrorKind::InvalidData => continue,
+                Err(e) => {
+                    report
+                        .unreadable
+                        .push((path.display().to_string(), e.to_string()));
+                    continue;
+                }
             };
 
             for (key, value) in secrets {
@@ -60,7 +104,7 @@ pub fn scan_for_leaks(
                     continue;
                 }
                 if content.contains(value.as_str()) {
-                    findings.push(ScanFinding {
+                    report.findings.push(ScanFinding {
                         key: key.clone(),
                         path: path.display().to_string(),
                     });
@@ -69,7 +113,7 @@ pub fn scan_for_leaks(
         }
     }
 
-    findings
+    report
 }
 
 #[cfg(test)]
@@ -92,7 +136,7 @@ mod tests {
             Zeroizing::new("supersecretvalue123".to_string()),
         );
 
-        let findings = scan_for_leaks(&[dir.path().to_str().unwrap()], &secrets, 8);
+        let findings = scan_for_leaks(&[dir.path().to_str().unwrap()], &secrets, 8).findings;
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].key, "DB_PASSWORD");
     }
@@ -105,7 +149,7 @@ mod tests {
         let mut secrets = BTreeMap::new();
         secrets.insert("SHORT".into(), Zeroizing::new("abc".to_string()));
 
-        let findings = scan_for_leaks(&[dir.path().to_str().unwrap()], &secrets, 8);
+        let findings = scan_for_leaks(&[dir.path().to_str().unwrap()], &secrets, 8).findings;
         assert!(findings.is_empty());
     }
 
@@ -120,7 +164,7 @@ mod tests {
             Zeroizing::new("supersecretvalue123".to_string()),
         );
 
-        let findings = scan_for_leaks(&[dir.path().to_str().unwrap()], &secrets, 8);
+        let findings = scan_for_leaks(&[dir.path().to_str().unwrap()], &secrets, 8).findings;
         assert!(findings.is_empty());
     }
 
@@ -137,7 +181,7 @@ mod tests {
             Zeroizing::new("supersecretvalue123".to_string()),
         );
 
-        let findings = scan_for_leaks(&[dir.path().to_str().unwrap()], &secrets, 8);
+        let findings = scan_for_leaks(&[dir.path().to_str().unwrap()], &secrets, 8).findings;
         assert!(findings.is_empty());
     }
 
@@ -147,7 +191,7 @@ mod tests {
         std::fs::write(dir.path().join("file.txt"), "some content").unwrap();
 
         let secrets = BTreeMap::new();
-        let findings = scan_for_leaks(&[dir.path().to_str().unwrap()], &secrets, 8);
+        let findings = scan_for_leaks(&[dir.path().to_str().unwrap()], &secrets, 8).findings;
         assert!(findings.is_empty());
     }
 
@@ -164,7 +208,7 @@ mod tests {
         secrets.insert("K1".into(), Zeroizing::new("secretvalue1".to_string()));
         secrets.insert("K2".into(), Zeroizing::new("secretvalue2".to_string()));
 
-        let findings = scan_for_leaks(&[dir.path().to_str().unwrap()], &secrets, 8);
+        let findings = scan_for_leaks(&[dir.path().to_str().unwrap()], &secrets, 8).findings;
         assert_eq!(findings.len(), 2);
     }
 }

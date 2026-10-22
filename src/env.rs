@@ -53,8 +53,11 @@ pub fn secret_file_loose_mode(path: &Path) -> Option<u32> {
 }
 
 /// Read a file, rejecting symlinks and (on Unix) group/world-readable permissions.
-/// Returns the file contents as a string.
-fn read_secret_file(path: &Path, label: &str) -> Result<String, String> {
+/// The contents are a key, so they come back in a [`Zeroizing`] buffer; callers
+/// build their `SecretString` with `SecretString::from(&str)`, an exact-size
+/// copy, because `From<String>` shrinks the buffer and frees the original
+/// un-wiped.
+fn read_secret_file(path: &Path, label: &str) -> Result<Zeroizing<String>, String> {
     reject_symlink(path, label)?;
 
     if let Some(mode) = secret_file_loose_mode(path) {
@@ -64,18 +67,15 @@ fn read_secret_file(path: &Path, label: &str) -> Result<String, String> {
         ));
     }
 
-    fs::read_to_string(path).map_err(|e| format!("cannot read {label}: {e}"))
+    fs::read_to_string(path)
+        .map(Zeroizing::new)
+        .map_err(|e| format!("cannot read {label}: {e}"))
 }
 
 /// Environment variable for the secret key.
 pub const ENV_MURK_KEY: &str = "MURK_KEY";
 /// Environment variable for the secret key file path.
 pub const ENV_MURK_KEY_FILE: &str = "MURK_KEY_FILE";
-/// Environment variable for the vault filename.
-pub const ENV_MURK_VAULT: &str = "MURK_VAULT";
-
-/// Keys to skip when importing from a .env file.
-const IMPORT_SKIP: &[&str] = &[ENV_MURK_KEY, ENV_MURK_KEY_FILE, ENV_MURK_VAULT];
 
 /// Remove the key variables from a child's environment. murk's subprocesses —
 /// the editor, the `exec` child, `git` — go through this, so the key never
@@ -179,13 +179,16 @@ pub fn resolve_key_with_source(vault_path: &str) -> Result<(SecretString, KeySou
         // `AGE-PLUGIN-...-1...` pointer — round-trip intact through parse_identity.
         Some(EnvKey::File(path)) => {
             let contents = read_secret_file(&path, "MURK_KEY_FILE")?;
-            return Ok((SecretString::from(contents), KeySource::EnvFile(path)));
+            return Ok((
+                SecretString::from(contents.as_str()),
+                KeySource::EnvFile(path),
+            ));
         }
         None => {}
     }
     if let Some(path) = auto_key_file(vault_path) {
         let contents = read_secret_file(&path, "key file")?;
-        return Ok((SecretString::from(contents), KeySource::Auto(path)));
+        return Ok((SecretString::from(contents.as_str()), KeySource::Auto(path)));
     }
     // One short summary line, then one action per line. The CLI renders each
     // trailing line as an indented `hint` (see `main::die`), so this must stay
@@ -250,57 +253,28 @@ pub fn resolve_key_for_vault(vault_path: &str) -> Result<SecretString, String> {
 /// (see [`env_key`]). The value comes back in a `SecretString` (zeroized on
 /// drop) and is trimmed — init later writes it back as a single-line key file;
 /// the runtime path deliberately does not trim, to keep plugin identity files
-/// intact.
-pub fn key_from_env_only() -> Result<Option<SecretString>, String> {
+/// intact. The [`KeySource`] says which variable supplied it.
+pub fn key_from_env_only() -> Result<Option<(SecretString, KeySource)>, String> {
     match env_key()? {
-        Some(EnvKey::Inline(k)) => Ok(Some(SecretString::from(k))),
+        Some(EnvKey::Inline(k)) => Ok(Some((SecretString::from(k), KeySource::EnvVar))),
         Some(EnvKey::File(path)) => {
-            let key = read_secret_file(&path, "MURK_KEY_FILE")?.trim().to_string();
-            Ok(Some(SecretString::from(key)))
+            let contents = read_secret_file(&path, "MURK_KEY_FILE")?;
+            Ok(Some((
+                SecretString::from(contents.trim()),
+                KeySource::EnvFile(path),
+            )))
         }
         None => Ok(None),
     }
 }
 
-/// Parse a .env file into key-value pairs.
-/// Skips comments, blank lines, `MURK_*` keys, and strips quotes and `export` prefixes.
-///
-/// Values are wrapped in [`Zeroizing`] so that the plaintext is wiped from memory
-/// as soon as the caller drops them.
-pub fn parse_env(contents: &str) -> Vec<(String, Zeroizing<String>)> {
-    let mut pairs = Vec::new();
-
-    for line in contents.lines() {
-        let line = line.trim();
-
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-
-        let line = line.strip_prefix("export ").unwrap_or(line);
-
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-
-        let key = key.trim();
-        let value = value.trim();
-
-        // Strip surrounding quotes.
-        let value = value
-            .strip_prefix('"')
-            .and_then(|v| v.strip_suffix('"'))
-            .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
-            .unwrap_or(value);
-
-        if key.is_empty() || IMPORT_SKIP.contains(&key) {
-            continue;
-        }
-
-        pairs.push((key.into(), Zeroizing::new(value.to_string())));
-    }
-
-    pairs
+/// Read a key file from `~/.config/murk/keys` with the same symlink and
+/// permission checks as the runtime resolver, trimmed like
+/// [`key_from_env_only`]. `murk init` uses it to reuse a stored identity
+/// instead of generating a new one over it.
+pub(crate) fn read_stored_key(path: &Path) -> Result<SecretString, String> {
+    let key = read_secret_file(path, "key file")?.trim().to_string();
+    Ok(SecretString::from(key))
 }
 
 /// The loose-permission warning for a `.env` mode, if it is group/other-readable
@@ -378,7 +352,9 @@ pub fn write_key_to_dotenv(secret_key: &str) -> Result<(), String> {
 
 /// Create or truncate `path` and write `contents`. On Unix the file is created
 /// `0600` atomically (no window where it is world-readable) and opened with
-/// `O_NOFOLLOW`, so a symlink planted after the caller's check is refused. On
+/// `O_NOFOLLOW`, so a symlink planted after the caller's check is refused. An
+/// existing file is set to `0600` before anything is written to it: `mode()`
+/// only applies at creation, and the file is about to hold a secret. On
 /// non-Unix platforms permissions are not hardened. Errors are prefixed with
 /// `open_context` or `write_context` depending on which step failed.
 fn write_secret_file(
@@ -389,7 +365,7 @@ fn write_secret_file(
 ) -> Result<(), String> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         let mut file = fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -397,6 +373,8 @@ fn write_secret_file(
             .mode(SECRET_FILE_MODE)
             .custom_flags(libc::O_NOFOLLOW)
             .open(path)
+            .map_err(|e| format!("{open_context}: {e}"))?;
+        file.set_permissions(fs::Permissions::from_mode(SECRET_FILE_MODE))
             .map_err(|e| format!("{open_context}: {e}"))?;
         file.write_all(contents)
             .map_err(|e| format!("{write_context}: {e}"))
@@ -422,6 +400,32 @@ fn absolute_vault_path(vault_path: &str) -> Result<std::path::PathBuf, String> {
         .join(p))
 }
 
+/// The spelling of directory `dir` that key file names are computed from. On
+/// Unix the working directory is already the real path (the kernel returns
+/// it), so this is `dir` as given, and a symlinked `--vault` directory keeps
+/// its own key. On Windows one directory has many spellings — 8.3 short names
+/// (`RUNNER~1`), drive-letter case, `/` or `\` — and the working directory
+/// keeps whichever one was used to enter it, while git runs the merge driver
+/// from its own canonical one; the real path (see [`crate::git::real_dir`])
+/// makes every spelling name the same key.
+fn key_naming_dir(dir: &Path) -> std::path::PathBuf {
+    if cfg!(windows) {
+        crate::git::real_dir(dir).unwrap_or_else(|| dir.to_path_buf())
+    } else {
+        dir.to_path_buf()
+    }
+}
+
+/// The path that names `abs`'s key files: its directory as
+/// [`key_naming_dir`] spells it, and its file name as given — a symlinked
+/// vault file still never borrows its target's key.
+fn key_naming_path(abs: &Path) -> std::path::PathBuf {
+    match (abs.parent(), abs.file_name()) {
+        (Some(dir), Some(name)) => key_naming_dir(dir).join(name),
+        _ => abs.to_path_buf(),
+    }
+}
+
 /// Truncated SHA-256 of an absolute vault path — the filename a vault's key is
 /// stored under, in both `keys/` and `agent-keys/`.
 fn vault_hash(abs_path: &Path) -> String {
@@ -437,19 +441,20 @@ fn vault_hash(abs_path: &Path) -> String {
 
 /// Compute the key file path for a vault: `~/.config/murk/keys/<hash>`.
 ///
-/// This is where `murk init` *writes* a key, keyed on the vault's own path.
-/// Reads go through [`discover_key_file`], which also accepts the key stored
-/// for the same vault in a sibling git worktree.
+/// This is where `murk init` *writes* a key, keyed on the vault's own path
+/// (see [`key_naming_path`]). Reads go through [`discover_key_file`], which
+/// also accepts the key stored for the same vault in a sibling git worktree.
 pub fn key_file_path(vault_path: &str) -> Result<std::path::PathBuf, String> {
-    let abs_path = absolute_vault_path(vault_path)?;
+    let abs_path = key_naming_path(&absolute_vault_path(vault_path)?);
     Ok(dirs_path()?.join(vault_hash(&abs_path)))
 }
 
 /// Find a stored key for `vault_path`, or `None` when the operator has none.
 ///
-/// Checks this checkout's own `keys/<hash>` first, then the same vault path in
-/// every sibling git worktree of the same repository — main checkout first,
-/// then linked worktrees in a stable order.
+/// Checks this checkout's own `keys/<hash>` first (on Windows, also under the
+/// path as spelled, where murk before 0.14 stored it), then the same vault
+/// path in every sibling git worktree of the same repository — main checkout
+/// first, then linked worktrees in a stable order.
 ///
 /// The fallback exists because the hash covers an absolute path, and a worktree
 /// puts the very same vault at a different one. The committed vault travels
@@ -465,15 +470,20 @@ pub fn discover_key_file(vault_path: &str) -> Option<std::path::PathBuf> {
     if own.exists() {
         return Some(own);
     }
-
-    let abs_path = absolute_vault_path(vault_path).ok()?;
-    let root = crate::git::worktree_root(abs_path.parent()?)?;
-    let relative = abs_path.strip_prefix(&root).ok()?;
+    let as_spelled = absolute_vault_path(vault_path).ok()?;
     let keys_dir = dirs_path().ok()?;
+    let legacy = keys_dir.join(vault_hash(&as_spelled));
+    if legacy != own && legacy.exists() {
+        return Some(legacy);
+    }
+
+    let abs_path = key_naming_path(&as_spelled);
+    let root = key_naming_dir(&crate::git::worktree_root(abs_path.parent()?)?);
+    let relative = abs_path.strip_prefix(&root).ok()?;
 
     crate::git::sibling_worktrees(&root)
         .into_iter()
-        .map(|worktree| keys_dir.join(vault_hash(&worktree.join(relative))))
+        .map(|worktree| keys_dir.join(vault_hash(&key_naming_path(&worktree.join(relative)))))
         .find(|key| key.exists())
 }
 
@@ -485,7 +495,7 @@ pub fn discover_key_file(vault_path: &str) -> Option<std::path::PathBuf> {
 /// (which only looks up `keys/<vault-hash>`). The vault hash prefix keeps a
 /// grant named the same across two vaults from colliding.
 pub fn agent_key_file_path(vault_path: &str, name: &str) -> Result<std::path::PathBuf, String> {
-    let short_hash = vault_hash(&absolute_vault_path(vault_path)?);
+    let short_hash = vault_hash(&key_naming_path(&absolute_vault_path(vault_path)?));
     Ok(agent_keys_dir()?.join(format!("{short_hash}-{name}")))
 }
 
@@ -552,15 +562,180 @@ fn config_subdir(name: &str, what: &str) -> Result<std::path::PathBuf, String> {
     Ok(dir)
 }
 
-/// Write a secret key to a file with restricted permissions.
-pub fn write_key_to_file(path: &std::path::Path, secret_key: &str) -> Result<(), String> {
+/// Store a secret key at `path`, replacing any file already there.
+///
+/// [`stage_key_file`] then [`StagedKeyFile::commit`]: the key goes to a `0600`
+/// temporary file in the same directory, which is renamed over `path`. An
+/// existing file is never truncated and rewritten in place, so it cannot hand
+/// its own mode (or its other hard links) to the key. A symlink at `path` is
+/// refused; the rename replaces the directory entry and never follows one.
+pub fn write_key_to_file(path: &Path, secret_key: &str) -> Result<(), String> {
+    stage_key_file(path, secret_key, true)?
+        .commit()
+        .map_err(|e| e.reason)
+}
+
+/// A secret key written to a `0600` temporary file beside its destination and
+/// not yet renamed into place. Dropping it deletes the temporary file, so a
+/// caller that fails between staging and [`commit`](Self::commit) leaves the
+/// destination exactly as it was.
+pub struct StagedKeyFile {
+    tmp: tempfile::NamedTempFile,
+    target: std::path::PathBuf,
+    existing: Existing,
+}
+
+/// What [`StagedKeyFile::commit`] may do to a file already at the destination.
+enum Existing {
+    /// Leave it: the rename is exclusive.
+    Refuse,
+    /// Replace the file that was there at staging (`None`: there was none),
+    /// and nothing else.
+    Replace(Option<FileStamp>),
+}
+
+/// Enough of a file's metadata to tell whether it was replaced or rewritten.
+#[derive(PartialEq, Eq)]
+struct FileStamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    inode: (u64, u64),
+}
+
+fn file_stamp(path: &Path) -> Option<FileStamp> {
+    let meta = fs::symlink_metadata(path).ok()?;
+    Some(FileStamp {
+        len: meta.len(),
+        modified: meta.modified().ok(),
+        #[cfg(unix)]
+        inode: {
+            use std::os::unix::fs::MetadataExt;
+            (meta.dev(), meta.ino())
+        },
+    })
+}
+
+/// Write `secret_key` to a `0600` temporary file in `path`'s directory, ready
+/// to be renamed over `path` by [`StagedKeyFile::commit`]. Staging is where an
+/// unwritable directory fails, before the caller commits to anything else.
+///
+/// With `replace`, the commit replaces the file that is at `path` now, and
+/// only that file: if it changes in between, the commit refuses. Without it,
+/// the commit refuses any file at `path`.
+pub fn stage_key_file(
+    path: &Path,
+    secret_key: &str,
+    replace: bool,
+) -> Result<StagedKeyFile, String> {
     reject_symlink(path, &path.display().to_string())?;
-    write_secret_file(
-        path,
-        secret_key.as_bytes(),
-        "writing key file",
-        "writing key file",
-    )
+    let dir = match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    };
+    let mut tmp =
+        tempfile::NamedTempFile::new_in(dir).map_err(|e| format!("writing key file: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tmp.as_file()
+            .set_permissions(fs::Permissions::from_mode(SECRET_FILE_MODE))
+            .map_err(|e| format!("writing key file: {e}"))?;
+    }
+    tmp.write_all(secret_key.as_bytes())
+        .and_then(|()| tmp.as_file().sync_all())
+        .map_err(|e| format!("writing key file: {e}"))?;
+    Ok(StagedKeyFile {
+        tmp,
+        target: path.to_path_buf(),
+        existing: if replace {
+            Existing::Replace(file_stamp(path))
+        } else {
+            Existing::Refuse
+        },
+    })
+}
+
+/// A [`StagedKeyFile`] that could not be renamed into place. The destination
+/// is untouched. Dropping this deletes the staged key; [`keep`](Self::keep)
+/// leaves it on disk instead, for a key that must not be lost.
+pub struct UncommittedKeyFile {
+    pub reason: String,
+    /// A file was at the destination and replacing it was not allowed (see
+    /// [`stage_key_file`]'s `replace`).
+    pub already_exists: bool,
+    staged: Box<StagedKeyFile>,
+}
+
+impl UncommittedKeyFile {
+    /// Keep the staged key file (`0600`, beside the destination) and return
+    /// its path.
+    pub fn keep(self) -> Result<std::path::PathBuf, String> {
+        self.staged
+            .tmp
+            .keep()
+            .map(|(_, path)| path)
+            .map_err(|e| format!("keeping the staged key file: {}", e.error))
+    }
+}
+
+impl StagedKeyFile {
+    /// Where [`commit`](Self::commit) puts the key.
+    pub fn target(&self) -> &Path {
+        &self.target
+    }
+
+    /// Rename the staged key over its destination. Refused, with the
+    /// destination left alone, when it is a symlink, when a file appeared there
+    /// and replacing was not allowed, or when the file to be replaced changed
+    /// since staging.
+    pub fn commit(self) -> Result<(), UncommittedKeyFile> {
+        let shown = self.target.display().to_string();
+        let refuse = |staged, reason: String| {
+            Err(UncommittedKeyFile {
+                reason,
+                already_exists: false,
+                staged: Box::new(staged),
+            })
+        };
+        if let Err(reason) = reject_symlink(&self.target, &shown) {
+            return refuse(self, reason);
+        }
+        if let Existing::Replace(stamp) = &self.existing
+            && *stamp != file_stamp(&self.target)
+        {
+            return refuse(
+                self,
+                format!("{shown} changed while the key was being written — left it untouched"),
+            );
+        }
+        let Self {
+            tmp,
+            target,
+            existing,
+        } = self;
+        let persisted = match &existing {
+            Existing::Replace(_) => tmp.persist(&target),
+            Existing::Refuse => tmp.persist_noclobber(&target),
+        };
+        persisted.map(drop).map_err(|e| {
+            let already_exists = e.error.kind() == std::io::ErrorKind::AlreadyExists;
+            let reason = if already_exists {
+                format!("{shown} already exists — refusing to overwrite it")
+            } else {
+                format!("writing key file {shown}: {}", e.error)
+            };
+            UncommittedKeyFile {
+                reason,
+                already_exists,
+                staged: Box::new(StagedKeyFile {
+                    tmp: e.file,
+                    target,
+                    existing,
+                }),
+            }
+        })
+    }
 }
 
 /// Write a MURK_KEY_FILE reference to `.env`, removing any existing MURK_KEY/MURK_KEY_FILE lines.
@@ -647,116 +822,6 @@ mod tests {
     use age::secrecy::ExposeSecret;
 
     use crate::testutil::{CWD_LOCK, ENV_LOCK};
-
-    #[test]
-    fn parse_env_empty() {
-        let pairs = parse_env("");
-        assert!(pairs.is_empty(), "{pairs:?}");
-    }
-
-    #[test]
-    fn parse_env_comments_and_blanks() {
-        let input = "# comment\n\n  # another\n";
-        let pairs = parse_env(input);
-        assert!(pairs.is_empty(), "{pairs:?}");
-    }
-
-    /// Compare parsed pairs against plain `(key, value)` expectations by
-    /// unwrapping the `Zeroizing` value wrappers.
-    fn assert_pairs(pairs: Vec<(String, Zeroizing<String>)>, expected: &[(&str, &str)]) {
-        // Controlled boundary: test-only comparison helper unwraps the
-        // Zeroizing values to compare plain strings (murk-lints
-        // secret_uncontrolled_escape).
-        #[cfg_attr(dylint_lib = "murk_lints", allow(secret_uncontrolled_escape))]
-        let actual: Vec<(String, String)> =
-            pairs.into_iter().map(|(k, v)| (k, (*v).clone())).collect();
-        let want: Vec<(String, String)> = expected
-            .iter()
-            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-            .collect();
-        assert_eq!(actual, want);
-    }
-
-    #[test]
-    fn parse_env_basic() {
-        assert_pairs(
-            parse_env("FOO=bar\nBAZ=qux\n"),
-            &[("FOO", "bar"), ("BAZ", "qux")],
-        );
-    }
-
-    #[test]
-    fn parse_env_double_quotes() {
-        assert_pairs(
-            parse_env("KEY=\"hello world\"\n"),
-            &[("KEY", "hello world")],
-        );
-    }
-
-    #[test]
-    fn parse_env_single_quotes() {
-        assert_pairs(parse_env("KEY='hello world'\n"), &[("KEY", "hello world")]);
-    }
-
-    #[test]
-    fn parse_env_export_prefix() {
-        assert_pairs(parse_env("export FOO=bar\n"), &[("FOO", "bar")]);
-    }
-
-    #[test]
-    fn parse_env_skips_murk_keys() {
-        let input = "MURK_KEY=secret\nMURK_KEY_FILE=/path\nMURK_VAULT=.murk\nKEEP=yes\n";
-        assert_pairs(parse_env(input), &[("KEEP", "yes")]);
-    }
-
-    #[test]
-    fn parse_env_equals_in_value() {
-        assert_pairs(
-            parse_env("URL=postgres://host?opt=1\n"),
-            &[("URL", "postgres://host?opt=1")],
-        );
-    }
-
-    #[test]
-    fn parse_env_no_equals_skipped() {
-        assert_pairs(parse_env("not-a-valid-line\nKEY=val\n"), &[("KEY", "val")]);
-    }
-
-    // ── New edge-case tests ──
-
-    #[test]
-    fn parse_env_empty_value() {
-        assert_pairs(parse_env("KEY=\n"), &[("KEY", "")]);
-    }
-
-    #[test]
-    fn parse_env_trailing_whitespace() {
-        assert_pairs(parse_env("KEY=value   \n"), &[("KEY", "value")]);
-    }
-
-    #[test]
-    fn parse_env_unicode_value() {
-        assert_pairs(parse_env("KEY=hello🔐world\n"), &[("KEY", "hello🔐world")]);
-    }
-
-    #[test]
-    fn parse_env_empty_key_skipped() {
-        let pairs = parse_env("=value\n");
-        assert!(pairs.is_empty(), "{pairs:?}");
-    }
-
-    #[test]
-    fn parse_env_mixed_quotes_unmatched() {
-        // Mismatched quotes are not stripped.
-        assert_pairs(parse_env("KEY=\"hello'\n"), &[("KEY", "\"hello'")]);
-    }
-
-    #[test]
-    fn parse_env_multiple_murk_vars() {
-        // All three MURK_ vars are skipped, other vars kept.
-        let input = "MURK_KEY=x\nMURK_KEY_FILE=y\nMURK_VAULT=z\nA=1\nB=2\n";
-        assert_pairs(parse_env(input), &[("A", "1"), ("B", "2")]);
-    }
 
     /// Helper: acquire both locks and cd to a clean temp dir.
     /// Returns guards and the previous cwd. The cwd is restored on drop
@@ -948,7 +1013,7 @@ mod tests {
         let result = key_from_env_only();
         unsafe { env::remove_var("MURK_KEY_FILE") };
 
-        let key = result.unwrap().unwrap();
+        let (key, _source) = result.unwrap().unwrap();
         assert_eq!(key.expose_secret(), "AGE-SECRET-KEY-1TIGHT");
     }
 
@@ -1386,6 +1451,45 @@ mod tests {
         assert!(result.unwrap_err().contains("symlink"));
     }
 
+    #[test]
+    fn staging_without_replace_never_replaces_an_existing_key_file() {
+        // Another `murk init` stored a key after this one's discovery check.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("key");
+        std::fs::write(&path, "AGE-SECRET-KEY-1FIRST\n").unwrap();
+
+        let Err(err) = stage_key_file(&path, "AGE-SECRET-KEY-1SECOND", false)
+            .unwrap()
+            .commit()
+        else {
+            panic!("an existing key file must not be replaced");
+        };
+
+        assert!(err.already_exists, "{}", err.reason);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"AGE-SECRET-KEY-1FIRST\n",
+            "existing key file was modified"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staging_creates_a_0600_key_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("key");
+
+        stage_key_file(&path, "AGE-SECRET-KEY-1NEW", false)
+            .unwrap()
+            .commit()
+            .unwrap_or_else(|e| panic!("{}", e.reason));
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"AGE-SECRET-KEY-1NEW");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
     #[cfg(unix)]
     #[test]
     fn read_secret_file_rejects_world_readable() {
@@ -1415,7 +1519,47 @@ mod tests {
         std::io::Write::write_all(&mut f, b"secret").unwrap();
         let result = read_secret_file(&path, "test");
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "secret");
+        assert_eq!(result.unwrap().as_str(), "secret");
+    }
+
+    /// A staged key replaces only the file it was staged against: one that
+    /// was rewritten, or that appeared, in the meantime is left untouched, and
+    /// the staged key can still be kept rather than lost.
+    #[test]
+    fn staged_key_never_replaces_a_file_that_changed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let rewritten = dir.path().join("rewritten");
+        std::fs::write(&rewritten, "AGE-SECRET-KEY-1OLD\n").unwrap();
+        let staged = stage_key_file(&rewritten, "AGE-SECRET-KEY-1NEW", true).unwrap();
+        std::fs::write(&rewritten, "AGE-SECRET-KEY-1SOMEONE-ELSE\n").unwrap();
+        let refused = staged.commit().expect_err("a changed file is not replaced");
+        assert!(refused.reason.contains("changed"), "{}", refused.reason);
+        assert_eq!(
+            std::fs::read_to_string(&rewritten).unwrap(),
+            "AGE-SECRET-KEY-1SOMEONE-ELSE\n"
+        );
+        let kept = refused.keep().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(kept).unwrap(),
+            "AGE-SECRET-KEY-1NEW"
+        );
+
+        let appeared = dir.path().join("appeared");
+        let staged = stage_key_file(&appeared, "AGE-SECRET-KEY-1NEW", true).unwrap();
+        std::fs::write(&appeared, "AGE-SECRET-KEY-1SOMEONE-ELSE\n").unwrap();
+        assert!(staged.commit().is_err());
+        assert_eq!(
+            std::fs::read_to_string(&appeared).unwrap(),
+            "AGE-SECRET-KEY-1SOMEONE-ELSE\n"
+        );
+
+        // Unchanged, the same staging replaces it.
+        let staged = stage_key_file(&appeared, "AGE-SECRET-KEY-1NEW", true).unwrap();
+        assert!(staged.commit().is_ok(), "an unchanged file is replaced");
+        assert_eq!(
+            std::fs::read_to_string(&appeared).unwrap(),
+            "AGE-SECRET-KEY-1NEW"
+        );
     }
 
     #[test]
@@ -1489,16 +1633,6 @@ mod tests {
             std::env::set_current_dir(&original_dir).unwrap();
             std::fs::remove_dir_all(&dir).unwrap();
         }
-    }
-
-    #[test]
-    fn parse_env_comment_with_equals_is_skipped() {
-        // A comment line that happens to contain `=` must still be dropped;
-        // it must not be parsed into a `# FOO` key.
-        let pairs = parse_env("# FOO=bar\n");
-        assert!(pairs.is_empty(), "{pairs:?}");
-        let pairs = parse_env("   # A=B\n");
-        assert!(pairs.is_empty(), "{pairs:?}");
     }
 
     #[test]
@@ -1700,13 +1834,16 @@ mod tests {
 
         let keys_root = home.path().join(".config").join("murk").join("keys");
         let agent_root = home.path().join(".config").join("murk").join("agent-keys");
-        let hash = vault_hash(&abs);
+        let hash = vault_hash(&key_naming_path(&abs));
 
         assert_eq!(resolved_rel.unwrap(), abs);
         assert_eq!(resolved_abs.unwrap(), abs);
         assert_eq!(key_rel.unwrap(), keys_root.join(&hash));
         assert_eq!(key_abs.unwrap(), keys_root.join(&hash));
-        assert_eq!(key_other.unwrap(), keys_root.join(vault_hash(&other)));
+        assert_eq!(
+            key_other.unwrap(),
+            keys_root.join(vault_hash(&key_naming_path(&other)))
+        );
         assert_ne!(vault_hash(&other), hash);
         assert_eq!(
             agent_rel.unwrap(),
@@ -1717,6 +1854,68 @@ mod tests {
             key_link.unwrap(),
             key_real.unwrap(),
             "a symlinked vault must not resolve to its target's key file"
+        );
+    }
+
+    /// Windows: every spelling of a vault's directory names the same key, the
+    /// one git's merge driver computes from its canonical working directory,
+    /// and a key stored under the spelling used before 0.14 is still found.
+    /// Only Windows has these spellings; the body is compiled everywhere.
+    #[test]
+    fn every_spelling_of_a_windows_vault_dir_finds_the_same_key() {
+        if !cfg!(windows) {
+            return;
+        }
+        let _env = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let prev_home = std::env::var_os("HOME");
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        let dir = project.path().to_str().unwrap().to_string();
+        let (drive, rest) = dir.split_at(1);
+        let spellings = [
+            format!(r"{}{rest}\.murk", drive.to_ascii_uppercase()),
+            format!(r"{}{rest}\.murk", drive.to_ascii_lowercase()),
+            format!("{dir}/.murk").replace('\\', "/"),
+        ];
+        let keys: Vec<_> = spellings
+            .iter()
+            .map(|s| key_file_path(s).unwrap())
+            .collect();
+
+        // A key stored by murk before 0.14 under the lowercase spelling.
+        let legacy = home
+            .path()
+            .join(".config")
+            .join("murk")
+            .join("keys")
+            .join(vault_hash(Path::new(&spellings[1])));
+        let found_before = discover_key_file(&spellings[1]);
+        if legacy != keys[1] {
+            std::fs::write(&legacy, "AGE-SECRET-KEY-TEST").unwrap();
+        }
+        let found_legacy = discover_key_file(&spellings[1]);
+
+        unsafe {
+            match &prev_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+
+        assert_eq!(keys[0], keys[1]);
+        assert_eq!(keys[0], keys[2]);
+        assert_eq!(found_before, None);
+        assert_eq!(
+            found_legacy,
+            Some(if legacy == keys[1] {
+                keys[1].clone()
+            } else {
+                legacy
+            })
         );
     }
 

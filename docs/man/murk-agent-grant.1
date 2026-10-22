@@ -1,12 +1,12 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH grant 1  "grant " 
+.TH murk-agent-grant 1  "grant " 
 .SH NAME
-grant \- Mint a scoped ephemeral key that can read only the named secrets
+murk\-agent\-grant \- Mint a scoped ephemeral key that can read only the named secrets (experimental)
 .SH SYNOPSIS
-\fBmurk agent grant\fR [\fB\-\-ttl\fR] [\fB\-\-renew\fR] [\fB\-\-out\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-name\fR> <\fB\-\-only\fR> 
+\fBmurk agent grant\fR [\fB\-\-ttl\fR] [\fB\-\-renew\fR] [\fB\-\-out\fR] [\fB\-\-force\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-name\fR> <\fB\-\-only\fR> 
 .SH DESCRIPTION
-Mint a scoped ephemeral key that can read only the named secrets
+Mint a scoped ephemeral key that can read only the named secrets (experimental)
 .SH OPTIONS
 .TP
 \fB\-\-name\fR \fI<NAME>\fR
@@ -16,13 +16,16 @@ Grant name (used to revoke it later)
 Keys this grant can read (required — fails closed)
 .TP
 \fB\-\-ttl\fR \fI<TTL>\fR [default: 2h]
-Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)
+Time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)
 .TP
 \fB\-\-renew\fR
-Replace a live grant with this name: revoke its key, mint a fresh one
+Replace the grant with this name: revoke its key, mint a fresh one. Without this, murk refuses a name that still has a grant record, and an expired grant keeps its record until the next vault write
 .TP
 \fB\-\-out\fR \fI<OUT>\fR
 Where to write the agent key: a path, or `\-` for stdout
+.TP
+\fB\-\-force\fR
+Replace a file already at \-\-out (refused by default)
 .TP
 \fB\-\-vault\fR \fI<VAULT>\fR [default: .murk]
 Vault filename

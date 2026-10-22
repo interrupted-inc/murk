@@ -49,8 +49,8 @@ use assert_cmd::Command;
 /// Inherited values would make results depend on the caller's shell (an agent
 /// session exports `MURK_AGENT=1`, CI exports `CI=true`), so every spawn strips
 /// them and a test that needs one sets it explicitly. Keep in step with the
-/// readers in `src/env.rs`, `src/hardening.rs`, `src/pins.rs` and the `env =`
-/// args in `src/cli.rs`.
+/// readers in `src/env.rs`, `src/hardening.rs`, `src/pins.rs`, `src/trust.rs`
+/// and the `env =` args in `src/cli.rs`.
 pub const MURK_CONTEXT_VARS: &[&str] = &[
     "MURK_KEY",
     "MURK_KEY_FILE",
@@ -59,6 +59,7 @@ pub const MURK_CONTEXT_VARS: &[&str] = &[
     "MURK_STRICT",
     "MURK_SELF_SCOPE",
     "MURK_NO_SIGNER_PIN",
+    "MURK_TRUSTED_SIGNERS",
     "CI",
 ];
 
@@ -127,3 +128,7 @@ pub fn init_vault(dir: impl AsRef<Path>) -> (String, String) {
 
     (murk_key, pubkey)
 }
+
+pub mod cast;
+
+pub mod machines;

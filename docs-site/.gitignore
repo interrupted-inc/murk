@@ -5,9 +5,10 @@ dist/
 # dependencies
 node_modules/
 
-# generated — mirrored from docs/*-reference.md by scripts/sync-generated-docs.mjs
+# generated — mirrored from docs/*-reference.md and docs/permissions.md by scripts/sync-generated-docs.mjs
 src/content/docs/reference/cli.md
 src/content/docs/reference/env.md
+src/content/docs/reference/permissions.md
 
 # environment
 .env

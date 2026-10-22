@@ -1,0 +1,27 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH murk-trust 1  "trust " 
+.SH NAME
+murk\-trust \- Review who signed the vault and what changed, then trust it on this machine
+.SH SYNOPSIS
+\fBmurk trust\fR [\fB\-\-yes\fR] [\fB\-\-print\-key\fR] [\fB\-\-re\-add\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Review who signed the vault and what changed, then trust it on this machine
+.PP
+Needed once per vault on a new clone, whenever a teammate\*(Aqs first signed write arrives, and whenever murk refuses a vault (an unfamiliar signer, an unsigned or rolled\-back vault). Shows the signer\*(Aqs key and signing\-key fingerprint, the recipient changes since this machine last trusted the vault, and asks before recording it. An unsigned vault is signed with your key.
+.SH OPTIONS
+.TP
+\fB\-\-yes\fR
+Accept without asking (for scripts; review first)
+.TP
+\fB\-\-print\-key\fR
+Print your own trusted\-signer entry (for MURK_TRUSTED_SIGNERS) and signing\-key fingerprint (for teammates to confirm), then exit
+.TP
+\fB\-\-re\-add\fR \fI<KEY>\fR
+Trust a key this machine recorded as removed from the vault again (its public key, or its name in the vault). Repeat for each key; a vault signed by or listing a removed key is never trusted without it
+.TP
+\fB\-\-vault\fR \fI<VAULT>\fR [default: .murk]
+Vault filename
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

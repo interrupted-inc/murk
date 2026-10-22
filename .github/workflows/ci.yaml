@@ -88,6 +88,10 @@ jobs:
         run: |
           node scripts/check-tape-typing.cjs --self-test
           node scripts/check-tape-typing.cjs
+      - name: Check the auto-merge policy holds security-relevant updates for review
+        run: |
+          node scripts/automerge-policy.cjs --self-test
+          bash scripts/test-advisories-automerge.sh
       - name: Check every authored source file carries the SPDX header
         run: node scripts/spdx-headers.cjs --check
 
@@ -267,7 +271,7 @@ jobs:
       - uses: ./.github/actions/setup-rust
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo build --release
-      - name: Check install.sh honors DESTDIR, PREFIX and MURK_INSTALL_DIR
+      - name: Check install.sh install locations, provenance checks and transport
         run: sh scripts/test-install.sh
       - name: Smoke-test install.sh against a local fixture
         shell: bash
@@ -289,20 +293,13 @@ jobs:
             ( cd "$rel" && shasum -a 256 "$archive" > SHA256SUMS )
           fi
 
-          # Serve the fixture and install through install.sh as a fresh user
-          # would, pointed at the fixture instead of github.com.
-          python3 -m http.server 8099 --directory "$rel" >/dev/null 2>&1 &
-          server=$!
-          trap 'kill "$server" 2>/dev/null || true' EXIT
-          for _ in $(seq 1 40); do
-            curl -fsS http://localhost:8099/SHA256SUMS -o /dev/null 2>/dev/null && break
-            sleep 0.25
-          done
-
+          # Install through install.sh as a fresh user would, pointed at the
+          # fixture instead of github.com. install.sh refuses plain http, so
+          # the fixture is read over file://.
           bindir="$RUNNER_TEMP/bin"
           mkdir -p "$bindir"
           MURK_TAG="$tag" \
-          MURK_BASE_URL=http://localhost:8099 \
+          MURK_BASE_URL="file://$rel" \
           MURK_SKIP_ATTESTATION=1 \
           MURK_INSTALL_DIR="$bindir" \
             sh install.sh

@@ -1,8 +1,8 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH skeleton 1  "skeleton " 
+.TH murk-skeleton 1  "skeleton " 
 .SH NAME
-skeleton \- Export schema\-only vault with no secrets or recipients
+murk\-skeleton \- Export schema\-only vault with no secrets or recipients
 .SH SYNOPSIS
 \fBmurk skeleton\fR [\fB\-o\fR|\fB\-\-output\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
@@ -10,7 +10,7 @@ Export schema\-only vault with no secrets or recipients
 .SH OPTIONS
 .TP
 \fB\-o\fR, \fB\-\-output\fR \fI<OUTPUT>\fR
-Output file (prints to stdout if omitted)
+New output file; refuses an existing path (prints to stdout if omitted)
 .TP
 \fB\-\-vault\fR \fI<VAULT>\fR [default: .murk]
 Vault filename

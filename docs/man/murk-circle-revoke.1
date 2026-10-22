@@ -1,16 +1,22 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH revoke 1  "revoke " 
+.TH murk-circle-revoke 1  "revoke " 
 .SH NAME
-revoke \- Remove a recipient from the vault
+murk\-circle\-revoke \- Remove a recipient from the vault
 .SH SYNOPSIS
-\fBmurk circle revoke\fR [\fB\-\-rotate\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIRECIPIENT\fR> 
+\fBmurk circle revoke\fR [\fB\-\-rotate\fR] [\fB\-\-values\-from\fR] [\fB\-\-force\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIRECIPIENT\fR> 
 .SH DESCRIPTION
 Remove a recipient from the vault
 .SH OPTIONS
 .TP
 \fB\-\-rotate\fR
 Rotate the secrets they had access to in the same session
+.TP
+\fB\-\-values\-from\fR \fI<FILE>\fR
+With \-\-rotate, read new values from a dotenv file of KEY=value lines (`\-` for stdin)
+.TP
+\fB\-\-force\fR
+Revoke every key of a multi\-key GitHub user without confirmation
 .TP
 \fB\-\-vault\fR \fI<VAULT>\fR [default: .murk]
 Vault filename
@@ -19,4 +25,4 @@ Vault filename
 Print help
 .TP
 <\fIRECIPIENT\fR>
-Recipient pubkey or display name
+Recipient pubkey, display name, or github:username

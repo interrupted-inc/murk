@@ -161,7 +161,9 @@ demo_alice_push() {
     git push >/dev/null 2>&1
 }
 
-# Pull latest as a persona.
+# Pull latest as a persona, then record the vault as trusted on this clone
+# (each clone's first load needs `murk trust`; a real user reviews
+# `murk diff` first). Fails quietly for a persona who is no longer a recipient.
 # Usage: demo_pull <name>
 demo_pull() {
     local name="$1"
@@ -173,6 +175,7 @@ demo_pull() {
     cd "${!dir_var}" || return 1
     export MURK_KEY="${!key_var}"
     git pull >/dev/null 2>&1
+    murk trust --yes >/dev/null 2>&1 || true
 }
 
 # Stop daemon and remove all temp dirs.

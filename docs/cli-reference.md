@@ -47,6 +47,7 @@ This document contains the help content for the `murk` command-line program.
 * [`murk group add`↴](#murk-group-add)
 * [`murk group rm`↴](#murk-group-rm)
 * [`murk verify`↴](#murk-verify)
+* [`murk trust`↴](#murk-trust)
 * [`murk doctor`↴](#murk-doctor)
 * [`murk scan`↴](#murk-scan)
 * [`murk diff`↴](#murk-diff)
@@ -63,40 +64,41 @@ Encrypted secrets manager for developers — one file, age encryption, git-frien
 
 ###### **Subcommands:**
 
-* `init` — Initialize a new vault and generate a keypair
+* `init` — Initialize a vault or reuse its existing key
 * `env` — Write a .envrc for direnv integration
-* `restore` — Restore MURK_KEY from a BIP39 recovery phrase
-* `recover` — Re-derive recovery phrase from current MURK_KEY
+* `restore` — Print the key encoded by a BIP39 recovery phrase (saves nothing)
+* `recover` — Print the BIP39 recovery phrase for the key murk resolves (MURK_KEY, MURK_KEY_FILE or the stored key for .murk)
 * `add` — Add or update a secret
 * `generate` — Generate a random secret and store it
 * `rotate` — Rotate secrets with new values
 * `rm` — Remove a secret
 * `get` — Get a single decrypted value
-* `edit` — Edit secrets in $EDITOR
+* `edit` — Edit secrets in $EDITOR (experimental)
 * `ls` — List all key names
 * `export` — Export all secrets as shell export statements
 * `import` — Import secrets from a .env file
-* `describe` — Add or update a key description
+* `describe` — Set a key's description, example, tags and rotation or expiry policy
 * `info` — Show public schema and key info
 * `skeleton` — Export schema-only vault with no secrets or recipients
 * `exec` — Run a command with secrets injected as environment variables
-* `agent` — Agent-oriented commands (schema-only output for AI agent prompts)
-* `mcp` — Run an MCP (Model Context Protocol) stdio server for AI agents
-* `policy` — Manage the agent access policy
+* `agent` — Give AI agents scoped, time-limited access to secrets (experimental)
+* `mcp` — Run an MCP (Model Context Protocol) stdio server for AI agents (experimental)
+* `policy` — Manage the agent access policy (experimental)
 * `circle` — Manage recipients
-* `group` — Manage recipient groups
+* `group` — Manage recipient groups (experimental)
 * `verify` — Verify vault integrity without exporting secrets
+* `trust` — Review who signed the vault and what changed, then trust it on this machine
 * `doctor` — Check the surrounding repo for hygiene issues
 * `scan` — Scan files for leaked secret values
-* `diff` — Show secret changes vs a git ref
-* `setup-merge-driver` — Configure git to use murk's merge driver for .murk files
+* `diff` — Show secret and access changes vs a git ref (experimental)
+* `setup-merge-driver` — Configure git to use murk's merge driver for .murk files (experimental)
 * `completion` — Generate or install shell completions
 
 
 
 ## `murk init`
 
-Initialize a new vault and generate a keypair
+Initialize a vault or reuse its existing key
 
 **Usage:** `murk init [OPTIONS]`
 
@@ -124,7 +126,7 @@ Write a .envrc for direnv integration
 
 ## `murk restore`
 
-Restore MURK_KEY from a BIP39 recovery phrase
+Print the key encoded by a BIP39 recovery phrase (saves nothing)
 
 **Usage:** `murk restore [OPTIONS]`
 
@@ -138,7 +140,7 @@ Restore MURK_KEY from a BIP39 recovery phrase
 
 ## `murk recover`
 
-Re-derive recovery phrase from current MURK_KEY
+Print the BIP39 recovery phrase for the key murk resolves (MURK_KEY, MURK_KEY_FILE or the stored key for .murk)
 
 **Usage:** `murk recover`
 
@@ -158,7 +160,7 @@ Add or update a secret
 
 * `--desc <DESC>` — Description for this key
 * `--example <EXAMPLE>` — Example value
-* `--group <GROUP>` — Who can read it: a group name, `everyone` (default), or `me`
+* `--group <GROUP>` — Who can read it: a group name (experimental), `everyone`, or `me`. Omit to keep an existing key's tier; a new key is shared with everyone
 * `--tag <TAG>` — Tag for grouping (repeatable)
 * `--vault <VAULT>` — Vault filename
 
@@ -178,13 +180,13 @@ Generate a random secret and store it
 
 ###### **Options:**
 
-* `--length <LENGTH>` — Length in bytes (default 32)
+* `--length <LENGTH>` — Length in bytes
 
   Default value: `32`
-* `--hex` — Output as hex instead of base64
+* `--hex` — Encode the value as hex instead of URL-safe base64
 * `--desc <DESC>` — Description for this key
 * `--example <EXAMPLE>` — Example value
-* `--group <GROUP>` — Who can read it: a group name, `everyone` (default), or `me`
+* `--group <GROUP>` — Who can read it: a group name (experimental), `everyone`, or `me`. Omit to keep an existing key's tier; a new key is shared with everyone
 * `--tag <TAG>` — Tag for grouping (repeatable)
 * `--vault <VAULT>` — Vault filename
 
@@ -206,12 +208,13 @@ Rotate secrets with new values
 
 * `--all` — Rotate all secrets in the vault
 * `--generate` — Generate random values instead of prompting
-* `--length <LENGTH>` — Length in bytes for generated values (default 32)
+* `--length <LENGTH>` — Length in bytes for generated values
 
   Default value: `32`
-* `--hex` — Output generated values as hex instead of base64
+* `--hex` — Encode generated values as hex instead of URL-safe base64
+* `--values-from <FILE>` — Read new values from a dotenv file of KEY=value lines (`-` for stdin), matched by key name
 * `--list` — List keys needing rotation instead of rotating (exits 1 if any)
-* `--json` — Output the listing as JSON (with --list, always exits 0)
+* `--json` — Output the listing as JSON, an object with `verified` and `issues` (with --list, exits 0 even when keys need rotating)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`
@@ -256,7 +259,7 @@ Get a single decrypted value
 
 ## `murk edit`
 
-Edit secrets in $EDITOR
+Edit secrets in $EDITOR (experimental)
 
 **Usage:** `murk edit [OPTIONS] [KEY]`
 
@@ -267,7 +270,7 @@ Edit secrets in $EDITOR
 ###### **Options:**
 
 * `--scoped` — Edit scoped overrides instead of shared secrets
-* `--group <GROUP>` — Edit values for this group instead of shared secrets
+* `--group <GROUP>` — Edit values for this group instead of shared secrets (experimental)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`
@@ -300,6 +303,7 @@ Export all secrets as shell export statements
 
 * `--tag <TAG>` — Filter by tag (repeatable)
 * `--json` — Output as JSON
+* `--allow-reserved` — Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`
@@ -320,8 +324,8 @@ Import secrets from a .env file
 
 ###### **Options:**
 
-* `--force` — Overwrite existing secrets without prompting
-* `--group <GROUP>` — Assign imported secrets to this group (default: everyone)
+* `--force` — Overwrite existing secrets. Without it, import stops if any key already exists
+* `--group <GROUP>` — Assign imported secrets to this group (`everyone`, `me`, or a group name, which is experimental). Omit to keep each existing key's tier; new keys are shared with everyone
 * `--example <EXAMPLE>` — Example value applied to every imported key
 * `--vault <VAULT>` — Vault filename
 
@@ -331,18 +335,20 @@ Import secrets from a .env file
 
 ## `murk describe`
 
-Add or update a key description
+Set a key's description, example, tags and rotation or expiry policy
+
+Each call replaces the description. It also replaces the example: omitting `--example` clears it. `--tag` replaces the tags only when given. `--rotate-every` and `--expires` change only when given.
 
 **Usage:** `murk describe [OPTIONS] <KEY> <DESCRIPTION>`
 
 ###### **Arguments:**
 
 * `<KEY>` — Secret key name
-* `<DESCRIPTION>` — Description text
+* `<DESCRIPTION>` — Description text (replaces the current one)
 
 ###### **Options:**
 
-* `--example <EXAMPLE>` — Example value
+* `--example <EXAMPLE>` — Example value. Omitting it clears the current example
 * `--tag <TAG>` — Tag for grouping (repeatable, replaces existing tags)
 * `--rotate-every <DAYS>` — Rotation interval, e.g. `90d` or `90` (days). `never` clears it
 * `--expires <DATE>` — Hard expiry date, e.g. `2026-09-01`. `never` clears it
@@ -376,7 +382,7 @@ Export schema-only vault with no secrets or recipients
 
 ###### **Options:**
 
-* `-o`, `--output <OUTPUT>` — Output file (prints to stdout if omitted)
+* `-o`, `--output <OUTPUT>` — New output file; refuses an existing path (prints to stdout if omitted)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`
@@ -397,7 +403,8 @@ Run a command with secrets injected as environment variables
 
 * `--only <ONLY>` — Only inject these specific keys (repeatable)
 * `--tag <TAG>` — Filter by tag (repeatable)
-* `--clean-env` — Strip inherited environment (only murk secrets + PATH)
+* `--clean-env` — Start the command with only murk secrets plus PATH, HOME and TERM on Unix (on Windows, PATH and a fixed set of system variables)
+* `--allow-reserved` — Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`
@@ -406,26 +413,26 @@ Run a command with secrets injected as environment variables
 
 ## `murk agent`
 
-Agent-oriented commands (schema-only output for AI agent prompts)
+Give AI agents scoped, time-limited access to secrets (experimental)
 
 **Usage:** `murk agent <COMMAND>`
 
 ###### **Subcommands:**
 
-* `plan` — Emit schema-only context safe to paste into an AI agent prompt
-* `exec` — Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only, masks injected values in the output)
-* `grant` — Mint a scoped ephemeral key that can read only the named secrets
-* `init` — One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely
-* `ls` — List active agent grants and their TTLs
-* `revoke` — Revoke an agent grant and rotate the keys it could read
-* `connect` — Wire `murk mcp` into an AI editor's MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it
-* `disconnect` — Remove murk's entry from an AI editor's MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys
+* `plan` — Emit schema-only context safe to paste into an AI agent prompt (experimental)
+* `exec` — Run a command with strict agent-safe defaults (experimental; keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires --only, masks injected values in the output)
+* `grant` — Mint a scoped ephemeral key that can read only the named secrets (experimental)
+* `init` — One-shot onboarding (experimental): optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely
+* `ls` — List active agent grants and their TTLs (experimental)
+* `revoke` — Revoke an agent grant (experimental)
+* `connect` — Add `murk mcp` to an AI client's MCP config and mint a scoped grant for it (experimental)
+* `disconnect` — Remove murk's entry from an AI editor's MCP config (experimental). No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys
 
 
 
 ## `murk agent plan`
 
-Emit schema-only context safe to paste into an AI agent prompt
+Emit schema-only context safe to paste into an AI agent prompt (experimental)
 
 **Usage:** `murk agent plan [OPTIONS]`
 
@@ -433,7 +440,7 @@ Emit schema-only context safe to paste into an AI agent prompt
 
 * `--tag <TAG>` — Filter by tag (repeatable)
 * `--json` — Output as JSON
-* `-o`, `--output <OUTPUT>` — Output file (prints to stdout if omitted)
+* `-o`, `--output <OUTPUT>` — New output file; refuses an existing path (prints to stdout if omitted)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`
@@ -442,7 +449,7 @@ Emit schema-only context safe to paste into an AI agent prompt
 
 ## `murk agent exec`
 
-Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only, masks injected values in the output)
+Run a command with strict agent-safe defaults (experimental; keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires --only, masks injected values in the output)
 
 **Usage:** `murk agent exec [OPTIONS] --only <ONLY> <COMMAND>...`
 
@@ -453,7 +460,8 @@ Run a command with strict agent-safe defaults (clears the inherited environment,
 ###### **Options:**
 
 * `--only <ONLY>` — Inject these specific keys (required — agent mode fails closed)
-* `--allow-operator-key` — Decrypt with your own stored key from ~/.config/murk/keys. Without this, agent exec needs an explicit MURK_KEY or MURK_KEY_FILE
+* `--allow-operator-key` — Decrypt with a key that is not an agent grant: your own stored key from ~/.config/murk/keys, or a full recipient's MURK_KEY or MURK_KEY_FILE. Without this, agent exec needs an agent grant key
+* `--allow-reserved` — Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`
@@ -462,7 +470,7 @@ Run a command with strict agent-safe defaults (clears the inherited environment,
 
 ## `murk agent grant`
 
-Mint a scoped ephemeral key that can read only the named secrets
+Mint a scoped ephemeral key that can read only the named secrets (experimental)
 
 **Usage:** `murk agent grant [OPTIONS] --name <NAME> --only <ONLY>`
 
@@ -470,11 +478,12 @@ Mint a scoped ephemeral key that can read only the named secrets
 
 * `--name <NAME>` — Grant name (used to revoke it later)
 * `--only <ONLY>` — Keys this grant can read (required — fails closed)
-* `--ttl <TTL>` — Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)
+* `--ttl <TTL>` — Time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)
 
   Default value: `2h`
-* `--renew` — Replace a live grant with this name: revoke its key, mint a fresh one
+* `--renew` — Replace the grant with this name: revoke its key, mint a fresh one. Without this, murk refuses a name that still has a grant record, and an expired grant keeps its record until the next vault write
 * `--out <OUT>` — Where to write the agent key: a path, or `-` for stdout
+* `--force` — Replace a file already at --out (refused by default)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`
@@ -483,7 +492,7 @@ Mint a scoped ephemeral key that can read only the named secrets
 
 ## `murk agent init`
 
-One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely
+One-shot onboarding (experimental): optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely
 
 **Usage:** `murk agent init [OPTIONS] --name <NAME> --only <ONLY>`
 
@@ -492,10 +501,11 @@ One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, a
 * `--name <NAME>` — Grant name (used to revoke it later)
 * `--only <ONLY>` — Keys the agent can read (required — fails closed)
 * `--allow-tag <ALLOW_TAG>` — Set the agent allow-list to these tags before granting (repeatable)
-* `--ttl <TTL>` — Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)
+* `--ttl <TTL>` — Time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)
 
   Default value: `2h`
 * `--out <OUT>` — Where to write the agent key: a path, or `-` for stdout
+* `--force` — Replace a file already at --out (refused by default)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`
@@ -504,7 +514,7 @@ One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, a
 
 ## `murk agent ls`
 
-List active agent grants and their TTLs
+List active agent grants and their TTLs (experimental)
 
 **Usage:** `murk agent ls [OPTIONS]`
 
@@ -519,7 +529,9 @@ List active agent grants and their TTLs
 
 ## `murk agent revoke`
 
-Revoke an agent grant and rotate the keys it could read
+Revoke an agent grant (experimental)
+
+The grant's key can still decrypt old versions of the vault from git history, so rotate the secrets it could read: pass `--rotate`, or answer the prompt on a terminal.
 
 **Usage:** `murk agent revoke [OPTIONS] <NAME>`
 
@@ -529,7 +541,8 @@ Revoke an agent grant and rotate the keys it could read
 
 ###### **Options:**
 
-* `--rotate` — Rotate the keys it could read in the same session
+* `--rotate` — Rotate the secrets the grant could read, in the same run. murk stores a new value for each. It does not rotate them at the provider
+* `--values-from <FILE>` — With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`
@@ -538,20 +551,20 @@ Revoke an agent grant and rotate the keys it could read
 
 ## `murk agent connect`
 
-Wire `murk mcp` into an AI editor's MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it
+Add `murk mcp` to an AI client's MCP config and mint a scoped grant for it (experimental)
 
 **Usage:** `murk agent connect [OPTIONS] --only <ONLY> [CLIENT]`
 
 ###### **Arguments:**
 
-* `<CLIENT>` — Editor to configure. Omit to auto-detect (claude, cursor, vscode, zed, gemini, omp, codex)
+* `<CLIENT>` — Client to configure: claude, cursor, vscode, zed, gemini, omp or codex. Omit it to configure every client that already has a config file or marker directory (such as `.cursor/`) next to the vault
 
 ###### **Options:**
 
 * `--only <ONLY>` — Keys the agent may read (required — fails closed)
 * `--allow-tag <ALLOW_TAG>` — Set the agent allow-list to these tags before granting (repeatable)
-* `--allow-exec` — Also expose `murk agent exec` to the agent (adds --allow-exec)
-* `--ttl <TTL>` — Grant time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)
+* `--allow-exec` — Also enable the `murk_exec` tool in the MCP server (writes `--allow-exec` into the client config)
+* `--ttl <TTL>` — Grant time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)
 
   Default value: `2h`
 * `--name <NAME>` — Grant name (used to disconnect/revoke it later)
@@ -565,7 +578,7 @@ Wire `murk mcp` into an AI editor's MCP config, minting a scoped grant. No CLIEN
 
 ## `murk agent disconnect`
 
-Remove murk's entry from an AI editor's MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys
+Remove murk's entry from an AI editor's MCP config (experimental). No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys
 
 **Usage:** `murk agent disconnect [OPTIONS] [CLIENT]`
 
@@ -587,7 +600,7 @@ Remove murk's entry from an AI editor's MCP config. No CLIENT clears every confi
 
 ## `murk mcp`
 
-Run an MCP (Model Context Protocol) stdio server for AI agents
+Run an MCP (Model Context Protocol) stdio server for AI agents (experimental)
 
 **Usage:** `murk mcp [OPTIONS]`
 
@@ -602,7 +615,7 @@ Run an MCP (Model Context Protocol) stdio server for AI agents
 
 ## `murk policy`
 
-Manage the agent access policy
+Manage the agent access policy (experimental)
 
 **Usage:** `murk policy <COMMAND>`
 
@@ -686,14 +699,14 @@ Add a recipient to the vault
 
 ###### **Arguments:**
 
-* `<PUBKEY>` — Public key (age1...), ssh:path, ssh: (default ~/.ssh/id_ed25519.pub), or github:username
+* `<PUBKEY>` — Public key (age1...), ssh:path, ssh: (default ~/.ssh/id_ed25519.pub), or github:username (experimental)
 
 ###### **Options:**
 
 * `--name <NAME>` — Display name for this recipient
-* `--group <GROUP>` — Also add the new recipient to this group
-* `--force` — Accept changed GitHub keys without confirmation
-* `--allow-ssh-rsa` — Allow ssh-rsa recipients (rejected by default — use ed25519)
+* `--group <GROUP>` — Also add the new recipient to this group (experimental)
+* `--force` — Accept changed GitHub keys. Without it, authorize stops when a user's keys differ from the pinned set
+* `--allow-ssh-rsa` — Allow ssh-rsa keys. They are refused or skipped by default, so prefer ed25519
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`
@@ -708,11 +721,13 @@ Remove a recipient from the vault
 
 ###### **Arguments:**
 
-* `<RECIPIENT>` — Recipient pubkey or display name
+* `<RECIPIENT>` — Recipient pubkey, display name, or github:username
 
 ###### **Options:**
 
 * `--rotate` — Rotate the secrets they had access to in the same session
+* `--values-from <FILE>` — With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)
+* `--force` — Revoke every key of a multi-key GitHub user without confirmation
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`
@@ -721,7 +736,7 @@ Remove a recipient from the vault
 
 ## `murk group`
 
-Manage recipient groups
+Manage recipient groups (experimental)
 
 **Usage:** `murk group <COMMAND>`
 
@@ -819,6 +834,25 @@ Verify vault integrity without exporting secrets
 
 
 
+## `murk trust`
+
+Review who signed the vault and what changed, then trust it on this machine
+
+Needed once per vault on a new clone, whenever a teammate's first signed write arrives, and whenever murk refuses a vault (an unfamiliar signer, an unsigned or rolled-back vault). Shows the signer's key and signing-key fingerprint, the recipient changes since this machine last trusted the vault, and asks before recording it. An unsigned vault is signed with your key.
+
+**Usage:** `murk trust [OPTIONS]`
+
+###### **Options:**
+
+* `--yes` — Accept without asking (for scripts; review first)
+* `--print-key` — Print your own trusted-signer entry (for MURK_TRUSTED_SIGNERS) and signing-key fingerprint (for teammates to confirm), then exit
+* `--re-add <KEY>` — Trust a key this machine recorded as removed from the vault again (its public key, or its name in the vault). Repeat for each key; a vault signed by or listing a removed key is never trusted without it
+* `--vault <VAULT>` — Vault filename
+
+  Default value: `.murk`
+
+
+
 ## `murk doctor`
 
 Check the surrounding repo for hygiene issues
@@ -853,7 +887,9 @@ Scan files for leaked secret values
 
 ## `murk diff`
 
-Show secret changes vs a git ref
+Show secret and access changes vs a git ref (experimental)
+
+Lists recipients, signer, signing keys, policy, grants and group members that changed, then the secrets. The vault at the ref is verified first; a revision this machine's trust pin refuses is never shown.
 
 **Usage:** `murk diff [OPTIONS] [GIT_REF]`
 
@@ -866,7 +902,7 @@ Show secret changes vs a git ref
 ###### **Options:**
 
 * `--show-values` — Show actual values (not just key names)
-* `--json` — Output as JSON
+* `--json` — Output JSON: {"secrets": [...], "changes": [...]} (values only with --show-values)
 * `--vault <VAULT>` — Vault filename
 
   Default value: `.murk`
@@ -875,7 +911,7 @@ Show secret changes vs a git ref
 
 ## `murk setup-merge-driver`
 
-Configure git to use murk's merge driver for .murk files
+Configure git to use murk's merge driver for .murk files (experimental)
 
 **Usage:** `murk setup-merge-driver`
 

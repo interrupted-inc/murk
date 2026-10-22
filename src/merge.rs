@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::types::{Policy, SecretEntry, Vault};
+use crate::types::{Meta, Policy, SecretEntry, Vault};
 
 /// A single conflict discovered during merge.
 #[derive(Debug)]
@@ -23,6 +23,12 @@ pub struct MergeConflict {
 pub struct MergeResult {
     pub vault: Vault,
     pub conflicts: Vec<MergeConflict>,
+    /// Secrets both sides kept from the ancestor while both re-encrypted for a
+    /// recipient change. Every ciphertext then differs from the ancestor, so
+    /// only their plaintext shows which side changed the value. The merged
+    /// vault holds ours' entry for each until [`resolve_rekeyed`] decides it;
+    /// any key left here is a conflict.
+    pub rekeyed: BTreeSet<String>,
 }
 
 /// Three-way merge of vault files at the struct level.
@@ -32,12 +38,15 @@ pub struct MergeResult {
 /// On conflict, the conflicting field keeps the "ours" value.
 pub fn merge_vaults(base: &Vault, ours: &Vault, theirs: &Vault) -> MergeResult {
     let mut conflicts = Vec::new();
+    let mut rekeyed = BTreeSet::new();
 
     // -- Static fields: take ours --
     let version = ours.version.clone();
     let created = ours.created.clone();
     let vault_name = ours.vault_name.clone();
     let repo = ours.repo.clone();
+    let vault_id = ours.vault_id.clone();
+    let generation = ours.generation.max(theirs.generation);
 
     // -- Recipients: set union/removal --
     let recipients = merge_recipients(base, ours, theirs, &mut conflicts);
@@ -66,6 +75,7 @@ pub fn merge_vaults(base: &Vault, ours: &Vault, theirs: &Vault) -> MergeResult {
         ours_changed_recipients,
         theirs_changed_recipients,
         &mut conflicts,
+        &mut rekeyed,
     );
 
     // -- Meta: take ours for now; the CLI command handles regeneration --
@@ -76,6 +86,10 @@ pub fn merge_vaults(base: &Vault, ours: &Vault, theirs: &Vault) -> MergeResult {
         created,
         vault_name,
         repo,
+        // A keyed merge re-signs and moves the counter past both sides and this
+        // machine's mark (see `regenerate_meta`).
+        vault_id,
+        generation,
         recipients,
         schema,
         policy: merge_policy(
@@ -84,11 +98,20 @@ pub fn merge_vaults(base: &Vault, ours: &Vault, theirs: &Vault) -> MergeResult {
             theirs.policy.as_ref(),
             &mut conflicts,
         ),
+        // Per-grant blobs: taken from ours, like the meta blob they accompany.
+        agents: ours.agents.clone(),
         secrets,
         meta,
+        // The driver never vouches for merged content: a keyholder re-signs on
+        // the next write after reviewing `murk diff`.
+        sig: None,
     };
 
-    MergeResult { vault, conflicts }
+    MergeResult {
+        vault,
+        conflicts,
+        rekeyed,
+    }
 }
 
 /// Merge the header policy three-way. The policy is a security guardrail, so a
@@ -315,18 +338,19 @@ fn merge_secrets(
     ours_changed_recipients: bool,
     theirs_changed_recipients: bool,
     conflicts: &mut Vec<MergeConflict>,
+    rekeyed: &mut BTreeSet<String>,
 ) -> BTreeMap<String, SecretEntry> {
     // If a side changed recipients, all its ciphertext differs from base, so
     // ciphertext-equality cannot detect that side's edits. Route on which
     // side(s) re-encrypted: use the re-encrypted side as the new baseline and
-    // apply the other side's key-level diffs; if both did, only additions and
-    // removals can be merged without decryption.
+    // apply the other side's key-level diffs; if both did, keys both kept are
+    // left for a plaintext comparison (`rekeyed`).
     match (ours_changed_recipients, theirs_changed_recipients) {
         (true, false) => {
             merge_secrets_with_reencrypted_side(base, ours, theirs, "theirs", conflicts)
         }
         (false, true) => merge_secrets_with_reencrypted_side(base, theirs, ours, "ours", conflicts),
-        (true, true) => merge_secrets_both_reencrypted(base, ours, theirs, conflicts),
+        (true, true) => merge_secrets_both_reencrypted(base, ours, theirs, conflicts, rekeyed),
         (false, false) => merge_secrets_normal(base, ours, theirs, conflicts),
     }
 }
@@ -592,12 +616,15 @@ fn merge_secrets_with_reencrypted_side(
 }
 
 /// Both sides changed recipients — all ciphertext on both sides differs from base.
-/// Without decryption we can only merge keys that were added/removed (not modified).
+/// Keys added or removed on both sides merge here. A key from the ancestor that
+/// either side still has keeps ours' state and goes to `rekeyed`: only its
+/// plaintext can show which side changed (or removed) it, see [`resolve_rekeyed`].
 fn merge_secrets_both_reencrypted(
     base: &Vault,
     ours: &Vault,
     theirs: &Vault,
     conflicts: &mut Vec<MergeConflict>,
+    rekeyed: &mut BTreeSet<String>,
 ) -> BTreeMap<String, SecretEntry> {
     let all_keys: BTreeSet<&str> = base
         .secrets
@@ -615,12 +642,18 @@ fn merge_secrets_both_reencrypted(
         let in_theirs = theirs.secrets.get(key);
 
         match (in_base, in_ours, in_theirs) {
-            // Both have it and it was in base — take ours.
-            (Some(_), Some(o), Some(_)) | (None, Some(o), None) => {
+            (Some(_), Some(o), _) => {
+                result.insert(key.to_string(), o.clone());
+                rekeyed.insert(key.to_string());
+            }
+            (Some(_), None, Some(_)) => {
+                rekeyed.insert(key.to_string());
+            }
+            (None, Some(o), None) => {
                 result.insert(key.to_string(), o.clone());
             }
-            // Removals — honor them.
-            (Some(_), Some(_) | None, None) | (Some(_), None, Some(_)) | (None, None, None) => {}
+            // Removed on both sides, or impossible.
+            (Some(_) | None, None, None) => {}
             (None, None, Some(t)) => {
                 result.insert(key.to_string(), t.clone());
             }
@@ -637,50 +670,289 @@ fn merge_secrets_both_reencrypted(
     result
 }
 
+/// One ciphertext slot of a secret: the shared value, a recipient's private
+/// override, or a group's value.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Slot {
+    Shared,
+    Private(String),
+    Grouped(String),
+}
+
+impl Slot {
+    fn all(entry: &SecretEntry) -> impl Iterator<Item = Slot> + '_ {
+        let shared = (!entry.shared.is_empty()).then_some(Slot::Shared);
+        shared
+            .into_iter()
+            .chain(entry.private.keys().cloned().map(Slot::Private))
+            .chain(entry.grouped.keys().cloned().map(Slot::Grouped))
+    }
+
+    fn ciphertext<'a>(&self, entry: Option<&'a SecretEntry>) -> Option<&'a str> {
+        let entry = entry?;
+        match self {
+            Slot::Shared => (!entry.shared.is_empty()).then_some(entry.shared.as_str()),
+            Slot::Private(pk) => entry.private.get(pk).map(String::as_str),
+            Slot::Grouped(group) => entry.grouped.get(group).map(String::as_str),
+        }
+    }
+
+    fn set(&self, entry: &mut SecretEntry, ciphertext: Option<&str>) {
+        match (self, ciphertext) {
+            (Slot::Shared, ct) => entry.shared = ct.unwrap_or_default().to_string(),
+            (Slot::Private(pk), Some(ct)) => {
+                entry.private.insert(pk.clone(), ct.to_string());
+            }
+            (Slot::Private(pk), None) => {
+                entry.private.remove(pk);
+            }
+            (Slot::Grouped(group), Some(ct)) => {
+                entry.grouped.insert(group.clone(), ct.to_string());
+            }
+            (Slot::Grouped(group), None) => {
+                entry.grouped.remove(group);
+            }
+        }
+    }
+}
+
+/// Whether two slot values hold the same plaintext (absent equals absent).
+/// `None` when `identity` can't decrypt one of them.
+fn same_plaintext(
+    a: Option<&str>,
+    b: Option<&str>,
+    identity: &crate::crypto::MurkIdentity,
+) -> Option<bool> {
+    match (a, b) {
+        _ if a == b => Some(true),
+        (Some(a), Some(b)) => {
+            let a = crate::decrypt_value(a, identity).ok()?;
+            let b = crate::decrypt_value(b, identity).ok()?;
+            Some(*a == *b)
+        }
+        _ => Some(false),
+    }
+}
+
+/// Decide each secret in `rekeyed` (see [`MergeResult::rekeyed`]) by plaintext,
+/// slot by slot: a slot changed (or removed) on one side relative to the
+/// ancestor takes that side, and a slot changed differently on both sides is a
+/// conflict. A slot this key can't read is a conflict unless both sides hold
+/// the same plaintext, and so is any difference when the ancestor is not
+/// trusted (`base_trusted`), since it is then no authority on what changed.
+/// Conflicting slots keep ours. Drains `rekeyed`.
+fn resolve_rekeyed(
+    merged: &mut Vault,
+    [base, ours, theirs]: [&Vault; 3],
+    base_trusted: bool,
+    identity: &crate::crypto::MurkIdentity,
+    rekeyed: &mut BTreeSet<String>,
+    conflicts: &mut Vec<MergeConflict>,
+) {
+    for key in std::mem::take(rekeyed) {
+        let (b, o, t) = (
+            base.secrets.get(&key),
+            ours.secrets.get(&key),
+            theirs.secrets.get(&key),
+        );
+        let slots: BTreeSet<Slot> = [b, o, t]
+            .into_iter()
+            .flatten()
+            .flat_map(Slot::all)
+            .collect();
+        let mut entry = SecretEntry::default();
+        for slot in slots {
+            let (bc, oc, tc) = (slot.ciphertext(b), slot.ciphertext(o), slot.ciphertext(t));
+            let agree = same_plaintext(oc, tc, identity);
+            let changed = |side| same_plaintext(bc, side, identity).map(|same| !same);
+            let pick = match (base_trusted, changed(oc), changed(tc)) {
+                _ if agree == Some(true) => Ok(oc),
+                (true, Some(false), Some(_)) => Ok(tc),
+                (true, Some(true), Some(false)) => Ok(oc),
+                (true, Some(true), Some(true)) => {
+                    Err("changed differently on both sides while both changed recipients")
+                }
+                _ => Err(
+                    "both sides changed recipients and this key cannot tell which side changed it",
+                ),
+            };
+            let ciphertext = pick.unwrap_or_else(|reason| {
+                conflicts.push(MergeConflict {
+                    field: format!("secrets.{key}"),
+                    reason: reason.into(),
+                });
+                oc
+            });
+            slot.set(&mut entry, ciphertext);
+        }
+        if Slot::all(&entry).next().is_some() {
+            merged.secrets.insert(key, entry);
+        } else {
+            merged.secrets.remove(&key);
+        }
+    }
+}
+
 /// Output of the merge driver: the merge result and whether meta was regenerated.
 #[derive(Debug)]
 pub struct MergeDriverOutput {
     pub result: MergeResult,
     pub meta_regenerated: bool,
+    /// Why the merge cannot be reported clean while meta was not regenerated:
+    /// the merged secrets, recipients, schema or policy differ from ours (so
+    /// ours' MAC and signature, kept in the merged meta, may no longer verify),
+    /// or theirs changed its encrypted meta (which would be silently dropped).
+    pub needs_key: Option<&'static str>,
+}
+
+/// Whether two vaults agree on every plaintext field that the MAC and the
+/// signature cover and a merge can change: recipients (as a set), schema,
+/// secrets and policy. When they agree, ours' MAC and signature (kept in the
+/// merged meta) still verify. When they differ, they may not. Compared as
+/// structures, not as MAC bytes, because the signature covers the serialized
+/// fields (an absent `example` and an empty one hash alike in the MAC but not
+/// in the signed view). A merge takes every other field from ours, and groups
+/// and grants live in the encrypted meta.
+fn same_covered_content(a: &Vault, b: &Vault) -> bool {
+    fn sorted(v: &Vault) -> Vec<&str> {
+        let mut recipients: Vec<&str> = v.recipients.iter().map(String::as_str).collect();
+        recipients.sort_unstable();
+        recipients
+    }
+    sorted(a) == sorted(b) && a.schema == b.schema && a.secrets == b.secrets && a.policy == b.policy
 }
 
 /// Run the three-way merge driver on vault contents (as strings).
 ///
 /// Parses all three versions, merges, and attempts meta regeneration.
 /// Returns the merged vault and conflict list. The caller is responsible for
-/// writing the result to disk.
-pub fn run_merge_driver(base: &str, ours: &str, theirs: &str) -> Result<MergeDriverOutput, String> {
+/// writing the result to disk. `vault_path` is the vault's path in the work
+/// tree (git's `%P`), whose trust pin the sides are checked against.
+///
+/// Refuses an agent grant key before merging: grants are read-only (see
+/// [`crate::ensure_writable`]), and the caller would otherwise write the merged
+/// vault over `ours`.
+pub fn run_merge_driver(
+    base: &str,
+    ours: &str,
+    theirs: &str,
+    vault_path: &str,
+) -> Result<MergeDriverOutput, String> {
     use crate::vault;
 
     let base_vault = vault::parse(base).map_err(|e| format!("parsing base: {e}"))?;
     let ours_vault = vault::parse(ours).map_err(|e| format!("parsing ours: {e}"))?;
     let theirs_vault = vault::parse(theirs).map_err(|e| format!("parsing theirs: {e}"))?;
 
+    if merge_key_is_grant(&[&base_vault, &ours_vault, &theirs_vault]) {
+        return Err("agent grants are read-only; ask the operator to make this change".into());
+    }
+
     let mut result = merge_vaults(&base_vault, &ours_vault, &theirs_vault);
-    let meta_regenerated =
-        regenerate_meta(&mut result.vault, &ours_vault, &theirs_vault)?.is_some();
+    let meta_regenerated = regenerate_meta(
+        &mut result.vault,
+        &base_vault,
+        &ours_vault,
+        &theirs_vault,
+        vault_path,
+        &mut result.conflicts,
+        &mut result.rekeyed,
+    )?
+    .is_some();
+    // Without a key (or before a side passed its checks), a re-keyed secret
+    // could have lost a value change on either side: never merge it silently.
+    for key in std::mem::take(&mut result.rekeyed) {
+        result.conflicts.push(MergeConflict {
+            field: format!("secrets.{key}"),
+            reason: "both sides changed recipients; only a key can tell which side changed it"
+                .into(),
+        });
+    }
+    let needs_key = if meta_regenerated {
+        None
+    } else if !same_covered_content(&result.vault, &ours_vault) {
+        Some("the merged secrets, recipients, schema or policy differ from ours")
+    } else if theirs_vault.meta != base_vault.meta && theirs_vault.meta != ours_vault.meta {
+        // Any write re-encrypts the meta, so this can't tell a real group,
+        // grant, pin or signer change from a rewrite. Refuse rather than drop
+        // what may be a member removal.
+        Some(
+            "theirs changed the encrypted meta (groups, grants, GitHub pins or signers), which only a key can merge",
+        )
+    } else {
+        None
+    };
 
     Ok(MergeDriverOutput {
         result,
         meta_regenerated,
+        needs_key,
+    })
+}
+
+/// Group membership in the meta: group name → member pubkeys.
+type Groups = BTreeMap<String, Vec<String>>;
+/// Whether the key in the environment is an agent grant on any of `sides`, per
+/// that side's decrypted meta. No key, or a key that can't read a side's meta,
+/// is not a grant there.
+fn merge_key_is_grant(sides: &[&Vault]) -> bool {
+    use age::secrecy::ExposeSecret;
+
+    let Ok(secret_key) = crate::resolve_key() else {
+        return false;
+    };
+    let Ok(identity) = crate::crypto::parse_identity(secret_key.expose_secret()) else {
+        return false;
+    };
+    let Ok(pubkey) = identity.pubkey_string() else {
+        return false;
+    };
+    // A grant loads through its `agents` record and can't open the meta. Only
+    // a 2.x vault listed grants among the meta's readers; on 3.x a meta record
+    // bound to a key that opens the meta is a ghost, not a grant.
+    sides.iter().any(|side| {
+        crate::agents::loader_blob(side, &identity).is_some()
+            || (side.version.starts_with("2.")
+                && matches!(
+                    crate::decrypt_meta(side, &identity),
+                    Ok(Some(meta)) if meta.grants.values().any(|g| g.pubkey == pubkey)
+                ))
     })
 }
 
 /// Attempt to regenerate the meta blob for a merged vault.
 ///
-/// Decrypts meta from `ours` and `theirs` to merge recipient name maps,
-/// recomputes the MAC, and re-encrypts. Returns `Ok(None)` (leaving
-/// `ours.meta` in place) if MURK_KEY is unavailable or cannot read a side's
-/// meta. A side whose meta decrypts but is invalid is an error: merging it as
-/// empty would silently drop its groups, grants, and pins.
+/// First, ours and theirs must each pass the checks a load applies — MAC,
+/// signature, and a signer this machine trusts (see
+/// [`crate::trust::check_merge_side`]). A side that fails is a conflict naming
+/// it, and nothing of it is merged, re-MACed or signed: the driver must never
+/// bless content nobody trusted vouched for.
+///
+/// Then it decrypts the meta of all three versions, merges it, recomputes the
+/// MAC, signs the result with the merging key, and re-encrypts. Group
+/// membership, agent grants and GitHub pins merge three-way, like recipients:
+/// a change on one side (including a removal) is taken, and different changes
+/// on both sides are a conflict, so a member removed on one branch never
+/// regains access. If the common ancestor's meta is unreadable, any difference
+/// between the sides is a conflict. Conflicts are appended to `conflicts`.
+///
+/// Returns `Ok(None)` (leaving `ours.meta` in place) if MURK_KEY is
+/// unavailable, cannot read both sides' meta (a conflict), a side fails its
+/// authenticity check, the merge has any conflict (so a conflicted result
+/// never gets fresh integrity metadata), or the merged recipients cannot be
+/// encrypted to. A side whose meta decrypts but is invalid is an error:
+/// merging it as empty would silently drop its groups, grants, and pins.
 pub fn regenerate_meta(
     merged: &mut Vault,
+    base: &Vault,
     ours: &Vault,
     theirs: &Vault,
+    vault_path: &str,
+    conflicts: &mut Vec<MergeConflict>,
+    rekeyed: &mut BTreeSet<String>,
 ) -> Result<Option<String>, String> {
     use crate::{compute_mac, crypto, decrypt_meta, encrypt_value, parse_recipients, resolve_key};
     use age::secrecy::ExposeSecret;
-    use std::collections::HashMap;
 
     let Ok(secret_key) = resolve_key() else {
         return Ok(None);
@@ -689,85 +961,96 @@ pub fn regenerate_meta(
         return Ok(None);
     };
 
-    let default_meta = || crate::types::Meta {
-        recipients: HashMap::new(),
-        mac: String::new(),
-        mac_key: None,
-        github_pins: HashMap::new(),
-        groups: BTreeMap::new(),
-        grants: BTreeMap::new(),
-        signers: BTreeMap::new(),
-        sig: None,
+    let base_authentic = match authenticate_inputs(vault_path, base, ours, theirs, &identity) {
+        Ok(authentic) => authentic,
+        Err(conflict) => {
+            conflicts.push(conflict);
+            return Ok(None);
+        }
+    };
+    // An ancestor nobody trusted signed (pre-0.14 history, or one this key
+    // cannot read) is not an authority on what changed: merge as if it were
+    // unreadable, so any meta difference between the sides is a conflict.
+    let base_meta = if base_authentic {
+        decrypt_meta(base, &identity).map_err(|e| format!("base: {e}"))?
+    } else {
+        None
+    };
+    let sides = [base, ours, theirs];
+    resolve_rekeyed(merged, sides, base_authentic, &identity, rekeyed, conflicts);
+
+    let ours_meta = decrypt_meta(ours, &identity).map_err(|e| format!("ours: {e}"))?;
+    let theirs_meta = decrypt_meta(theirs, &identity).map_err(|e| format!("theirs: {e}"))?;
+    let (Some(ours_meta), Some(theirs_meta)) = (ours_meta, theirs_meta) else {
+        conflicts.push(MergeConflict {
+            field: "meta".into(),
+            reason: "this key cannot decrypt both sides' meta, so groups, grants and pins cannot be merged".into(),
+        });
+        return Ok(None);
     };
 
-    let ours_meta = decrypt_meta(ours, &identity)
-        .map_err(|e| format!("ours: {e}"))?
-        .unwrap_or_else(default_meta);
-    let theirs_meta = decrypt_meta(theirs, &identity)
-        .map_err(|e| format!("theirs: {e}"))?
-        .unwrap_or_else(default_meta);
-
-    // Merge name maps: union, ours wins on conflict.
-    let mut names = theirs_meta.recipients;
-    for (pk, name) in ours_meta.recipients {
-        names.insert(pk, name);
+    let mut meta = merge_meta(
+        merged,
+        (base, base_meta.as_ref()),
+        (ours, &ours_meta),
+        (theirs, &theirs_meta),
+        conflicts,
+    );
+    if !conflicts.is_empty() {
+        return Ok(None);
     }
 
-    // Only keep names for recipients still in the merged vault.
-    names.retain(|pk, _| merged.recipients.contains(pk));
+    let pin = crate::pins::read(vault_path)?;
+    if let Some(conflict) = result_conflict(
+        &identity,
+        merged,
+        &meta,
+        &ours_meta,
+        pin.as_ref(),
+        ours,
+        theirs,
+    ) {
+        conflicts.push(conflict);
+        return Ok(None);
+    }
 
-    // Merge group membership: union, ours wins on conflict. Drop members no
-    // longer in the merged recipient set, and drop now-empty groups.
-    let mut groups = theirs_meta.groups;
-    for (name, members) in ours_meta.groups {
-        groups.insert(name, members);
+    // The merged vault is a new version of both sides: identity from ours
+    // (equal to theirs, or theirs predates vault ids), and a counter past both
+    // sides and past anything this machine accepted.
+    if merged.vault_id.is_empty() {
+        merged.vault_id = if theirs.vault_id.is_empty() {
+            crate::save::derived_vault_id(merged)
+        } else {
+            theirs.vault_id.clone()
+        };
     }
-    for members in groups.values_mut() {
-        members.retain(|pk| merged.recipients.contains(pk));
-    }
-    groups.retain(|_, members| !members.is_empty());
+    merged.generation = ours
+        .generation
+        .max(theirs.generation)
+        .max(pin.as_ref().map_or(0, |p| p.generation))
+        .saturating_add(1);
+    meta.signers = crate::save::vouched_registry(merged, &meta.signers, pin.as_ref(), &identity);
 
-    // Merge agent grants: union, ours wins on conflict. Drop grants whose
-    // ephemeral pubkey is no longer in the merged recipient set.
-    let mut grants = theirs_meta.grants;
-    for (name, grant) in ours_meta.grants {
-        grants.insert(name, grant);
-    }
-    grants.retain(|_, grant| merged.recipients.contains(&grant.pubkey));
+    // Each grant gets its own record again; one unchanged on a side keeps
+    // that side's blob.
+    merged.agents = crate::agents::blobs_for(
+        &meta.grants,
+        &[(ours, &ours_meta.grants), (theirs, &theirs_meta.grants)],
+    )
+    .map_err(|e| e.to_string())?;
 
     let mac_key_hex = crate::generate_mac_key();
     let mac_key = crate::decode_mac_key(&mac_key_hex).unwrap();
-    let mac = compute_mac(merged, &groups, &grants, Some(&mac_key));
-    // Merge github pins: union, ours wins on conflict.
-    let mut github_pins = theirs_meta.github_pins;
-    for (user, pins) in ours_meta.github_pins {
-        github_pins.insert(user, pins);
-    }
+    meta.mac = compute_mac(merged, &meta.groups, &meta.grants, Some(&mac_key));
+    meta.mac_key = Some(mac_key_hex);
+    meta.sig = None;
 
-    // Merge the signer registry (union, ours wins), retained to current
-    // recipients. The merged vault is deliberately left UNSIGNED: the driver runs
-    // non-interactively and must not vouch for content a human hasn't reviewed —
-    // auto-signing here would re-bless one-sided value injection just as
-    // auto-MACing did. `sig: None` makes the next load warn "unsigned"; any
-    // keyholder write (after reviewing `murk diff`) re-signs it.
-    let mut signers = theirs_meta.signers;
-    for (pk, vk) in ours_meta.signers {
-        signers.insert(pk, vk);
-    }
-    signers.retain(|pk, _| merged.recipients.contains(pk));
-
-    let meta = crate::types::Meta {
-        recipients: names,
-        mac,
-        mac_key: Some(mac_key_hex),
-        github_pins,
-        groups,
-        grants,
-        signers,
-        sig: None,
-    };
-
-    let Ok(recipients) = parse_recipients(&merged.recipients) else {
+    // The meta goes to every recipient except agent grants (see
+    // [`crate::agents`]).
+    let Ok(recipients) = parse_recipients(&crate::agents::meta_recipients(
+        &merged.recipients,
+        &meta.grants,
+    )) else {
         return Ok(None);
     };
 
@@ -781,7 +1064,495 @@ pub fn regenerate_meta(
         return Ok(None);
     };
     merged.meta = encrypted;
+    // The merged meta is MACed by this build (blake3v8 covers no version, so
+    // stamping after the MAC is safe), so the merged vault carries this build's
+    // format version, not either side's.
+    merged.version = crate::types::VAULT_VERSION.to_string();
+    // Both sides were signed by trusted signers (checked above), so the merge
+    // of their content is signed by the merging key — unless it cannot sign
+    // (ssh-rsa/hardware), which leaves it unsigned for a teammate to review
+    // and `murk trust`. The signature covers the finished file, so it comes last.
+    merged.sig = crate::sign_vault(merged, &identity);
     Ok(Some("meta regenerated".into()))
+}
+
+/// Why the merged result must not be signed by the merging key, if it must
+/// not: the group rule a load applies (a membership change needs a member's
+/// signature) must hold for that key against ours, or every machine would
+/// refuse the result; and a key removed on this machine may come back only
+/// through a side numbered past its removal — older sides that merely still
+/// list it must not carry it into a result numbered and signed past
+/// everything.
+fn result_conflict(
+    identity: &crate::crypto::MurkIdentity,
+    merged: &Vault,
+    meta: &Meta,
+    ours_meta: &Meta,
+    pin: Option<&crate::pins::TrustPin>,
+    ours: &Vault,
+    theirs: &Vault,
+) -> Option<MergeConflict> {
+    if let Ok(me) = identity.pubkey_string()
+        && let Some(group) = crate::trust::group_change_violation(
+            &merged.recipients,
+            &meta.groups,
+            &crate::trust::canonical_groups(&ours_meta.groups),
+            &me,
+        )
+    {
+        return Some(MergeConflict {
+            field: format!("groups.{group}"),
+            reason: format!(
+                "theirs changes the membership of group {group}, and you are not a member of it; a member of {group} must do this merge"
+            ),
+        });
+    }
+    let (key, at) = crate::trust::removed_key_kept_by_merge(pin, merged, &[ours, theirs])?;
+    Some(MergeConflict {
+        field: format!("recipients.{}", recipient_label(&key)),
+        reason: format!(
+            "rolled back: {} was removed from this vault at generation {at} on this machine, and neither side re-adds them in a newer revision — merge the branch that removed them first",
+            crate::truncate_pubkey(&key)
+        ),
+    })
+}
+
+/// The authenticity gate before any merging: the ancestor, then ours and
+/// theirs, must pass (see [`check_base`] and [`check_side`]), and both sides
+/// must be the same vault. The ancestor decides what counts as a change and
+/// supplies the membership group changes are judged against, so only an
+/// authenticated ancestor is used for either: an attacker-chosen parent
+/// (cherry-pick, `git apply --3way`, or a stripped legacy file) could
+/// otherwise shape the delta. Returns whether the ancestor is authenticated,
+/// or the conflict to record.
+fn authenticate_inputs(
+    vault_path: &str,
+    base: &Vault,
+    ours: &Vault,
+    theirs: &Vault,
+    identity: &crate::crypto::MurkIdentity,
+) -> Result<bool, MergeConflict> {
+    let base_groups = check_base(vault_path, base, identity).map_err(|reason| MergeConflict {
+        field: "base".into(),
+        reason: format!(
+            "the common ancestor failed its authenticity check, so the written file holds the merge of both sides' secrets and recipients, keeps ours' meta and has no signature (abort the merge and resolve it): {reason}"
+        ),
+    })?;
+    // Whether either side was written by murk 0.14: a 0.13 side that changed
+    // the vault may then not override it (see `trust::check_merge_side`).
+    let upgraded = [ours, theirs]
+        .iter()
+        .any(|v| !v.vault_id.is_empty() || v.generation > 0);
+    for (side, vault) in [("ours", ours), ("theirs", theirs)] {
+        check_side(
+            vault_path,
+            vault,
+            base,
+            base_groups.as_ref(),
+            identity,
+            upgraded,
+        )
+        .map_err(|reason| MergeConflict {
+            field: side.into(),
+            reason: format!(
+                "{side} failed its authenticity check, so the written file holds the merge of both sides' secrets and recipients, keeps ours' meta and has no signature (abort the merge and resolve it): {reason}"
+            ),
+        })?;
+    }
+    if !ours.vault_id.is_empty() && !theirs.vault_id.is_empty() && ours.vault_id != theirs.vault_id
+    {
+        return Err(MergeConflict {
+            field: "vault_id".into(),
+            reason: "ours and theirs are different vaults".into(),
+        });
+    }
+    Ok(base_groups.is_some())
+}
+
+/// Verify one side of a merge (MAC, signature) and check it against this
+/// machine's trust state, returning the reason it fails.
+fn check_side(
+    vault_path: &str,
+    side: &Vault,
+    base: &Vault,
+    base_groups: Option<&Groups>,
+    identity: &crate::crypto::MurkIdentity,
+    upgraded: bool,
+) -> Result<(), String> {
+    let verified = crate::load::verify_side(side, identity).map_err(|e| e.to_string())?;
+    let loaded = crate::trust::Loaded {
+        vault: side,
+        signature: &verified.signature,
+        signer_vk: verified.signer_vk.as_deref(),
+        registry: &verified.registry,
+        names: &verified.names,
+        groups: &verified.groups,
+        grants: &verified.grants,
+        loader_can_sign: identity.is_signing_capable(),
+        operator_key: crate::crypto::operator_key(identity),
+    };
+    let changed = !same_covered_content(side, base) || side.meta != base.meta;
+    crate::trust::check_merge_side(
+        vault_path,
+        &loaded,
+        Some((base, base_groups)),
+        changed,
+        upgraded,
+    )
+}
+
+/// Authenticate the merge base: MAC and signature as a load does, and a
+/// signer this machine ever trusted (see [`crate::trust::assess_revision`]).
+/// Returns its group membership when it is authenticated. `None` when this
+/// key cannot read it, or when it is unsigned: an unsigned ancestor with no
+/// vault id is accepted as pre-0.14 history, but anyone can strip a signature
+/// and re-MAC, so its contents are never used as authority — group changes
+/// are then judged against the pinned membership.
+fn check_base(
+    vault_path: &str,
+    base: &Vault,
+    identity: &crate::crypto::MurkIdentity,
+) -> Result<Option<BTreeMap<String, Vec<String>>>, String> {
+    let verified = match crate::load::verify_side(base, identity) {
+        Ok(v) => v,
+        // Not a recipient at the ancestor: nothing of it is used.
+        Err(crate::MurkError::Crypto(_)) => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    let loaded = crate::trust::Loaded {
+        vault: base,
+        signature: &verified.signature,
+        signer_vk: verified.signer_vk.as_deref(),
+        registry: &verified.registry,
+        names: &verified.names,
+        groups: &verified.groups,
+        grants: &verified.grants,
+        loader_can_sign: identity.is_signing_capable(),
+        operator_key: crate::crypto::operator_key(identity),
+    };
+    match crate::trust::assess_revision(vault_path, &loaded)? {
+        crate::trust::Verdict::Trusted => Ok(Some(verified.groups)),
+        crate::trust::Verdict::UnsignedAllowed => Ok(None),
+        crate::trust::Verdict::Refused(crate::trust::Refusal::Unsigned)
+            if base.vault_id.is_empty() =>
+        {
+            Ok(None)
+        }
+        crate::trust::Verdict::Refused(r) => {
+            let msg = crate::trust::refusal_message(vault_path, &r, &loaded, None);
+            Err(msg.lines().next().unwrap_or_default().to_string())
+        }
+    }
+}
+
+/// Merge the three decrypted metas for `merged`, appending conflicts. Returns
+/// a meta without MAC, MAC key or signature: the caller fills those in, and
+/// adds its own signer-registry entry.
+fn merge_meta(
+    merged: &mut Vault,
+    (base, base_meta): (&Vault, Option<&Meta>),
+    (ours, ours_meta): (&Vault, &Meta),
+    (theirs, theirs_meta): (&Vault, &Meta),
+    conflicts: &mut Vec<MergeConflict>,
+) -> Meta {
+    // Agent grants first, three-way per grant, so an agent key that lost its
+    // grant leaves the recipient set before anything else is retained to it.
+    // A conflicting grant is dropped, never kept with the wider side's terms.
+    let mut grants = merge_meta_entries(
+        "grants",
+        base_meta.map(|m| &m.grants),
+        &ours_meta.grants,
+        &theirs_meta.grants,
+        (str::to_string, OnConflict::Drop),
+        conflicts,
+    );
+    grants.retain(|_, grant| merged.recipients.contains(&grant.pubkey));
+    remove_ungranted_agent_keys(
+        merged,
+        [base_meta, Some(ours_meta), Some(theirs_meta)],
+        &grants,
+        conflicts,
+    );
+
+    // Merge name maps: union, ours wins on conflict. Names are labels only.
+    let mut names = theirs_meta.recipients.clone();
+    names.extend(ours_meta.recipients.clone());
+    // Only keep names for recipients still in the merged vault.
+    names.retain(|pk, _| merged.recipients.contains(pk));
+
+    // Group membership, three-way per member. Drop members no longer in the
+    // merged recipient set, and drop now-empty groups.
+    let mut groups = merge_groups(
+        base_meta.map(|m| &m.groups),
+        &ours_meta.groups,
+        &theirs_meta.groups,
+        conflicts,
+    );
+    for members in groups.values_mut() {
+        members.retain(|pk| merged.recipients.contains(pk));
+    }
+    groups.retain(|_, members| !members.is_empty());
+    check_grouped_ciphertexts(
+        merged,
+        base,
+        [
+            ("ours", ours, &ours_meta.groups),
+            ("theirs", theirs, &theirs_meta.groups),
+        ],
+        &groups,
+        conflicts,
+    );
+
+    // GitHub pins, three-way per user.
+    let sorted_pins = |m: &Meta| -> BTreeMap<String, Vec<String>> {
+        m.github_pins
+            .iter()
+            .map(|(user, pins)| (user.clone(), pins.clone()))
+            .collect()
+    };
+    let github_pins = merge_meta_entries(
+        "github_pins",
+        base_meta.map(sorted_pins).as_ref(),
+        &sorted_pins(ours_meta),
+        &sorted_pins(theirs_meta),
+        (str::to_string, OnConflict::KeepOurs),
+        conflicts,
+    )
+    .into_iter()
+    .collect();
+
+    // Signer registry: the union of both sides' entries for the merged
+    // recipients. Both sides were signed by trusted signers, so both vouch for
+    // their entries; an age key has one verifying key, so two different
+    // entries for the same key mean one side lies, and that is a conflict.
+    let recipients: BTreeSet<String> = merged
+        .recipients
+        .iter()
+        .map(|r| crate::recipients::canonical_recipient(r).into_owned())
+        .collect();
+    let mut signers = BTreeMap::new();
+    for (pk, vk) in ours_meta.signers.iter().chain(&theirs_meta.signers) {
+        let pk = crate::recipients::canonical_recipient(pk).into_owned();
+        if !recipients.contains(&pk) {
+            continue;
+        }
+        match signers.get(&pk) {
+            Some(existing) if existing != vk => conflicts.push(MergeConflict {
+                field: format!("signers.{}", crate::truncate_pubkey(&pk)),
+                reason: "ours and theirs register different verifying keys for this key".into(),
+            }),
+            Some(_) => {}
+            None => {
+                signers.insert(pk, vk.clone());
+            }
+        }
+    }
+
+    Meta {
+        recipients: names,
+        github_pins,
+        groups,
+        grants,
+        signers,
+        ..Meta::default()
+    }
+}
+
+/// Merge group membership three-way, one (group, member) pair at a time: a
+/// member added or removed on one side follows that side. With an unreadable
+/// `base`, a member present on only one side is a conflict and is left out, so
+/// a conflict never grants access.
+fn merge_groups(
+    base: Option<&Groups>,
+    ours: &Groups,
+    theirs: &Groups,
+    conflicts: &mut Vec<MergeConflict>,
+) -> Groups {
+    fn pairs(groups: &Groups) -> BTreeSet<(&str, &str)> {
+        groups
+            .iter()
+            .flat_map(|(name, members)| members.iter().map(|m| (name.as_str(), m.as_str())))
+            .collect()
+    }
+    let (base, ours, theirs) = (base.map(pairs), pairs(ours), pairs(theirs));
+
+    let mut merged = Groups::new();
+    for &pair in ours.union(&theirs) {
+        let (in_ours, in_theirs) = (ours.contains(&pair), theirs.contains(&pair));
+        let keep = if in_ours == in_theirs {
+            in_ours
+        } else if let Some(base) = &base {
+            // Exactly one side differs from base; take that side.
+            if in_ours == base.contains(&pair) {
+                in_theirs
+            } else {
+                in_ours
+            }
+        } else {
+            conflicts.push(MergeConflict {
+                field: format!("groups.{}", pair.0),
+                reason: format!(
+                    "member {} differs between the sides and the common ancestor's meta is unreadable",
+                    recipient_label(pair.1)
+                ),
+            });
+            false
+        };
+        if keep {
+            merged
+                .entry(pair.0.to_string())
+                .or_default()
+                .push(pair.1.to_string());
+        }
+    }
+    merged
+}
+
+/// What [`merge_meta_entries`] keeps for an entry in conflict.
+#[derive(Clone, Copy)]
+enum OnConflict {
+    /// Leave the entry out, so a conflict never grants or restores access.
+    Drop,
+    /// Keep ours' entry (or its absence), so a conflict never discards a
+    /// check ours relies on, such as a GitHub key pin or a signer mapping.
+    KeepOurs,
+}
+
+/// Merge one meta map three-way per entry: an entry added, changed or removed
+/// on one side follows that side. Different changes on both sides (or any
+/// difference when `base` is unreadable) are a conflict, resolved by
+/// `on_conflict`. `label` renders a key for the conflict field.
+fn merge_meta_entries<V: PartialEq + Clone>(
+    field: &str,
+    base: Option<&BTreeMap<String, V>>,
+    ours: &BTreeMap<String, V>,
+    theirs: &BTreeMap<String, V>,
+    (label, on_conflict): (fn(&str) -> String, OnConflict),
+    conflicts: &mut Vec<MergeConflict>,
+) -> BTreeMap<String, V> {
+    let keys: BTreeSet<&String> = ours.keys().chain(theirs.keys()).collect();
+    let mut merged = BTreeMap::new();
+    for key in keys {
+        let (o, t) = (ours.get(key), theirs.get(key));
+        let picked = if o == t {
+            o
+        } else {
+            match base.map(|b| b.get(key)) {
+                Some(b) if o == b => t,
+                Some(b) if t == b => o,
+                known => {
+                    let reason = if known.is_some() {
+                        "changed differently on both sides"
+                    } else {
+                        "differs between the sides and the common ancestor's meta is unreadable"
+                    };
+                    conflicts.push(MergeConflict {
+                        field: format!("{field}.{}", label(key)),
+                        reason: reason.into(),
+                    });
+                    match on_conflict {
+                        OnConflict::Drop => None,
+                        OnConflict::KeepOurs => o,
+                    }
+                }
+            }
+        };
+        if let Some(value) = picked {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    merged
+}
+
+/// An agent key whose grant did not survive the merge must not stay a plain
+/// recipient: shared values are withheld from a key only while it has a grant
+/// (`src/save.rs`), so the next write would encrypt every shared secret to it.
+/// Remove such keys from the recipients and their scoped values, and flag it.
+fn remove_ungranted_agent_keys(
+    merged: &mut Vault,
+    metas: [Option<&Meta>; 3],
+    grants: &BTreeMap<String, crate::types::GrantEntry>,
+    conflicts: &mut Vec<MergeConflict>,
+) {
+    let granted: BTreeSet<&str> = grants.values().map(|g| g.pubkey.as_str()).collect();
+    let ungranted: BTreeSet<String> = metas
+        .into_iter()
+        .flatten()
+        .flat_map(|m| m.grants.values().map(|g| g.pubkey.clone()))
+        .filter(|pk| !granted.contains(pk.as_str()) && merged.recipients.contains(pk))
+        .collect();
+    for pk in &ungranted {
+        conflicts.push(MergeConflict {
+            field: format!("recipients.{}", recipient_label(pk)),
+            reason:
+                "agent key lost its grant in the merge; removed it (grant again if still needed)"
+                    .into(),
+        });
+    }
+    merged.recipients.retain(|pk| !ungranted.contains(pk));
+    for entry in merged.secrets.values_mut() {
+        entry.private.retain(|pk, _| !ungranted.contains(pk));
+    }
+}
+
+/// Check every merged grouped ciphertext against the merged membership.
+///
+/// A ciphertext for a group that no longer exists is a conflict (the vault
+/// would not verify). A ciphertext that a side added or changed is encrypted
+/// to that side's members of the group; if the merged membership dropped any
+/// of them, the value would stay readable by a removed member, so it is a
+/// conflict and the ciphertext is dropped from the written file, making the
+/// conflicted result safe to accept as-is.
+fn check_grouped_ciphertexts(
+    merged: &mut Vault,
+    base: &Vault,
+    sides: [(&str, &Vault, &Groups); 2],
+    groups: &Groups,
+    conflicts: &mut Vec<MergeConflict>,
+) {
+    let grouped = |vault: &Vault, key: &str, group: &str| -> Option<String> {
+        vault.secrets.get(key)?.grouped.get(group).cloned()
+    };
+    let mut stale = Vec::new();
+    for (key, entry) in &merged.secrets {
+        for (group, ciphertext) in &entry.grouped {
+            let members = groups.get(group);
+            if members.is_none() {
+                conflicts.push(MergeConflict {
+                    field: format!("secrets.{key}"),
+                    reason: format!("group {group} no longer exists after the merge"),
+                });
+            }
+            if grouped(base, key, group).as_ref() == Some(ciphertext) {
+                continue;
+            }
+            let stale_side = sides.iter().find(|(_, vault, side_groups)| {
+                grouped(vault, key, group).as_ref() == Some(ciphertext)
+                    && side_groups
+                        .get(group)
+                        .into_iter()
+                        .flatten()
+                        .any(|m| !members.is_some_and(|ms| ms.contains(m)))
+            });
+            if let Some((side, _, _)) = stale_side {
+                conflicts.push(MergeConflict {
+                    field: format!("secrets.{key}"),
+                    reason: format!(
+                        "{side} encrypted it to members of group {group} that the merge removed; dropped it, add it again after resolving"
+                    ),
+                });
+                stale.push((key.clone(), group.clone()));
+            }
+        }
+    }
+    for (key, group) in stale {
+        if let Some(entry) = merged.secrets.get_mut(&key) {
+            entry.grouped.remove(&group);
+            if entry.shared.is_empty() && entry.private.is_empty() && entry.grouped.is_empty() {
+                merged.secrets.remove(&key);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -817,6 +1588,10 @@ mod tests {
             created: "2026-01-01T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec!["age1alice".into(), "age1bob".into()],
             schema,
             policy: None,
@@ -838,6 +1613,139 @@ mod tests {
         }
         v.meta = "bWV0YQ==".into();
         serde_json::to_string(&v).unwrap()
+    }
+
+    // -- Keyless comparison --
+
+    #[test]
+    fn same_covered_content_detects_each_field_and_ignores_recipient_order() {
+        let ours = base_vault();
+
+        let mut reordered = ours.clone();
+        reordered.recipients.reverse();
+        assert!(same_covered_content(&ours, &reordered));
+
+        let mut recipients = ours.clone();
+        recipients.recipients.push("age1carol".into());
+        let mut schema = ours.clone();
+        schema.schema.get_mut("DB_URL").unwrap().description = "changed".into();
+        let mut secrets = ours.clone();
+        secrets.secrets.get_mut("DB_URL").unwrap().shared = "other-cipher".into();
+        let mut policy = ours.clone();
+        policy.policy = Some(Policy::default());
+        // The MAC hashes these alike, but the signed view does not.
+        let mut empty_example = ours.clone();
+        empty_example.schema.get_mut("DB_URL").unwrap().example = Some(String::new());
+
+        for (what, other) in [
+            ("recipients", &recipients),
+            ("schema", &schema),
+            ("secrets", &secrets),
+            ("policy", &policy),
+            ("empty example", &empty_example),
+        ] {
+            assert!(
+                !same_covered_content(&ours, other),
+                "{what} difference missed"
+            );
+        }
+    }
+
+    // -- Meta three-way merge --
+
+    fn map(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
+        entries
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn meta_entries_take_a_one_sided_change_and_conflict_on_two() {
+        let base = map(&[("kept", "1"), ("gone", "1"), ("both", "1")]);
+        let ours = map(&[("kept", "1"), ("both", "ours"), ("new", "1")]);
+        let theirs = map(&[("kept", "2"), ("gone", "1"), ("both", "theirs")]);
+
+        let mut conflicts = Vec::new();
+        let merged = merge_meta_entries(
+            "grants",
+            Some(&base),
+            &ours,
+            &theirs,
+            (str::to_string, OnConflict::Drop),
+            &mut conflicts,
+        );
+        // `gone` removed on ours stays removed; `both` conflicts and is left out.
+        assert_eq!(merged, map(&[("kept", "2"), ("new", "1")]));
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].field, "grants.both");
+
+        // KeepOurs resolves the same conflict to ours' entry.
+        let merged = merge_meta_entries(
+            "signers",
+            Some(&base),
+            &ours,
+            &theirs,
+            (str::to_string, OnConflict::KeepOurs),
+            &mut Vec::new(),
+        );
+        assert_eq!(
+            merged,
+            map(&[("kept", "2"), ("both", "ours"), ("new", "1")])
+        );
+    }
+
+    #[test]
+    fn meta_entries_without_a_readable_base_conflict_on_any_difference() {
+        let ours = map(&[("same", "1"), ("only_ours", "1")]);
+        let theirs = map(&[("same", "1")]);
+        let mut conflicts = Vec::new();
+
+        let merged = merge_meta_entries(
+            "grants",
+            None,
+            &ours,
+            &theirs,
+            (str::to_string, OnConflict::Drop),
+            &mut conflicts,
+        );
+
+        assert_eq!(merged, map(&[("same", "1")]));
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].field, "grants.only_ours");
+    }
+
+    #[test]
+    fn groups_merge_each_member_three_way() {
+        let groups = |members: &[&str]| -> Groups {
+            BTreeMap::from([(
+                "ops".to_string(),
+                members.iter().map(|m| (*m).to_string()).collect(),
+            )])
+        };
+        let base = groups(&["alice", "bob"]);
+        let mut conflicts = Vec::new();
+
+        // Theirs removes bob, ours adds carol: both changes land.
+        let merged = merge_groups(
+            Some(&base),
+            &groups(&["alice", "bob", "carol"]),
+            &groups(&["alice"]),
+            &mut conflicts,
+        );
+        assert_eq!(merged, groups(&["alice", "carol"]));
+        assert!(conflicts.is_empty());
+
+        // Without a base, a one-sided member is a conflict and gets no access.
+        let merged = merge_groups(
+            None,
+            &groups(&["alice", "bob"]),
+            &groups(&["alice"]),
+            &mut conflicts,
+        );
+        assert_eq!(merged, groups(&["alice"]));
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].field, "groups.ops");
     }
 
     // -- No-change merge --
@@ -1310,7 +2218,7 @@ mod tests {
 
     #[test]
     fn run_merge_driver_invalid_base() {
-        let result = run_merge_driver("not json", "{}", "{}");
+        let result = run_merge_driver("not json", "{}", "{}", ".murk");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("parsing base"));
     }
@@ -1318,7 +2226,7 @@ mod tests {
     #[test]
     fn run_merge_driver_invalid_ours() {
         let base = base_vault_json();
-        let result = run_merge_driver(&base, "not json", &base);
+        let result = run_merge_driver(&base, "not json", &base, ".murk");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("parsing ours"));
     }
@@ -1326,17 +2234,21 @@ mod tests {
     #[test]
     fn run_merge_driver_invalid_theirs() {
         let base = base_vault_json();
-        let result = run_merge_driver(&base, &base, "not json");
+        let result = run_merge_driver(&base, &base, "not json", ".murk");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("parsing theirs"));
     }
 
     #[test]
     fn run_merge_driver_clean_no_changes() {
+        // Hold ENV_LOCK: a key set by a concurrent test would make the driver
+        // try (and fail) to decrypt these placeholder metas, a conflict.
+        let _env = crate::testutil::ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let base = base_vault_json();
-        let output = run_merge_driver(&base, &base, &base).unwrap();
+        let output = run_merge_driver(&base, &base, &base, ".murk").unwrap();
         assert!(output.result.conflicts.is_empty());
-        // meta_regenerated depends on MURK_KEY availability — don't assert it.
     }
 
     // -- Static field preservation --
@@ -1382,6 +2294,10 @@ mod tests {
             created: "2026-01-01T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec!["age1alice".into()],
             schema: BTreeMap::new(),
             policy: None,
@@ -1890,18 +2806,58 @@ mod tests {
         );
     }
 
+    /// Give `vault` a valid meta for `meta`: fresh MAC, signed by `identity`,
+    /// encrypted to the vault's recipients — a side the authenticity gate
+    /// accepts once its signer is trusted (see [`trusting`]).
+    fn seal(vault: &mut Vault, meta: &crate::types::Meta, identity: &crate::crypto::MurkIdentity) {
+        let mut meta = meta.clone();
+        let key_hex = crate::generate_mac_key();
+        let key = crate::decode_mac_key(&key_hex).unwrap();
+        meta.mac = crate::compute_mac(vault, &meta.groups, &meta.grants, Some(&key));
+        meta.mac_key = Some(key_hex);
+        meta.sig = None;
+        crate::register_signer(vault, &mut meta.signers, identity);
+        let recipients = crate::parse_recipients(&vault.recipients).unwrap();
+        vault.meta =
+            crate::encrypt_value(&serde_json::to_vec(&meta).unwrap(), &recipients).unwrap();
+        vault.version = crate::types::VAULT_VERSION.into();
+        vault.sig = None;
+        vault.sig = crate::sign_vault(vault, identity);
+    }
+
+    /// Run `f` with `key` as MURK_KEY and `pubkey` as the only trusted signer,
+    /// with no trust pin read or written. Caller holds ENV_LOCK.
+    fn trusting<T>(key: &str, pubkey: &str, f: impl FnOnce() -> T) -> T {
+        let vk = crate::crypto::parse_identity(key)
+            .unwrap()
+            .signing_key()
+            .unwrap()
+            .verifying_key();
+        unsafe {
+            std::env::set_var("MURK_KEY", key);
+            std::env::set_var("MURK_TRUSTED_SIGNERS", format!("{pubkey}:{vk}"));
+            std::env::set_var("MURK_NO_SIGNER_PIN", "1");
+        }
+        let out = f();
+        unsafe {
+            std::env::remove_var("MURK_KEY");
+            std::env::remove_var("MURK_TRUSTED_SIGNERS");
+            std::env::remove_var("MURK_NO_SIGNER_PIN");
+        }
+        out
+    }
+
     // -- regenerate_meta: rebuilds names, prunes stale groups --
 
     #[test]
     fn regenerate_meta_rebuilds_names_and_prunes_stale_groups() {
-        use crate::testutil::{ENV_LOCK, generate_keypair, make_identity, make_recipient};
+        use crate::testutil::{ENV_LOCK, generate_keypair, make_identity};
 
         let _env = ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let (secret, pubkey) = generate_keypair();
-        let recipient = make_recipient(&pubkey);
         let identity = make_identity(&secret);
 
         // Meta with a name for pubkey, a live group, and a stale group whose
@@ -1917,25 +2873,29 @@ mod tests {
             ]),
             ..Default::default()
         };
-        let meta_ct = crate::encrypt_value(
-            &serde_json::to_vec(&source_meta).unwrap(),
-            std::slice::from_ref(&recipient),
-        )
-        .unwrap();
 
         let mut ours = base_vault();
         ours.recipients = vec![pubkey.clone()];
-        ours.meta = meta_ct;
+        seal(&mut ours, &source_meta, &identity);
         let theirs = ours.clone();
         let mut merged = ours.clone();
         // The merged vault recognizes only `pubkey`; the ghost member is gone.
         merged.recipients = vec![pubkey.clone()];
 
-        // ENV_LOCK is held, so set + clear is safe; no need to read the prior
-        // value (reading MURK_KEY outside env.rs trips the read-path invariant).
-        unsafe { std::env::set_var("MURK_KEY", &secret) };
-        let out = regenerate_meta(&mut merged, &ours, &theirs).unwrap();
-        unsafe { std::env::remove_var("MURK_KEY") };
+        let mut conflicts = Vec::new();
+        let out = trusting(&secret, &pubkey, || {
+            let rekeyed = &mut BTreeSet::new();
+            regenerate_meta(
+                &mut merged,
+                &ours,
+                &ours,
+                &theirs,
+                ".murk",
+                &mut conflicts,
+                rekeyed,
+            )
+            .unwrap()
+        });
 
         assert!(
             out.is_some(),
@@ -1944,6 +2904,10 @@ mod tests {
         let meta = crate::decrypt_meta(&merged, &identity)
             .unwrap()
             .expect("merged meta must decrypt");
+        assert!(
+            merged.sig.is_some(),
+            "a keyed merge of trusted sides is signed"
+        );
         assert_eq!(
             meta.recipients.get(&pubkey).map(String::as_str),
             Some("alice")
@@ -1954,6 +2918,261 @@ mod tests {
             !meta.groups.contains_key("ghost"),
             "stale now-empty group must be pruned"
         );
+    }
+
+    #[test]
+    fn merge_refuses_a_theirs_that_drops_a_group_still_in_use() {
+        // Base has group ops; ours adds S to it; theirs deletes the group.
+        // Every side is genuine, and the merge still must not keep S's
+        // ciphertext for a group that no longer exists.
+        use crate::testutil::{ENV_LOCK, generate_keypair, make_identity};
+
+        let _env = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (secret, pubkey) = generate_keypair();
+        let identity = make_identity(&secret);
+        let with_ops = crate::types::Meta {
+            groups: BTreeMap::from([("ops".to_string(), vec![pubkey.clone()])]),
+            ..Default::default()
+        };
+
+        let mut base = base_vault();
+        base.recipients = vec![pubkey.clone()];
+        base.generation = 1;
+        base.vault_id = "00112233445566778899aabbccddeeff".into();
+        let mut ours = base.clone();
+        let mut theirs = base.clone();
+        seal(&mut base, &with_ops, &identity);
+        ours.generation = 2;
+        ours.secrets.insert(
+            "S".to_string(),
+            SecretEntry {
+                grouped: BTreeMap::from([("ops".to_string(), "Y2lwaGVy".to_string())]),
+                ..Default::default()
+            },
+        );
+        seal(&mut ours, &with_ops, &identity);
+        theirs.generation = 2;
+        seal(&mut theirs, &crate::types::Meta::default(), &identity);
+        let mut result = merge_vaults(&base, &ours, &theirs);
+        let regenerated = trusting(&secret, &pubkey, || {
+            regenerate_meta(
+                &mut result.vault,
+                &base,
+                &ours,
+                &theirs,
+                ".murk",
+                &mut result.conflicts,
+                &mut result.rekeyed,
+            )
+        })
+        .unwrap();
+
+        assert!(
+            result.conflicts.iter().any(|c| c.field == "secrets.S"),
+            "{:?}",
+            result.conflicts
+        );
+        assert!(
+            regenerated.is_none(),
+            "a conflicted merge must not get a fresh MAC"
+        );
+        assert_eq!(result.vault.meta, ours.meta);
+    }
+
+    #[test]
+    fn merge_refuses_two_verifying_keys_for_one_signer() {
+        // Both sides are genuine and signed by trusted alice, yet they register
+        // different verifying keys for bob: one of them lies, so the merge must
+        // stop rather than pick a key.
+        use crate::testutil::{ENV_LOCK, generate_keypair, make_identity};
+
+        let _env = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (alice_secret, alice) = generate_keypair();
+        let alice_identity = make_identity(&alice_secret);
+        let (_, bob) = generate_keypair();
+        let vk = || {
+            make_identity(&generate_keypair().0)
+                .signing_key()
+                .unwrap()
+                .verifying_key()
+        };
+        let registry = |vk: String| crate::types::Meta {
+            signers: BTreeMap::from([(bob.clone(), vk)]),
+            ..Default::default()
+        };
+
+        let mut base = base_vault();
+        base.recipients = vec![alice.clone(), bob.clone()];
+        base.generation = 1;
+        base.vault_id = "00112233445566778899aabbccddeeff".into();
+        let mut ours = base.clone();
+        let mut theirs = base.clone();
+        seal(&mut base, &crate::types::Meta::default(), &alice_identity);
+        ours.generation = 2;
+        seal(&mut ours, &registry(vk()), &alice_identity);
+        theirs.generation = 2;
+        seal(&mut theirs, &registry(vk()), &alice_identity);
+
+        let mut result = merge_vaults(&base, &ours, &theirs);
+        let regenerated = trusting(&alice_secret, &alice, || {
+            regenerate_meta(
+                &mut result.vault,
+                &base,
+                &ours,
+                &theirs,
+                ".murk",
+                &mut result.conflicts,
+                &mut result.rekeyed,
+            )
+        })
+        .unwrap();
+
+        assert!(
+            result
+                .conflicts
+                .iter()
+                .any(|c| c.field.starts_with("signers.")
+                    && c.reason.contains("different verifying keys")),
+            "{:?}",
+            result.conflicts
+        );
+        assert!(
+            regenerated.is_none(),
+            "a conflicted merge must not get a fresh MAC"
+        );
+        assert_eq!(result.vault.meta, ours.meta);
+    }
+
+    #[test]
+    fn a_ghost_grant_on_the_operators_key_does_not_block_their_merge() {
+        // A 3.x meta record (and `agents` blob) bound to the merging key is a
+        // ghost: the key opens the meta, so it is an operator and may merge.
+        // The real grant (no meta access, its own blob) is still refused.
+        use crate::testutil::{ENV_LOCK, generate_keypair, make_recipient};
+
+        let _env = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (op_sk, op_pk) = generate_keypair();
+        let (agent_sk, agent_pk) = generate_keypair();
+        let grant = |pubkey: &str| crate::types::GrantEntry {
+            pubkey: pubkey.to_string(),
+            scope: vec!["DB_URL".into()],
+            issued_at: "2026-01-01T00:00:00Z".into(),
+            expires_at: "2999-01-01T00:00:00Z".into(),
+            issuer: op_pk.clone(),
+            anchors: Vec::new(),
+        };
+        let meta = crate::types::Meta {
+            grants: BTreeMap::from([
+                ("ghost".to_string(), grant(&op_pk)),
+                ("bot".to_string(), grant(&agent_pk)),
+            ]),
+            ..Default::default()
+        };
+        let mut side = base_vault();
+        side.version = crate::types::VAULT_VERSION.into();
+        side.recipients = vec![op_pk.clone(), agent_pk.clone()];
+        side.meta = crate::encrypt_value(
+            &serde_json::to_vec(&meta).unwrap(),
+            std::slice::from_ref(&make_recipient(&op_pk)),
+        )
+        .unwrap();
+        side.agents = crate::agents::blobs_for(&meta.grants, &[]).unwrap();
+
+        unsafe { std::env::set_var("MURK_KEY", &op_sk) };
+        let operator_refused = merge_key_is_grant(&[&side]);
+        unsafe { std::env::set_var("MURK_KEY", &agent_sk) };
+        let grant_refused = merge_key_is_grant(&[&side]);
+        unsafe { std::env::remove_var("MURK_KEY") };
+
+        assert!(
+            !operator_refused,
+            "the operator's merge must not be refused"
+        );
+        assert!(grant_refused, "the real grant's merge must be refused");
+    }
+
+    #[test]
+    fn rekeyed_secrets_follow_the_side_whose_plaintext_changed() {
+        use crate::testutil::{generate_keypair, make_identity, make_recipient};
+
+        let (secret, pubkey) = generate_keypair();
+        let identity = make_identity(&secret);
+        // Each call is a fresh ciphertext, as after a re-key.
+        let enc = |value: &str| SecretEntry {
+            shared: crate::encrypt_value(value.as_bytes(), &[make_recipient(&pubkey)]).unwrap(),
+            ..Default::default()
+        };
+        let vault = |entries: &[(&str, &str)]| Vault {
+            secrets: entries
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), enc(v)))
+                .collect(),
+            ..base_vault()
+        };
+        // KEEP: theirs changed. MINE: ours changed. BOTH: both, differently.
+        // GONE: theirs removed it unchanged. EDIT: theirs removed, ours changed.
+        let base = vault(&[
+            ("KEEP", "1"),
+            ("MINE", "1"),
+            ("BOTH", "1"),
+            ("GONE", "1"),
+            ("EDIT", "1"),
+        ]);
+        let ours = vault(&[
+            ("KEEP", "1"),
+            ("MINE", "2"),
+            ("BOTH", "2"),
+            ("GONE", "1"),
+            ("EDIT", "2"),
+        ]);
+        let theirs = vault(&[("KEEP", "2"), ("MINE", "1"), ("BOTH", "3")]);
+        let mut merged = ours.clone();
+        let mut rekeyed: BTreeSet<String> = base.secrets.keys().cloned().collect();
+        let mut conflicts = Vec::new();
+
+        let sides = [&base, &ours, &theirs];
+        resolve_rekeyed(
+            &mut merged,
+            sides,
+            true,
+            &identity,
+            &mut rekeyed,
+            &mut conflicts,
+        );
+
+        assert_eq!(value_of(&merged, "KEEP", &identity), "2");
+        assert_eq!(value_of(&merged, "MINE", &identity), "2");
+        assert!(!merged.secrets.contains_key("GONE"));
+        let mut fields: Vec<&str> = conflicts.iter().map(|c| c.field.as_str()).collect();
+        fields.sort_unstable();
+        assert_eq!(fields, ["secrets.BOTH", "secrets.EDIT"]);
+        assert!(rekeyed.is_empty());
+
+        // An ancestor nobody trusted decides nothing: every difference conflicts.
+        let mut merged = ours.clone();
+        let mut rekeyed: BTreeSet<String> = ["KEEP".to_string()].into();
+        let mut conflicts = Vec::new();
+        resolve_rekeyed(
+            &mut merged,
+            sides,
+            false,
+            &identity,
+            &mut rekeyed,
+            &mut conflicts,
+        );
+        assert_eq!(value_of(&merged, "KEEP", &identity), "1");
+        assert_eq!(conflicts.len(), 1);
+    }
+
+    fn value_of(vault: &Vault, key: &str, identity: &crate::crypto::MurkIdentity) -> String {
+        let ct = &vault.secrets[key].shared;
+        String::from_utf8(crate::decrypt_value(ct, identity).unwrap().to_vec()).unwrap()
     }
 
     #[test]
@@ -1981,19 +3200,319 @@ mod tests {
         let theirs = ours.clone();
         let mut merged = ours.clone();
 
-        unsafe { std::env::set_var("MURK_KEY", &secret) };
-        let out = regenerate_meta(&mut merged, &ours, &theirs);
-        unsafe { std::env::remove_var("MURK_KEY") };
+        let mut conflicts = Vec::new();
+        let out = trusting(&secret, &pubkey, || {
+            let rekeyed = &mut BTreeSet::new();
+            regenerate_meta(
+                &mut merged,
+                &ours,
+                &ours,
+                &theirs,
+                ".murk",
+                &mut conflicts,
+                rekeyed,
+            )
+        });
 
-        let err = out.expect_err("invalid meta must fail the merge, not be emptied");
+        assert_eq!(
+            out,
+            Ok(None),
+            "invalid meta must fail the merge, not be emptied"
+        );
+        // Base and ours carry the same hostile meta; the ancestor is checked
+        // first and named.
+        let reason = &conflicts
+            .iter()
+            .find(|c| c.field == "base" || c.field == "ours")
+            .expect("the hostile meta must be flagged")
+            .reason;
         assert!(
-            err.contains("ours: vault meta is invalid (meta.groups key: invalid group name"),
-            "{err:?}"
+            reason.contains("vault meta is invalid (meta.groups key: invalid group name"),
+            "{reason:?}"
         );
         assert!(
-            !err.chars().any(char::is_control),
-            "raw control char in {err:?}"
+            !reason.chars().any(char::is_control),
+            "raw control char in {reason:?}"
         );
         assert_eq!(merged.meta, ours.meta, "meta must not be rewritten");
+    }
+
+    #[test]
+    fn merge_never_merges_or_signs_a_forged_theirs() {
+        // Theirs is signed by a key the merging machine does not trust (an
+        // outsider who listed themselves). It must be a conflict naming theirs,
+        // with ours' meta left in place — no fresh MAC, no signature.
+        use crate::testutil::{ENV_LOCK, generate_keypair, make_identity};
+
+        let _env = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (secret, pubkey) = generate_keypair();
+        let (mallory_secret, mallory) = generate_keypair();
+        let mut ours = base_vault();
+        ours.recipients = vec![pubkey.clone()];
+        seal(
+            &mut ours,
+            &crate::types::Meta::default(),
+            &make_identity(&secret),
+        );
+        let mut theirs = ours.clone();
+        theirs.recipients.push(mallory.clone());
+        theirs.secrets.get_mut("DB_URL").unwrap().shared = "attacker-ciphertext".into();
+        seal(
+            &mut theirs,
+            &crate::types::Meta::default(),
+            &make_identity(&mallory_secret),
+        );
+
+        let mut result = merge_vaults(&ours, &ours, &theirs);
+        let regenerated = trusting(&secret, &pubkey, || {
+            regenerate_meta(
+                &mut result.vault,
+                &ours,
+                &ours,
+                &theirs,
+                ".murk",
+                &mut result.conflicts,
+                &mut result.rekeyed,
+            )
+        })
+        .unwrap();
+
+        assert!(
+            result
+                .conflicts
+                .iter()
+                .any(|c| c.field == "theirs" && c.reason.contains("not a trusted signer")),
+            "{:?}",
+            result.conflicts
+        );
+        assert!(regenerated.is_none());
+        assert_eq!(result.vault.meta, ours.meta, "nothing re-MACed or signed");
+    }
+
+    #[test]
+    fn an_unsigned_ancestor_grants_no_group_authority() {
+        // Pinned: group ops = [alice]. Mallory, a trusted signer outside ops,
+        // adds herself on theirs and supplies an unsigned, id-less ancestor
+        // that already lists her in ops, so her change looks like no change.
+        // The ancestor is not authenticated, so pinned membership decides.
+        use crate::testutil::{ENV_LOCK, generate_keypair, make_identity};
+
+        let _env = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let home = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let vault_path = dir.path().join(".murk");
+        let vault_path = vault_path.to_str().unwrap();
+        let (alice_secret, alice) = generate_keypair();
+        let (mallory_secret, mallory) = generate_keypair();
+
+        let mut ours = base_vault();
+        ours.recipients = vec![alice.clone(), mallory.clone()];
+        ours.vault_id = "00112233445566778899aabbccddeeff".into();
+        let alice_only = crate::types::Meta {
+            groups: BTreeMap::from([("ops".to_string(), vec![alice.clone()])]),
+            ..Default::default()
+        };
+        let with_mallory = crate::types::Meta {
+            groups: BTreeMap::from([("ops".to_string(), vec![alice.clone(), mallory.clone()])]),
+            ..Default::default()
+        };
+        let mut base = ours.clone();
+        base.vault_id.clear();
+        let mut theirs = ours.clone();
+        ours.generation = 2;
+        theirs.generation = 2;
+        seal(&mut ours, &alice_only, &make_identity(&alice_secret));
+        seal(&mut theirs, &with_mallory, &make_identity(&mallory_secret));
+        seal(&mut base, &with_mallory, &make_identity(&mallory_secret));
+        // Strip the ancestor's signature: an unsigned pre-0.14-looking file.
+        base.sig = None;
+
+        let prev_home = std::env::var_os("HOME");
+        unsafe {
+            std::env::set_var("HOME", home.path());
+            std::env::remove_var("MURK_NO_SIGNER_PIN");
+            std::env::remove_var("MURK_TRUSTED_SIGNERS");
+            std::env::set_var("MURK_KEY", &alice_secret);
+        }
+        let pin = crate::pins::TrustPin {
+            v: crate::pins::PIN_VERSION,
+            vault_id: ours.vault_id.clone(),
+            generation: 1,
+            trusted: [alice.clone(), mallory.clone()].into(),
+            ever_trusted: [alice.clone(), mallory.clone()].into(),
+            groups: BTreeMap::from([("ops".to_string(), [alice.clone()].into())]),
+            signers: [&alice_secret, &mallory_secret]
+                .iter()
+                .zip([&alice, &mallory])
+                .map(|(secret, pk)| {
+                    let vk = make_identity(secret).signing_key().unwrap().verifying_key();
+                    (pk.clone(), vk)
+                })
+                .collect(),
+            was_signed: true,
+            ..Default::default()
+        };
+        crate::pins::write(vault_path, &pin).unwrap();
+
+        let mut result = merge_vaults(&base, &ours, &theirs);
+        let regenerated = regenerate_meta(
+            &mut result.vault,
+            &base,
+            &ours,
+            &theirs,
+            vault_path,
+            &mut result.conflicts,
+            &mut result.rekeyed,
+        )
+        .unwrap();
+        unsafe { std::env::remove_var("MURK_KEY") };
+        match prev_home {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert!(regenerated.is_none(), "{:?}", result.conflicts);
+        assert!(
+            result
+                .conflicts
+                .iter()
+                .any(|c| c.field == "theirs" && c.reason.contains("group ops")),
+            "{:?}",
+            result.conflicts
+        );
+    }
+
+    /// Give `vault` a murk 0.13 meta: fresh MAC, the signer registry naming
+    /// `signer` with `sk`'s verifying key, and a view-1 signature by `sk`
+    /// inside the meta.
+    fn seal_v1(vault: &mut Vault, signer: &str, sk: &crate::signing::VaultSigningKey) {
+        let mut meta = crate::types::Meta {
+            signers: BTreeMap::from([(signer.to_string(), sk.verifying_key())]),
+            ..Default::default()
+        };
+        let key_hex = crate::generate_mac_key();
+        let key = crate::decode_mac_key(&key_hex).unwrap();
+        meta.mac = crate::compute_mac(vault, &meta.groups, &meta.grants, Some(&key));
+        meta.mac_key = Some(key_hex);
+        let msg = crate::signature::signing_message(
+            vault,
+            &meta.groups,
+            &meta.grants,
+            &meta.github_pins,
+            &meta.signers,
+        );
+        meta.sig = Some(crate::types::VaultSignature {
+            signer: signer.to_string(),
+            v: crate::signature::LEGACY_SIGNED_VIEW_VERSION,
+            sig: sk.sign(&msg),
+        });
+        let recipients = crate::parse_recipients(&vault.recipients).unwrap();
+        vault.meta =
+            crate::encrypt_value(&serde_json::to_vec(&meta).unwrap(), &recipients).unwrap();
+    }
+
+    #[test]
+    fn a_genuine_0_13_ancestor_of_two_upgraded_sides_merges() {
+        // Two branches forked before the 0.14 upgrade and were each saved by
+        // 0.14 since: their common ancestor is a 0.13 vault (format 2.0, no id,
+        // a view-1 signature in the meta by a trusted signer whose key this
+        // machine pinned on upgrade). That is history, not a rollback or
+        // another vault, so the keyed merge goes ahead and is signed.
+        use crate::testutil::{ENV_LOCK, generate_keypair, make_identity};
+
+        let _env = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let home = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let vault_path = dir.path().join(".murk");
+        let vault_path = vault_path.to_str().unwrap();
+        let (alice_secret, alice) = generate_keypair();
+        let alice_id = make_identity(&alice_secret);
+        let alice_vk = alice_id.signing_key().unwrap().verifying_key();
+
+        // The 0.13 ancestor: view 1 inside the meta, signed with the KDF key.
+        let mut base = base_vault();
+        base.recipients = vec![alice.clone()];
+        base.version = "2.0".into();
+        let alice_sk = alice_id.signing_key().unwrap();
+        seal_v1(&mut base, &alice, &alice_sk);
+
+        // Both sides upgraded: id derived from the shared header, counters set.
+        let mut ours = base.clone();
+        ours.vault_id = crate::save::derived_vault_id(&base);
+        ours.generation = 1;
+        let mut theirs = ours.clone();
+        theirs.generation = 2;
+        seal(&mut ours, &crate::types::Meta::default(), &alice_id);
+        seal(&mut theirs, &crate::types::Meta::default(), &alice_id);
+
+        let prev_home = std::env::var_os("HOME");
+        unsafe {
+            std::env::set_var("HOME", home.path());
+            std::env::remove_var("MURK_NO_SIGNER_PIN");
+            std::env::remove_var("MURK_TRUSTED_SIGNERS");
+            std::env::set_var("MURK_KEY", &alice_secret);
+        }
+        // This machine trusted the 0.13 vault, then saw it upgraded.
+        let pin = crate::pins::TrustPin {
+            v: crate::pins::PIN_VERSION,
+            vault_id: ours.vault_id.clone(),
+            generation: 2,
+            trusted: [alice.clone()].into(),
+            ever_trusted: [alice.clone()].into(),
+            signers: BTreeMap::from([(alice.clone(), alice_vk.clone())]),
+            was_signed: true,
+            ..Default::default()
+        };
+        crate::pins::write(vault_path, &pin).unwrap();
+
+        let mut result = merge_vaults(&base, &ours, &theirs);
+        let regenerated = regenerate_meta(
+            &mut result.vault,
+            &base,
+            &ours,
+            &theirs,
+            vault_path,
+            &mut result.conflicts,
+            &mut result.rekeyed,
+        );
+        // The same ancestor with a registry key this machine never pinned
+        // (a forged 0.13 history) is still refused.
+        let mut forged_base = base.clone();
+        let mallory_sk = make_identity(&generate_keypair().0).signing_key().unwrap();
+        seal_v1(&mut forged_base, &alice, &mallory_sk);
+        let mut forged = merge_vaults(&forged_base, &ours, &theirs);
+        let forged_out = regenerate_meta(
+            &mut forged.vault,
+            &forged_base,
+            &ours,
+            &theirs,
+            vault_path,
+            &mut forged.conflicts,
+            &mut forged.rekeyed,
+        );
+        unsafe { std::env::remove_var("MURK_KEY") };
+        match prev_home {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+
+        assert!(
+            matches!(regenerated, Ok(Some(_))),
+            "{regenerated:?} {:?}",
+            result.conflicts
+        );
+        assert!(result.conflicts.is_empty(), "{:?}", result.conflicts);
+        assert!(result.vault.sig.is_some(), "the merge is signed");
+        assert!(matches!(forged_out, Ok(None)), "{forged_out:?}");
+        assert!(
+            forged.conflicts.iter().any(|c| c.field == "base"),
+            "{:?}",
+            forged.conflicts
+        );
     }
 }

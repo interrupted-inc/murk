@@ -10,8 +10,10 @@ right one is the main decision you make when adding a secret.
 
 ## Shared secrets (the murk)
 
-Shared secrets are encrypted to every recipient on the vault. When you run
-`murk add KEY`, every authorized team member can decrypt it. This is where
+Shared secrets are encrypted to every recipient except agent grants (see
+[Grants](/concepts/grants/)). When you add a new key with `murk add KEY`,
+every authorized team member can decrypt it. Updating an existing key without
+`--group` keeps it in its tier. This is where
 production credentials, third-party API keys, and other team-wide secrets
 live.
 
@@ -58,7 +60,7 @@ vault, on top of the recipient list. See [how murk's vault format
 works](/concepts/vault-format/) for the on-disk details, and the [`murk
 add`](/reference/cli/#murk-add) reference for the full flag list.
 
-Access control is advisory at the shared layer: any recipient with
-`MURK_KEY` and a spot in the recipient list can decrypt every shared secret.
-Per-key metadata is not a cryptographic access boundary. Use scoped secrets
-for anything that should genuinely stay private to one person.
+Every recipient except an agent grant can decrypt every shared secret. Tags
+and descriptions in the schema do not restrict anyone. To limit a secret to
+part of the team, put it in a group (`--group NAME`). To keep it to yourself,
+use `--group me`.

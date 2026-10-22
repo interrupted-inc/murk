@@ -4,6 +4,8 @@
 
 The environment variables murk reads, and the CLI flags they mirror where one exists. This is the terse reference. The narrative version with resolution order and interactions lives in the Environment variables concept page.
 
+A variable marked "truthy" is on when set to `1`, `true` or `yes` (any case). Other values, including `0`, mean off.
+
 ## Identity and vault selection
 
 | Variable | Description |
@@ -16,16 +18,17 @@ The environment variables murk reads, and the CLI flags they mirror where one ex
 
 | Variable | Description |
 | --- | --- |
-| `MURK_STRICT` | Truthy fails closed rather than let a secret touch disk, and disables the automatic key lookup under `~/.config/murk/keys`. |
-| `MURK_AGENT` | Marks the process as running for an AI agent. Forces strict mode unconditionally. `murk agent exec` sets it on its child. |
-| `MURK_SELF_SCOPE` | Truthy holds your own key to the vault's agent allow-tag policy, as if you were an agent. Implied inside an agent context. |
-| `MURK_NO_SIGNER_PIN` | Opts out of signer-registry pinning (TOFU) on load — an escape hatch for a deliberate signer-key change, not for everyday use. |
+| `MURK_STRICT` | Experimental. On for any value except unset, empty, `0`, `false`, `no` and `off`, so a typo turns it on. A short list of checks, not a guarantee that no plaintext reaches disk. Disables the automatic key lookup under `~/.config/murk/keys`, needs RAM-backed scratch for `murk edit`, refuses to write `get`, `export` or `murk diff --show-values` output to a regular file, refuses a result that no key checked, and makes `murk diff` refuse a revision it could only show with a warning. It does not stop a process from writing values elsewhere. |
+| `MURK_AGENT` | Marks the process as running for an AI agent. Forces strict mode unconditionally. `murk agent exec` sets it on its child. Read like `MURK_STRICT`: any value except unset, empty, `0`, `false`, `no` and `off` turns it on. |
+| `MURK_SELF_SCOPE` | Holds your own key to the vault's agent allow-tag policy, as if you were an agent. Implied inside an agent context. Read like `MURK_STRICT`. |
+| `MURK_TRUSTED_SIGNERS` | Signers trusted to sign the vault on this machine, separated by commas or newlines, replacing the local trust pin's set. An age signer is `age1...:<verifying key>` and an ssh-ed25519 signer is its public key line; `murk trust --print-key` prints the entry for your own key. For CI runners and other machines with no pin (set it from a CI secret). Any other entry, including a bare age key, is an error. |
+| `MURK_NO_SIGNER_PIN` | Present (any value) stops murk reading or writing the local trust pin. Trust then comes only from `MURK_TRUSTED_SIGNERS`, and rollback and stripped-signature detection are off. |
 
 ## Also honored
 
 | Variable | Description |
 | --- | --- |
-| `CI` | Truthy prints a nudge toward the scoped-agent path when a pipeline decrypts with a personal key. Advisory only. |
+| `CI` | Truthy prints a short hint toward the scoped-agent path when a pipeline decrypts with a personal key. Advisory only. |
 | `EDITOR, VISUAL` | Editor launched by `murk edit`, checking `EDITOR` then `VISUAL`, falling back to `vi`. On Unix it runs through `sh`, as with git, so it may include arguments (`code --wait`). `MURK_KEY` and `MURK_KEY_FILE` are removed from its environment. |
-| `XDG_RUNTIME_DIR` | Preferred (typically tmpfs) scratch location for `murk edit`'s temporary file, over `/tmp`. |
-| `HOME (USERPROFILE on Windows)` | Base directory for murk state: `~/.config/murk/keys`, `agent-keys`, and `signer-pins`. |
+| `XDG_RUNTIME_DIR` | Scratch location for `murk edit`'s temporary file when it is a directory (typically tmpfs). Otherwise murk uses `/dev/shm` if it is RAM-backed, then the system temp dir (`$TMPDIR`, else `/tmp`), and warns when the file will not be in RAM. |
+| `HOME, then USERPROFILE` | Base directory for murk state: `~/.config/murk/keys`, `agent-keys` and `signer-pins`; outside a git checkout, also where the search for `.murk` in parent directories stops. murk reads `HOME` and falls back to `USERPROFILE` on any platform. `murk completion install` and `murk circle authorize ssh:` need `HOME`. |

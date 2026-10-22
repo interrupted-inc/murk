@@ -25,36 +25,37 @@ function __fish_murk_using_subcommand
 end
 
 complete -c murk -n "__fish_murk_needs_command" -s h -l help -d 'Print help'
-complete -c murk -n "__fish_murk_needs_command" -f -a "init" -d 'Initialize a new vault and generate a keypair'
+complete -c murk -n "__fish_murk_needs_command" -f -a "init" -d 'Initialize a vault or reuse its existing key'
 complete -c murk -n "__fish_murk_needs_command" -f -a "env" -d 'Write a .envrc for direnv integration'
-complete -c murk -n "__fish_murk_needs_command" -f -a "restore" -d 'Restore MURK_KEY from a BIP39 recovery phrase'
-complete -c murk -n "__fish_murk_needs_command" -f -a "recover" -d 'Re-derive recovery phrase from current MURK_KEY'
+complete -c murk -n "__fish_murk_needs_command" -f -a "restore" -d 'Print the key encoded by a BIP39 recovery phrase (saves nothing)'
+complete -c murk -n "__fish_murk_needs_command" -f -a "recover" -d 'Print the BIP39 recovery phrase for the key murk resolves (MURK_KEY, MURK_KEY_FILE or the stored key for .murk)'
 complete -c murk -n "__fish_murk_needs_command" -f -a "add" -d 'Add or update a secret'
 complete -c murk -n "__fish_murk_needs_command" -f -a "generate" -d 'Generate a random secret and store it'
 complete -c murk -n "__fish_murk_needs_command" -f -a "rotate" -d 'Rotate secrets with new values'
 complete -c murk -n "__fish_murk_needs_command" -f -a "rm" -d 'Remove a secret'
 complete -c murk -n "__fish_murk_needs_command" -f -a "get" -d 'Get a single decrypted value'
-complete -c murk -n "__fish_murk_needs_command" -f -a "edit" -d 'Edit secrets in $EDITOR'
+complete -c murk -n "__fish_murk_needs_command" -f -a "edit" -d 'Edit secrets in $EDITOR (experimental)'
 complete -c murk -n "__fish_murk_needs_command" -f -a "ls" -d 'List all key names'
 complete -c murk -n "__fish_murk_needs_command" -f -a "export" -d 'Export all secrets as shell export statements'
 complete -c murk -n "__fish_murk_needs_command" -f -a "import" -d 'Import secrets from a .env file'
-complete -c murk -n "__fish_murk_needs_command" -f -a "describe" -d 'Add or update a key description'
+complete -c murk -n "__fish_murk_needs_command" -f -a "describe" -d 'Set a key\'s description, example, tags and rotation or expiry policy'
 complete -c murk -n "__fish_murk_needs_command" -f -a "info" -d 'Show public schema and key info'
 complete -c murk -n "__fish_murk_needs_command" -f -a "skeleton" -d 'Export schema-only vault with no secrets or recipients'
 complete -c murk -n "__fish_murk_needs_command" -f -a "exec" -d 'Run a command with secrets injected as environment variables'
-complete -c murk -n "__fish_murk_needs_command" -f -a "agent" -d 'Agent-oriented commands (schema-only output for AI agent prompts)'
-complete -c murk -n "__fish_murk_needs_command" -f -a "mcp" -d 'Run an MCP (Model Context Protocol) stdio server for AI agents'
-complete -c murk -n "__fish_murk_needs_command" -f -a "policy" -d 'Manage the agent access policy'
+complete -c murk -n "__fish_murk_needs_command" -f -a "agent" -d 'Give AI agents scoped, time-limited access to secrets (experimental)'
+complete -c murk -n "__fish_murk_needs_command" -f -a "mcp" -d 'Run an MCP (Model Context Protocol) stdio server for AI agents (experimental)'
+complete -c murk -n "__fish_murk_needs_command" -f -a "policy" -d 'Manage the agent access policy (experimental)'
 complete -c murk -n "__fish_murk_needs_command" -f -a "circle" -d 'Manage recipients'
 complete -c murk -n "__fish_murk_needs_command" -f -a "authorize" -d 'Add a recipient to the vault'
 complete -c murk -n "__fish_murk_needs_command" -f -a "revoke" -d 'Remove a recipient from the vault'
-complete -c murk -n "__fish_murk_needs_command" -f -a "group" -d 'Manage recipient groups'
+complete -c murk -n "__fish_murk_needs_command" -f -a "group" -d 'Manage recipient groups (experimental)'
 complete -c murk -n "__fish_murk_needs_command" -f -a "verify" -d 'Verify vault integrity without exporting secrets'
+complete -c murk -n "__fish_murk_needs_command" -f -a "trust" -d 'Review who signed the vault and what changed, then trust it on this machine'
 complete -c murk -n "__fish_murk_needs_command" -f -a "doctor" -d 'Check the surrounding repo for hygiene issues'
 complete -c murk -n "__fish_murk_needs_command" -f -a "scan" -d 'Scan files for leaked secret values'
-complete -c murk -n "__fish_murk_needs_command" -f -a "diff" -d 'Show secret changes vs a git ref'
-complete -c murk -n "__fish_murk_needs_command" -f -a "setup-merge-driver" -d 'Configure git to use murk\'s merge driver for .murk files'
-complete -c murk -n "__fish_murk_needs_command" -f -a "merge-driver" -d 'Git merge driver for .murk vault files (called by git)'
+complete -c murk -n "__fish_murk_needs_command" -f -a "diff" -d 'Show secret and access changes vs a git ref (experimental)'
+complete -c murk -n "__fish_murk_needs_command" -f -a "setup-merge-driver" -d 'Configure git to use murk\'s merge driver for .murk files (experimental)'
+complete -c murk -n "__fish_murk_needs_command" -f -a "merge-driver" -d 'Git merge driver for .murk vault files (called by git; experimental)'
 complete -c murk -n "__fish_murk_needs_command" -f -a "completion" -d 'Generate or install shell completions'
 complete -c murk -n "__fish_murk_needs_command" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c murk -n "__fish_murk_using_subcommand init" -l vault -d 'Vault filename' -r
@@ -66,32 +67,33 @@ complete -c murk -n "__fish_murk_using_subcommand restore" -s h -l help -d 'Prin
 complete -c murk -n "__fish_murk_using_subcommand recover" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand add" -l desc -d 'Description for this key' -r
 complete -c murk -n "__fish_murk_using_subcommand add" -l example -d 'Example value' -r
-complete -c murk -n "__fish_murk_using_subcommand add" -l group -d 'Who can read it: a group name, `everyone` (default), or `me`' -r
+complete -c murk -n "__fish_murk_using_subcommand add" -l group -d 'Who can read it: a group name (experimental), `everyone`, or `me`. Omit to keep an existing key\'s tier; a new key is shared with everyone' -r
 complete -c murk -n "__fish_murk_using_subcommand add" -l tag -d 'Tag for grouping (repeatable)' -r
 complete -c murk -n "__fish_murk_using_subcommand add" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand add" -l scoped -d 'Deprecated alias for `--group me`'
 complete -c murk -n "__fish_murk_using_subcommand add" -s h -l help -d 'Print help'
-complete -c murk -n "__fish_murk_using_subcommand generate" -l length -d 'Length in bytes (default 32)' -r
+complete -c murk -n "__fish_murk_using_subcommand generate" -l length -d 'Length in bytes' -r
 complete -c murk -n "__fish_murk_using_subcommand generate" -l desc -d 'Description for this key' -r
 complete -c murk -n "__fish_murk_using_subcommand generate" -l example -d 'Example value' -r
-complete -c murk -n "__fish_murk_using_subcommand generate" -l group -d 'Who can read it: a group name, `everyone` (default), or `me`' -r
+complete -c murk -n "__fish_murk_using_subcommand generate" -l group -d 'Who can read it: a group name (experimental), `everyone`, or `me`. Omit to keep an existing key\'s tier; a new key is shared with everyone' -r
 complete -c murk -n "__fish_murk_using_subcommand generate" -l tag -d 'Tag for grouping (repeatable)' -r
 complete -c murk -n "__fish_murk_using_subcommand generate" -l vault -d 'Vault filename' -r
-complete -c murk -n "__fish_murk_using_subcommand generate" -l hex -d 'Output as hex instead of base64'
+complete -c murk -n "__fish_murk_using_subcommand generate" -l hex -d 'Encode the value as hex instead of URL-safe base64'
 complete -c murk -n "__fish_murk_using_subcommand generate" -s h -l help -d 'Print help'
-complete -c murk -n "__fish_murk_using_subcommand rotate" -l length -d 'Length in bytes for generated values (default 32)' -r
+complete -c murk -n "__fish_murk_using_subcommand rotate" -l length -d 'Length in bytes for generated values' -r
+complete -c murk -n "__fish_murk_using_subcommand rotate" -l values-from -d 'Read new values from a dotenv file of KEY=value lines (`-` for stdin), matched by key name' -r
 complete -c murk -n "__fish_murk_using_subcommand rotate" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand rotate" -l all -d 'Rotate all secrets in the vault'
 complete -c murk -n "__fish_murk_using_subcommand rotate" -l generate -d 'Generate random values instead of prompting'
-complete -c murk -n "__fish_murk_using_subcommand rotate" -l hex -d 'Output generated values as hex instead of base64'
+complete -c murk -n "__fish_murk_using_subcommand rotate" -l hex -d 'Encode generated values as hex instead of URL-safe base64'
 complete -c murk -n "__fish_murk_using_subcommand rotate" -l list -d 'List keys needing rotation instead of rotating (exits 1 if any)'
-complete -c murk -n "__fish_murk_using_subcommand rotate" -l json -d 'Output the listing as JSON (with --list, always exits 0)'
+complete -c murk -n "__fish_murk_using_subcommand rotate" -l json -d 'Output the listing as JSON, an object with `verified` and `issues` (with --list, exits 0 even when keys need rotating)'
 complete -c murk -n "__fish_murk_using_subcommand rotate" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand rm" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand rm" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand get" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand get" -s h -l help -d 'Print help'
-complete -c murk -n "__fish_murk_using_subcommand edit" -l group -d 'Edit values for this group instead of shared secrets' -r
+complete -c murk -n "__fish_murk_using_subcommand edit" -l group -d 'Edit values for this group instead of shared secrets (experimental)' -r
 complete -c murk -n "__fish_murk_using_subcommand edit" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand edit" -l scoped -d 'Edit scoped overrides instead of shared secrets'
 complete -c murk -n "__fish_murk_using_subcommand edit" -s h -l help -d 'Print help'
@@ -102,88 +104,94 @@ complete -c murk -n "__fish_murk_using_subcommand ls" -s h -l help -d 'Print hel
 complete -c murk -n "__fish_murk_using_subcommand export" -l tag -d 'Filter by tag (repeatable)' -r
 complete -c murk -n "__fish_murk_using_subcommand export" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand export" -l json -d 'Output as JSON'
+complete -c murk -n "__fish_murk_using_subcommand export" -l allow-reserved -d 'Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)'
 complete -c murk -n "__fish_murk_using_subcommand export" -s h -l help -d 'Print help'
-complete -c murk -n "__fish_murk_using_subcommand import" -l group -d 'Assign imported secrets to this group (default: everyone)' -r
+complete -c murk -n "__fish_murk_using_subcommand import" -l group -d 'Assign imported secrets to this group (`everyone`, `me`, or a group name, which is experimental). Omit to keep each existing key\'s tier; new keys are shared with everyone' -r
 complete -c murk -n "__fish_murk_using_subcommand import" -l example -d 'Example value applied to every imported key' -r
 complete -c murk -n "__fish_murk_using_subcommand import" -l vault -d 'Vault filename' -r
-complete -c murk -n "__fish_murk_using_subcommand import" -l force -d 'Overwrite existing secrets without prompting'
+complete -c murk -n "__fish_murk_using_subcommand import" -l force -d 'Overwrite existing secrets. Without it, import stops if any key already exists'
 complete -c murk -n "__fish_murk_using_subcommand import" -s h -l help -d 'Print help'
-complete -c murk -n "__fish_murk_using_subcommand describe" -l example -d 'Example value' -r
+complete -c murk -n "__fish_murk_using_subcommand describe" -l example -d 'Example value. Omitting it clears the current example' -r
 complete -c murk -n "__fish_murk_using_subcommand describe" -l tag -d 'Tag for grouping (repeatable, replaces existing tags)' -r
 complete -c murk -n "__fish_murk_using_subcommand describe" -l rotate-every -d 'Rotation interval, e.g. `90d` or `90` (days). `never` clears it' -r
 complete -c murk -n "__fish_murk_using_subcommand describe" -l expires -d 'Hard expiry date, e.g. `2026-09-01`. `never` clears it' -r
 complete -c murk -n "__fish_murk_using_subcommand describe" -l vault -d 'Vault filename' -r
-complete -c murk -n "__fish_murk_using_subcommand describe" -s h -l help -d 'Print help'
+complete -c murk -n "__fish_murk_using_subcommand describe" -s h -l help -d 'Print help (see more with \'--help\')'
 complete -c murk -n "__fish_murk_using_subcommand info" -l tag -d 'Filter by tag (repeatable)' -r
 complete -c murk -n "__fish_murk_using_subcommand info" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand info" -l json -d 'Output as JSON'
 complete -c murk -n "__fish_murk_using_subcommand info" -s h -l help -d 'Print help'
-complete -c murk -n "__fish_murk_using_subcommand skeleton" -s o -l output -d 'Output file (prints to stdout if omitted)' -r
+complete -c murk -n "__fish_murk_using_subcommand skeleton" -s o -l output -d 'New output file; refuses an existing path (prints to stdout if omitted)' -r
 complete -c murk -n "__fish_murk_using_subcommand skeleton" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand skeleton" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand exec" -l only -d 'Only inject these specific keys (repeatable)' -r
 complete -c murk -n "__fish_murk_using_subcommand exec" -l tag -d 'Filter by tag (repeatable)' -r
 complete -c murk -n "__fish_murk_using_subcommand exec" -l vault -d 'Vault filename' -r
-complete -c murk -n "__fish_murk_using_subcommand exec" -l clean-env -d 'Strip inherited environment (only murk secrets + PATH)'
+complete -c murk -n "__fish_murk_using_subcommand exec" -l clean-env -d 'Start the command with only murk secrets plus PATH, HOME and TERM on Unix (on Windows, PATH and a fixed set of system variables)'
+complete -c murk -n "__fish_murk_using_subcommand exec" -l allow-reserved -d 'Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)'
 complete -c murk -n "__fish_murk_using_subcommand exec" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -s h -l help -d 'Print help'
-complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "plan" -d 'Emit schema-only context safe to paste into an AI agent prompt'
-complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "exec" -d 'Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only, masks injected values in the output)'
-complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "grant" -d 'Mint a scoped ephemeral key that can read only the named secrets'
-complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "init" -d 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely'
-complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "ls" -d 'List active agent grants and their TTLs'
-complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "revoke" -d 'Revoke an agent grant and rotate the keys it could read'
-complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "connect" -d 'Wire `murk mcp` into an AI editor\'s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it'
-complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "disconnect" -d 'Remove murk\'s entry from an AI editor\'s MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys'
+complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "plan" -d 'Emit schema-only context safe to paste into an AI agent prompt (experimental)'
+complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "exec" -d 'Run a command with strict agent-safe defaults (experimental; keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires --only, masks injected values in the output)'
+complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "grant" -d 'Mint a scoped ephemeral key that can read only the named secrets (experimental)'
+complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "init" -d 'One-shot onboarding (experimental): optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely'
+complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "ls" -d 'List active agent grants and their TTLs (experimental)'
+complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "revoke" -d 'Revoke an agent grant (experimental)'
+complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "connect" -d 'Add `murk mcp` to an AI client\'s MCP config and mint a scoped grant for it (experimental)'
+complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "disconnect" -d 'Remove murk\'s entry from an AI editor\'s MCP config (experimental). No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys'
 complete -c murk -n "__fish_murk_using_subcommand agent; and not __fish_seen_subcommand_from plan exec grant init ls revoke connect disconnect help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from plan" -l tag -d 'Filter by tag (repeatable)' -r
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from plan" -s o -l output -d 'Output file (prints to stdout if omitted)' -r
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from plan" -s o -l output -d 'New output file; refuses an existing path (prints to stdout if omitted)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from plan" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from plan" -l json -d 'Output as JSON'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from plan" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from exec" -l only -d 'Inject these specific keys (required — agent mode fails closed)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from exec" -l vault -d 'Vault filename' -r
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from exec" -l allow-operator-key -d 'Decrypt with your own stored key from ~/.config/murk/keys. Without this, agent exec needs an explicit MURK_KEY or MURK_KEY_FILE'
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from exec" -l allow-operator-key -d 'Decrypt with a key that is not an agent grant: your own stored key from ~/.config/murk/keys, or a full recipient\'s MURK_KEY or MURK_KEY_FILE. Without this, agent exec needs an agent grant key'
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from exec" -l allow-reserved -d 'Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from exec" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l name -d 'Grant name (used to revoke it later)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l only -d 'Keys this grant can read (required — fails closed)' -r
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l ttl -d 'Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)' -r
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l ttl -d 'Time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l out -d 'Where to write the agent key: a path, or `-` for stdout' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l vault -d 'Vault filename' -r
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l renew -d 'Replace a live grant with this name: revoke its key, mint a fresh one'
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l renew -d 'Replace the grant with this name: revoke its key, mint a fresh one. Without this, murk refuses a name that still has a grant record, and an expired grant keeps its record until the next vault write'
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -l force -d 'Replace a file already at --out (refused by default)'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from grant" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l name -d 'Grant name (used to revoke it later)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l only -d 'Keys the agent can read (required — fails closed)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l allow-tag -d 'Set the agent allow-list to these tags before granting (repeatable)' -r
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l ttl -d 'Time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)' -r
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l ttl -d 'Time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l out -d 'Where to write the agent key: a path, or `-` for stdout' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l vault -d 'Vault filename' -r
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -l force -d 'Replace a file already at --out (refused by default)'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from init" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from ls" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from ls" -l json -d 'Output as JSON'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from ls" -s h -l help -d 'Print help'
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from revoke" -l values-from -d 'With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from revoke" -l vault -d 'Vault filename' -r
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from revoke" -l rotate -d 'Rotate the keys it could read in the same session'
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from revoke" -s h -l help -d 'Print help'
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from revoke" -l rotate -d 'Rotate the secrets the grant could read, in the same run. murk stores a new value for each. It does not rotate them at the provider'
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from revoke" -s h -l help -d 'Print help (see more with \'--help\')'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from connect" -l only -d 'Keys the agent may read (required — fails closed)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from connect" -l allow-tag -d 'Set the agent allow-list to these tags before granting (repeatable)' -r
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from connect" -l ttl -d 'Grant time to live, e.g. 30m, 2h, 7d (reads fail closed after expiry)' -r
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from connect" -l ttl -d 'Grant time to live, e.g. 30m, 2h, 7d; at most 365d (reads fail closed after expiry)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from connect" -l name -d 'Grant name (used to disconnect/revoke it later)' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from connect" -l vault -d 'Vault filename' -r
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from connect" -l allow-exec -d 'Also expose `murk agent exec` to the agent (adds --allow-exec)'
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from connect" -l allow-exec -d 'Also enable the `murk_exec` tool in the MCP server (writes `--allow-exec` into the client config)'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from connect" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from disconnect" -l name -d 'Grant name to revoke with --rotate' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from disconnect" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from disconnect" -l rotate -d 'Revoke the grant and rotate the keys it could read'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from disconnect" -s h -l help -d 'Print help'
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from help" -f -a "plan" -d 'Emit schema-only context safe to paste into an AI agent prompt'
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from help" -f -a "exec" -d 'Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only, masks injected values in the output)'
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from help" -f -a "grant" -d 'Mint a scoped ephemeral key that can read only the named secrets'
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from help" -f -a "init" -d 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely'
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from help" -f -a "ls" -d 'List active agent grants and their TTLs'
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from help" -f -a "revoke" -d 'Revoke an agent grant and rotate the keys it could read'
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from help" -f -a "connect" -d 'Wire `murk mcp` into an AI editor\'s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it'
-complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from help" -f -a "disconnect" -d 'Remove murk\'s entry from an AI editor\'s MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys'
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from help" -f -a "plan" -d 'Emit schema-only context safe to paste into an AI agent prompt (experimental)'
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from help" -f -a "exec" -d 'Run a command with strict agent-safe defaults (experimental; keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires --only, masks injected values in the output)'
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from help" -f -a "grant" -d 'Mint a scoped ephemeral key that can read only the named secrets (experimental)'
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from help" -f -a "init" -d 'One-shot onboarding (experimental): optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely'
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from help" -f -a "ls" -d 'List active agent grants and their TTLs (experimental)'
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from help" -f -a "revoke" -d 'Revoke an agent grant (experimental)'
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from help" -f -a "connect" -d 'Add `murk mcp` to an AI client\'s MCP config and mint a scoped grant for it (experimental)'
+complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from help" -f -a "disconnect" -d 'Remove murk\'s entry from an AI editor\'s MCP config (experimental). No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys'
 complete -c murk -n "__fish_murk_using_subcommand agent; and __fish_seen_subcommand_from help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c murk -n "__fish_murk_using_subcommand mcp" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand mcp" -l allow-exec -d 'Enable the murk_exec tool (run commands with scoped secrets injected). Off by default: it runs arbitrary commands as this user — the injected secrets are grant-scoped, but the command itself is not sandboxed'
@@ -212,24 +220,28 @@ complete -c murk -n "__fish_murk_using_subcommand circle; and not __fish_seen_su
 complete -c murk -n "__fish_murk_using_subcommand circle; and not __fish_seen_subcommand_from authorize revoke help" -f -a "revoke" -d 'Remove a recipient from the vault'
 complete -c murk -n "__fish_murk_using_subcommand circle; and not __fish_seen_subcommand_from authorize revoke help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from authorize" -l name -d 'Display name for this recipient' -r
-complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from authorize" -l group -d 'Also add the new recipient to this group' -r
+complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from authorize" -l group -d 'Also add the new recipient to this group (experimental)' -r
 complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from authorize" -l vault -d 'Vault filename' -r
-complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from authorize" -l force -d 'Accept changed GitHub keys without confirmation'
-complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from authorize" -l allow-ssh-rsa -d 'Allow ssh-rsa recipients (rejected by default — use ed25519)'
+complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from authorize" -l force -d 'Accept changed GitHub keys. Without it, authorize stops when a user\'s keys differ from the pinned set'
+complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from authorize" -l allow-ssh-rsa -d 'Allow ssh-rsa keys. They are refused or skipped by default, so prefer ed25519'
 complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from authorize" -s h -l help -d 'Print help'
+complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from revoke" -l values-from -d 'With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)' -r
 complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from revoke" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from revoke" -l rotate -d 'Rotate the secrets they had access to in the same session'
+complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from revoke" -l force -d 'Revoke every key of a multi-key GitHub user without confirmation'
 complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from revoke" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from help" -f -a "authorize" -d 'Add a recipient to the vault'
 complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from help" -f -a "revoke" -d 'Remove a recipient from the vault'
 complete -c murk -n "__fish_murk_using_subcommand circle; and __fish_seen_subcommand_from help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c murk -n "__fish_murk_using_subcommand authorize" -l name -d 'Display name for this recipient' -r
 complete -c murk -n "__fish_murk_using_subcommand authorize" -l vault -d 'Vault filename' -r
-complete -c murk -n "__fish_murk_using_subcommand authorize" -l force -d 'Accept changed GitHub keys without confirmation'
-complete -c murk -n "__fish_murk_using_subcommand authorize" -l allow-ssh-rsa -d 'Allow ssh-rsa recipients (rejected by default — use ed25519)'
+complete -c murk -n "__fish_murk_using_subcommand authorize" -l force -d 'Accept changed GitHub keys. Without it, authorize stops when a user\'s keys differ from the pinned set'
+complete -c murk -n "__fish_murk_using_subcommand authorize" -l allow-ssh-rsa -d 'Allow ssh-rsa keys. They are refused or skipped by default, so prefer ed25519'
 complete -c murk -n "__fish_murk_using_subcommand authorize" -s h -l help -d 'Print help'
+complete -c murk -n "__fish_murk_using_subcommand revoke" -l values-from -d 'With --rotate, read new values from a dotenv file of KEY=value lines (`-` for stdin)' -r
 complete -c murk -n "__fish_murk_using_subcommand revoke" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand revoke" -l rotate -d 'Rotate the secrets they had access to in the same session'
+complete -c murk -n "__fish_murk_using_subcommand revoke" -l force -d 'Revoke every key of a multi-key GitHub user without confirmation'
 complete -c murk -n "__fish_murk_using_subcommand revoke" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand group; and not __fish_seen_subcommand_from create ls add rm help" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand group; and not __fish_seen_subcommand_from create ls add rm help" -f -a "create" -d 'Create a new recipient group (you become its first member)'
@@ -255,14 +267,19 @@ complete -c murk -n "__fish_murk_using_subcommand group; and __fish_seen_subcomm
 complete -c murk -n "__fish_murk_using_subcommand group; and __fish_seen_subcommand_from help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c murk -n "__fish_murk_using_subcommand verify" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand verify" -s h -l help -d 'Print help'
+complete -c murk -n "__fish_murk_using_subcommand trust" -l re-add -d 'Trust a key this machine recorded as removed from the vault again (its public key, or its name in the vault). Repeat for each key; a vault signed by or listing a removed key is never trusted without it' -r
+complete -c murk -n "__fish_murk_using_subcommand trust" -l vault -d 'Vault filename' -r
+complete -c murk -n "__fish_murk_using_subcommand trust" -l yes -d 'Accept without asking (for scripts; review first)'
+complete -c murk -n "__fish_murk_using_subcommand trust" -l print-key -d 'Print your own trusted-signer entry (for MURK_TRUSTED_SIGNERS) and signing-key fingerprint (for teammates to confirm), then exit'
+complete -c murk -n "__fish_murk_using_subcommand trust" -s h -l help -d 'Print help (see more with \'--help\')'
 complete -c murk -n "__fish_murk_using_subcommand doctor" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand doctor" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand scan" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand scan" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand diff" -l vault -d 'Vault filename' -r
 complete -c murk -n "__fish_murk_using_subcommand diff" -l show-values -d 'Show actual values (not just key names)'
-complete -c murk -n "__fish_murk_using_subcommand diff" -l json -d 'Output as JSON'
-complete -c murk -n "__fish_murk_using_subcommand diff" -s h -l help -d 'Print help'
+complete -c murk -n "__fish_murk_using_subcommand diff" -l json -d 'Output JSON: {"secrets": [...], "changes": [...]} (values only with --show-values)'
+complete -c murk -n "__fish_murk_using_subcommand diff" -s h -l help -d 'Print help (see more with \'--help\')'
 complete -c murk -n "__fish_murk_using_subcommand setup-merge-driver" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand merge-driver" -s h -l help -d 'Print help'
 complete -c murk -n "__fish_murk_using_subcommand completion; and not __fish_seen_subcommand_from generate install help" -s h -l help -d 'Print help'
@@ -274,46 +291,47 @@ complete -c murk -n "__fish_murk_using_subcommand completion; and __fish_seen_su
 complete -c murk -n "__fish_murk_using_subcommand completion; and __fish_seen_subcommand_from help" -f -a "generate" -d 'Print completions to stdout'
 complete -c murk -n "__fish_murk_using_subcommand completion; and __fish_seen_subcommand_from help" -f -a "install" -d 'Install completions to the standard path'
 complete -c murk -n "__fish_murk_using_subcommand completion; and __fish_seen_subcommand_from help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "init" -d 'Initialize a new vault and generate a keypair'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "env" -d 'Write a .envrc for direnv integration'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "restore" -d 'Restore MURK_KEY from a BIP39 recovery phrase'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "recover" -d 'Re-derive recovery phrase from current MURK_KEY'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "add" -d 'Add or update a secret'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "generate" -d 'Generate a random secret and store it'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "rotate" -d 'Rotate secrets with new values'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "rm" -d 'Remove a secret'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "get" -d 'Get a single decrypted value'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "edit" -d 'Edit secrets in $EDITOR'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "ls" -d 'List all key names'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "export" -d 'Export all secrets as shell export statements'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "import" -d 'Import secrets from a .env file'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "describe" -d 'Add or update a key description'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "info" -d 'Show public schema and key info'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "skeleton" -d 'Export schema-only vault with no secrets or recipients'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "exec" -d 'Run a command with secrets injected as environment variables'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "agent" -d 'Agent-oriented commands (schema-only output for AI agent prompts)'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "mcp" -d 'Run an MCP (Model Context Protocol) stdio server for AI agents'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "policy" -d 'Manage the agent access policy'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "circle" -d 'Manage recipients'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "authorize" -d 'Add a recipient to the vault'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "revoke" -d 'Remove a recipient from the vault'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "group" -d 'Manage recipient groups'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "verify" -d 'Verify vault integrity without exporting secrets'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "doctor" -d 'Check the surrounding repo for hygiene issues'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "scan" -d 'Scan files for leaked secret values'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "diff" -d 'Show secret changes vs a git ref'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "setup-merge-driver" -d 'Configure git to use murk\'s merge driver for .murk files'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "merge-driver" -d 'Git merge driver for .murk vault files (called by git)'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "completion" -d 'Generate or install shell completions'
-complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify doctor scan diff setup-merge-driver merge-driver completion help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
-complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from agent" -f -a "plan" -d 'Emit schema-only context safe to paste into an AI agent prompt'
-complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from agent" -f -a "exec" -d 'Run a command with strict agent-safe defaults (clears the inherited environment, strips MURK_KEY, requires --only, masks injected values in the output)'
-complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from agent" -f -a "grant" -d 'Mint a scoped ephemeral key that can read only the named secrets'
-complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from agent" -f -a "init" -d 'One-shot onboarding: optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely'
-complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from agent" -f -a "ls" -d 'List active agent grants and their TTLs'
-complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from agent" -f -a "revoke" -d 'Revoke an agent grant and rotate the keys it could read'
-complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from agent" -f -a "connect" -d 'Wire `murk mcp` into an AI editor\'s MCP config, minting a scoped grant. No CLIENT auto-detects installed editors. Give one (claude, cursor, vscode, zed, gemini, omp, codex) to target it'
-complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from agent" -f -a "disconnect" -d 'Remove murk\'s entry from an AI editor\'s MCP config. No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "init" -d 'Initialize a vault or reuse its existing key'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "env" -d 'Write a .envrc for direnv integration'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "restore" -d 'Print the key encoded by a BIP39 recovery phrase (saves nothing)'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "recover" -d 'Print the BIP39 recovery phrase for the key murk resolves (MURK_KEY, MURK_KEY_FILE or the stored key for .murk)'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "add" -d 'Add or update a secret'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "generate" -d 'Generate a random secret and store it'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "rotate" -d 'Rotate secrets with new values'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "rm" -d 'Remove a secret'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "get" -d 'Get a single decrypted value'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "edit" -d 'Edit secrets in $EDITOR (experimental)'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "ls" -d 'List all key names'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "export" -d 'Export all secrets as shell export statements'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "import" -d 'Import secrets from a .env file'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "describe" -d 'Set a key\'s description, example, tags and rotation or expiry policy'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "info" -d 'Show public schema and key info'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "skeleton" -d 'Export schema-only vault with no secrets or recipients'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "exec" -d 'Run a command with secrets injected as environment variables'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "agent" -d 'Give AI agents scoped, time-limited access to secrets (experimental)'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "mcp" -d 'Run an MCP (Model Context Protocol) stdio server for AI agents (experimental)'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "policy" -d 'Manage the agent access policy (experimental)'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "circle" -d 'Manage recipients'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "authorize" -d 'Add a recipient to the vault'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "revoke" -d 'Remove a recipient from the vault'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "group" -d 'Manage recipient groups (experimental)'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "verify" -d 'Verify vault integrity without exporting secrets'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "trust" -d 'Review who signed the vault and what changed, then trust it on this machine'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "doctor" -d 'Check the surrounding repo for hygiene issues'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "scan" -d 'Scan files for leaked secret values'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "diff" -d 'Show secret and access changes vs a git ref (experimental)'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "setup-merge-driver" -d 'Configure git to use murk\'s merge driver for .murk files (experimental)'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "merge-driver" -d 'Git merge driver for .murk vault files (called by git; experimental)'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "completion" -d 'Generate or install shell completions'
+complete -c murk -n "__fish_murk_using_subcommand help; and not __fish_seen_subcommand_from init env restore recover add generate rotate rm get edit ls export import describe info skeleton exec agent mcp policy circle authorize revoke group verify trust doctor scan diff setup-merge-driver merge-driver completion help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
+complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from agent" -f -a "plan" -d 'Emit schema-only context safe to paste into an AI agent prompt (experimental)'
+complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from agent" -f -a "exec" -d 'Run a command with strict agent-safe defaults (experimental; keeps only PATH, HOME and TERM from the inherited environment on Unix, or PATH and a fixed set of system variables on Windows, strips MURK_KEY, requires --only, masks injected values in the output)'
+complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from agent" -f -a "grant" -d 'Mint a scoped ephemeral key that can read only the named secrets (experimental)'
+complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from agent" -f -a "init" -d 'One-shot onboarding (experimental): optionally set the agent allow-list, mint a scoped grant, and print how to run the agent safely'
+complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from agent" -f -a "ls" -d 'List active agent grants and their TTLs (experimental)'
+complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from agent" -f -a "revoke" -d 'Revoke an agent grant (experimental)'
+complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from agent" -f -a "connect" -d 'Add `murk mcp` to an AI client\'s MCP config and mint a scoped grant for it (experimental)'
+complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from agent" -f -a "disconnect" -d 'Remove murk\'s entry from an AI editor\'s MCP config (experimental). No CLIENT clears every configured editor. `--rotate` also revokes the grant and rotates its keys'
 complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from policy" -f -a "show" -d 'Show the agent access policy (works without a key)'
 complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from policy" -f -a "set" -d 'Set the agent allow-list: agents may only receive secrets carrying one of these tags'
 complete -c murk -n "__fish_murk_using_subcommand help; and __fish_seen_subcommand_from policy" -f -a "clear" -d 'Remove the policy — agent mode becomes unrestricted again'

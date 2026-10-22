@@ -1,19 +1,19 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH edit 1  "edit " 
+.TH murk-edit 1  "edit " 
 .SH NAME
-edit \- Edit secrets in $EDITOR
+murk\-edit \- Edit secrets in $EDITOR (experimental)
 .SH SYNOPSIS
 \fBmurk edit\fR [\fB\-\-scoped\fR] [\fB\-\-group\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIKEY\fR] 
 .SH DESCRIPTION
-Edit secrets in $EDITOR
+Edit secrets in $EDITOR (experimental)
 .SH OPTIONS
 .TP
 \fB\-\-scoped\fR
 Edit scoped overrides instead of shared secrets
 .TP
 \fB\-\-group\fR \fI<GROUP>\fR
-Edit values for this group instead of shared secrets
+Edit values for this group instead of shared secrets (experimental)
 .TP
 \fB\-\-vault\fR \fI<VAULT>\fR [default: .murk]
 Vault filename

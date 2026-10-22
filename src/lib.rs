@@ -21,10 +21,12 @@
 
 // Domain modules — pub(crate) unless main.rs needs direct path access.
 pub(crate) mod agent;
+pub mod agents;
 pub mod cli;
 pub(crate) mod codename;
 pub mod connect;
 pub mod crypto;
+pub mod dotenv;
 pub(crate) mod env;
 pub mod error;
 pub(crate) mod export;
@@ -44,6 +46,7 @@ pub mod recovery;
 pub mod scan;
 pub(crate) mod secrets;
 pub mod signing;
+pub mod trust;
 pub mod types;
 pub(crate) mod validate;
 pub mod vault;
@@ -62,19 +65,19 @@ mod property_tests;
 
 // Re-exports: keep the flat murk_cli::foo() API for main.rs
 pub use agent::{AgentPlan, AgentPlanKey, agent_plan, format_agent_plan_text};
+pub use dotenv::parse_env;
 pub use env::{
-    EnvrcStatus, KeySource, agent_key_file_path, agent_keys_dir, dotenv_has_murk_key,
-    env_permission_warning, home_short, key_file_path, locate_key, parse_env, resolve_key,
-    resolve_key_for_vault, resolve_key_with_source, secret_file_loose_mode, strip_key_env,
-    write_envrc, write_key_ref_to_dotenv, write_key_to_dotenv, write_key_to_file,
+    EnvrcStatus, KeySource, StagedKeyFile, UncommittedKeyFile, agent_key_file_path, agent_keys_dir,
+    dotenv_has_murk_key, env_permission_warning, home_short, key_file_path, locate_key,
+    resolve_key, resolve_key_for_vault, resolve_key_with_source, secret_file_loose_mode,
+    stage_key_file, strip_key_env, write_envrc, write_key_ref_to_dotenv, write_key_to_dotenv,
+    write_key_to_file,
 };
 pub use error::MurkError;
-pub use export::{
-    DiffEntry, DiffKind, decrypt_vault_values, diff_secrets, export_secrets,
-    parse_and_decrypt_values, resolve_secrets,
-};
+pub use export::{DiffEntry, DiffKind, diff_secrets, export_secrets, resolve_secrets};
 pub use git::{
-    CommitSignature, MergeDriverSetupStep, git_command, last_commit_signature, setup_merge_driver,
+    CommitSignature, CommitSigner, MergeDriverSetupStep, git_command, last_commit_signature,
+    setup_merge_driver, vault_at_revision,
 };
 pub use github::{GitHubError, fetch_keys};
 pub use grants::{create_grant, parse_ttl, remove_grant, validate_grant_name};
@@ -83,17 +86,26 @@ pub use groups::{
     validate_group_name,
 };
 pub use info::{InfoEntry, VaultInfo, format_info_lines, lifecycle_segment, vault_info};
-pub use init::{DiscoveredKey, InitStatus, check_init_status, create_vault, discover_existing_key};
+pub use init::{
+    DiscoveredKey, InitStatus, check_init_status, create_vault, discover_existing_key,
+    discover_stored_key, pin_created_vault,
+};
 pub use merge::{MergeDriverOutput, run_merge_driver};
-pub use policy::{check_agent_keys, enforce_agent_policy, is_agent_identity, is_agent_key_allowed};
+pub use policy::{
+    agent_policy_applies, check_agent_keys, enforce_agent_policy, ensure_writable,
+    is_agent_identity, is_agent_key_allowed,
+};
 pub use recipients::{
-    RecipientEntry, RevokeResult, authorize_recipient, format_recipient_lines, key_type_label,
-    list_recipients, revoke_recipient, truncate_pubkey,
+    RecipientEntry, RevokeResult, authorize_recipient, canonical_recipient, duplicate_recipients,
+    format_recipient_lines, key_type_label, list_recipients, revoke_recipient, revoke_targets,
+    same_recipient, truncate_pubkey,
 };
 pub use secrets::{
-    EXPIRY_WARN_DAYS, RotationIssue, add_grouped_secret, add_secret, describe_key, get_secret,
-    import_secrets, list_keys, mark_revoked, remove_secret, rotation_health,
+    EXPIRY_WARN_DAYS, KeyTiers, RotationIssue, SecretWrite, add_grouped_secret, add_secret,
+    check_foreign_groups, describe_key, get_secret, key_tiers, list_keys, mark_revoked,
+    remove_secret, require_group_access, rotate_secret, rotation_health, set_secret,
 };
+pub use validate::{is_deceptive, new_text, terminal_text, unsafe_text_fields};
 
 use std::path::Path;
 
@@ -102,16 +114,17 @@ mod mac;
 mod save;
 mod signature;
 
-pub use load::{decrypt_vault, load_vault};
-pub(crate) use mac::{compute_mac, decode_mac_key, generate_mac_key, verify_mac};
-pub use save::save_vault;
-pub(crate) use signature::{sign_vault, signing_identity, verify_vault_signature};
+pub use load::{
+    InspectedVault, RevisionTrust, decrypt_vault, decrypt_vault_revision, inspect_vault, load_vault,
+};
+/// Escape and truncate vault-supplied text for display (see `validate::show`).
 // Internal helpers surfaced at the crate root only for the split-out unit and
 // property tests to reach across module boundaries.
 #[cfg(test)]
 pub(crate) use mac::compute_mac_v5;
-#[cfg(test)]
-pub(crate) use signature::{SIGNED_VIEW_VERSION, signing_message};
+pub(crate) use mac::{compute_mac, decode_mac_key, generate_mac_key, verify_mac};
+pub use save::save_vault;
+pub(crate) use signature::{register_signer, sign_vault, signing_identity, verify_vault_signature};
 
 /// Check whether a key name is a valid shell identifier (safe for `export KEY=...`).
 /// Must start with a letter or underscore, and contain only `[A-Za-z0-9_]`.
@@ -119,6 +132,103 @@ pub fn is_valid_key_name(key: &str) -> bool {
     !key.is_empty()
         && key.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
         && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Environment variables that change how a program, its loader or its shell
+/// runs, matched exactly (case-insensitively, since Windows env names are).
+/// Injecting one from a vault hands whoever wrote the vault code execution or
+/// control over murk itself, so `export`/`exec`/`agent exec` refuse them unless
+/// `--allow-reserved` is passed, and `murk mcp` always refuses them.
+const RESERVED_ENV_NAMES: &[&str] = &[
+    // Search paths and interpreter start-up hooks (whole families by prefix
+    // below).
+    "PATH",
+    "NODE_OPTIONS",
+    "NODE_PATH",
+    "NODE_EXTRA_CA_CERTS",
+    "CLASSPATH",
+    "GCONV_PATH",
+    "GLIBC_TUNABLES",
+    "OPENSSL_CONF",
+    "OPENSSL_ENGINES",
+    "RUSTFLAGS",
+    "RUSTDOCFLAGS",
+    "GOFLAGS",
+    "MAVEN_OPTS",
+    "GRADLE_OPTS",
+    "CURL_CA_BUNDLE",
+    "REQUESTS_CA_BUNDLE",
+    // Shell start-up and prompt hooks.
+    "BASH_ENV",
+    "ENV",
+    "ZDOTDIR",
+    "SHELLOPTS",
+    "BASHOPTS",
+    "IFS",
+    "SHELL",
+    "PS0",
+    "PS1",
+    "PS2",
+    "PS3",
+    "PS4",
+    "PROMPT_COMMAND",
+    "CDPATH",
+    // Where tools read their configuration, and commands tools run.
+    "HOME",
+    "XDG_CONFIG_HOME",
+    "EDITOR",
+    "VISUAL",
+    "PAGER",
+    "MANPAGER",
+    "LESSOPEN",
+    "LESSCLOSE",
+    "BROWSER",
+    "SSH_ASKPASS",
+    "SUDO_ASKPASS",
+];
+
+/// Reserved name prefixes: the dynamic loader (`LD_`, `DYLD_`), git (every
+/// `GIT_*` variable, including `GIT_SSH_COMMAND` and `GIT_CONFIG_*`), bash
+/// exported functions, interpreter and build-tool families whose variables
+/// load code (`PYTHON*` includes `PYTHONPATH` and `PYTHONUSERBASE`), TLS trust
+/// (`SSL_CERT_FILE`), npm configuration (`npm_config_script_shell`), and
+/// murk's own settings (a vault must not switch off `MURK_STRICT` or pick the
+/// trusted signers of a nested murk). `NODE_` is not a prefix: `NODE_ENV` is
+/// an ordinary application setting.
+const RESERVED_ENV_PREFIXES: &[&str] = &[
+    "LD_",
+    "DYLD_",
+    "GIT_",
+    "BASH_FUNC_",
+    "PYTHON",
+    "PERL",
+    "RUBY",
+    "JAVA_",
+    "_JAVA_",
+    "JDK_",
+    "DOTNET_",
+    "CARGO_",
+    "RUSTC",
+    "SSL_",
+    "PIP_",
+    "GEM_",
+    "BUNDLE_",
+    "NPM_CONFIG_",
+    "MURK_",
+];
+
+/// Reserved name suffixes: proxies (`HTTPS_PROXY`, `ALL_PROXY`, …), which
+/// would route the child's traffic — and the secrets in its environment —
+/// through a host the vault writer chose.
+const RESERVED_ENV_SUFFIXES: &[&str] = &["_PROXY"];
+
+/// Whether injecting `name` into a process environment would let the vault
+/// change how that process (or its loader, shell, or murk itself) runs.
+pub fn is_reserved_env_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    RESERVED_ENV_NAMES.contains(&upper.as_str())
+        || RESERVED_ENV_PREFIXES.iter().any(|p| upper.starts_with(p))
+        || RESERVED_ENV_SUFFIXES.iter().any(|s| upper.ends_with(s))
 }
 
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
@@ -132,7 +242,10 @@ pub use crypto::{MurkIdentity, MurkRecipient};
 /// `Ok(None)` when there is no meta or `identity` cannot decrypt it (not a
 /// recipient) — callers fall back to showing pubkeys. A meta that decrypts but
 /// is corrupt or fails [`validate::meta`] is an `Err`, never a silent `None`:
-/// treating it as absent would drop groups, grants, and GitHub pins.
+/// treating it as absent would drop groups, grants, and GitHub pins. Grants
+/// are not meta recipients from 3.x on; a 2.x vault still encrypted its meta to
+/// them, so there an expired grant gets an `Err`, the same TTL gate as a full
+/// load, and can't read recipient names or group membership after its TTL.
 pub fn decrypt_meta(
     vault: &types::Vault,
     identity: &crypto::MurkIdentity,
@@ -147,6 +260,13 @@ pub fn decrypt_meta(
         .map_err(|_| "vault meta is corrupt — vault may have been tampered with".to_string())?;
     validate::meta(&meta)
         .map_err(|e| format!("vault meta is invalid ({e}) — vault may have been tampered with"))?;
+    if vault.version.starts_with("2.") {
+        let pubkey = identity.pubkey_string().map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now();
+        for (name, grant) in meta.grants.iter().filter(|(_, g)| g.pubkey == pubkey) {
+            policy::check_grant_expiry(name, grant, now).map_err(|e| e.to_string())?;
+        }
+    }
     Ok(Some(meta))
 }
 
@@ -205,11 +325,15 @@ pub fn read_vault(vault_path: &str) -> Result<types::Vault, MurkError> {
 ///
 /// Mirrors how git finds `.git` and cargo finds `Cargo.toml`: if the user passed a bare
 /// filename (no path separator, not absolute) and it does not exist in the current
-/// directory, walk up from CWD looking for a file of that name. Stops at:
+/// directory, walk up from CWD looking for a file of that name, as far as the first
+/// boundary:
 ///
 /// - a directory containing `.git` (the git root — don't escape the repo)
 /// - `$HOME` (don't traverse into parents of the user's home)
-/// - the filesystem root
+///
+/// With no boundary above CWD (outside every git repo and outside `$HOME`, say under
+/// `/tmp`), there is no walk at all: a vault another user planted in a shared ancestor
+/// directory must never be picked up.
 ///
 /// If a match is found, returns the absolute path. Otherwise returns the input unchanged,
 /// so downstream error messages still reference what the user asked for.
@@ -233,26 +357,29 @@ pub fn resolve_vault_path(arg: &str) -> String {
         return arg.to_string();
     }
 
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let mut dir = cwd.as_path();
-    loop {
+    // Compare the working directory and HOME by their real paths (see
+    // `git::real_dir`), so a symlinked HOME still counts as a boundary. On
+    // Unix the working directory is already real; on Windows it keeps the
+    // spelling it was entered by (an 8.3 short name, say), and a canonical
+    // HOME is a verbatim `\\?\` path, so neither would ever match HOME.
+    let cwd = crate::git::real_dir(&cwd).unwrap_or(cwd);
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .map(|h| crate::git::real_dir(&h).unwrap_or(h));
+    let is_boundary =
+        |dir: &Path| dir.join(".git").exists() || home.as_deref().is_some_and(|h| dir == h);
+    let Some(boundary) = cwd.ancestors().find(|dir| is_boundary(dir)) else {
+        return arg.to_string();
+    };
+
+    for dir in cwd.ancestors() {
         let candidate = dir.join(arg);
         if candidate.exists() {
             return candidate.to_string_lossy().into_owned();
         }
-        // Stop at git root after checking this directory.
-        if dir.join(".git").exists() {
+        if dir == boundary {
             break;
-        }
-        // Stop at $HOME boundary (don't traverse above the user's home).
-        if let Some(ref h) = home
-            && dir == h.as_path()
-        {
-            break;
-        }
-        match dir.parent() {
-            Some(parent) => dir = parent,
-            None => break,
         }
     }
 

@@ -1,0 +1,102 @@
+name: Invariants
+
+# Deep soaks of the property tests that drive the real murk binary:
+# - tests/access_invariants.rs: random sequences of murk commands, checked
+#   after every step for widened or dropped access, writes by refused
+#   commands, and vaults that fail `murk verify`.
+# - tests/trust_invariants.rs: random multi-machine histories (saves,
+#   revokes, merges, checkouts of old revisions, forgeries and replays),
+#   checked so a revoked signer is never trusted again and never reads a
+#   value written after their removal.
+# The CI test job runs both with small case counts on pull requests and pushes
+# to main; this nightly run explores far more sequences. It is too slow for
+# pull requests, so it runs on a schedule and on demand only.
+on:
+  schedule:
+    - cron: "0 6 * * *" # nightly 06:00 UTC, after the fuzz run
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: Number of random sequences for the access soak
+        required: false
+        default: "25000"
+      trust_cases:
+        description: Number of random histories for the trust soak
+        required: false
+        default: "400"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  soak:
+    name: Access invariants soak
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # Aimed at about 20 minutes on ubuntu-latest in a release build: 1,000
+      # cases took about 17 s in a 4-core Linux container, and this assumes a
+      # hosted runner is 2-3x slower. Retune from the first nightly timings.
+      MURK_INVARIANT_CASES: ${{ inputs.cases || '25000' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Build
+        run: cargo test --release --test access_invariants --no-run
+
+      # proptest shrinks a failure to a minimal command sequence and prints it
+      # with the broken invariant and murk's stderr; keep that output.
+      - name: Soak
+        run: |
+          set -euo pipefail
+          mkdir -p target/invariants
+          cargo test --release --test access_invariants -- --nocapture 2>&1 \
+            | tee target/invariants/soak.log
+
+      - name: Upload the shrunk counterexample on failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: access-invariants-counterexample
+          path: target/invariants/soak.log
+          retention-days: 14
+
+  trust-soak:
+    name: Trust invariants soak
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # Aimed at about 20 minutes on ubuntu-latest in a release build: a case
+      # runs dozens of git and murk processes, about 1.2 s each locally, and
+      # this assumes a hosted runner is 2-3x slower. Retune from the first
+      # nightly timings.
+      MURK_TRUST_CASES: ${{ inputs.trust_cases || '400' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Build
+        run: cargo test --release --test trust_invariants --no-run
+
+      # The failure lists each failing known sequence and the shrunk random
+      # history, with the broken invariant; keep that output.
+      - name: Soak
+        run: |
+          set -euo pipefail
+          mkdir -p target/invariants
+          cargo test --release --test trust_invariants -- --nocapture 2>&1 \
+            | tee target/invariants/trust-soak.log
+
+      - name: Upload the shrunk counterexample on failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: trust-invariants-counterexample
+          path: target/invariants/trust-soak.log
+          retention-days: 14

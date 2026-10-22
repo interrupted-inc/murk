@@ -14,16 +14,16 @@ Print help
 .SH SUBCOMMANDS
 .TP
 murk\-init(1)
-Initialize a new vault and generate a keypair
+Initialize a vault or reuse its existing key
 .TP
 murk\-env(1)
 Write a .envrc for direnv integration
 .TP
 murk\-restore(1)
-Restore MURK_KEY from a BIP39 recovery phrase
+Print the key encoded by a BIP39 recovery phrase (saves nothing)
 .TP
 murk\-recover(1)
-Re\-derive recovery phrase from current MURK_KEY
+Print the BIP39 recovery phrase for the key murk resolves (MURK_KEY, MURK_KEY_FILE or the stored key for .murk)
 .TP
 murk\-add(1)
 Add or update a secret
@@ -41,7 +41,7 @@ murk\-get(1)
 Get a single decrypted value
 .TP
 murk\-edit(1)
-Edit secrets in $EDITOR
+Edit secrets in $EDITOR (experimental)
 .TP
 murk\-ls(1)
 List all key names
@@ -53,7 +53,7 @@ murk\-import(1)
 Import secrets from a .env file
 .TP
 murk\-describe(1)
-Add or update a key description
+Set a key\*(Aqs description, example, tags and rotation or expiry policy
 .TP
 murk\-info(1)
 Show public schema and key info
@@ -65,22 +65,25 @@ murk\-exec(1)
 Run a command with secrets injected as environment variables
 .TP
 murk\-agent(1)
-Agent\-oriented commands (schema\-only output for AI agent prompts)
+Give AI agents scoped, time\-limited access to secrets (experimental)
 .TP
 murk\-mcp(1)
-Run an MCP (Model Context Protocol) stdio server for AI agents
+Run an MCP (Model Context Protocol) stdio server for AI agents (experimental)
 .TP
 murk\-policy(1)
-Manage the agent access policy
+Manage the agent access policy (experimental)
 .TP
 murk\-circle(1)
 Manage recipients
 .TP
 murk\-group(1)
-Manage recipient groups
+Manage recipient groups (experimental)
 .TP
 murk\-verify(1)
 Verify vault integrity without exporting secrets
+.TP
+murk\-trust(1)
+Review who signed the vault and what changed, then trust it on this machine
 .TP
 murk\-doctor(1)
 Check the surrounding repo for hygiene issues
@@ -89,10 +92,10 @@ murk\-scan(1)
 Scan files for leaked secret values
 .TP
 murk\-diff(1)
-Show secret changes vs a git ref
+Show secret and access changes vs a git ref (experimental)
 .TP
 murk\-setup\-merge\-driver(1)
-Configure git to use murk\*(Aqs merge driver for .murk files
+Configure git to use murk\*(Aqs merge driver for .murk files (experimental)
 .TP
 murk\-completion(1)
 Generate or install shell completions

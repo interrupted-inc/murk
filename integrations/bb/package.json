@@ -10,7 +10,7 @@
   },
   "bb": {
     "name": "Murk",
-    "description": "Grant-scoped secrets for agent threads, backed by a murk vault. Agents see key names and tags; values arrive as short-lived 0600 dotenv files unless a grant explicitly allows reveal.",
+    "description": "Experimental. Grant-scoped secrets for agent threads, backed by a murk vault. Agents see key names and tags; values arrive as short-lived 0600 dotenv files unless a grant explicitly allows reveal.",
     "branding": {
       "icon": "./assets/icon.svg"
     },
@@ -23,7 +23,7 @@
     "test": "cargo build --quiet --bin murk && PATH=\"$PWD/../../target/debug:$PATH\" vitest run"
   },
   "dependencies": {
-    "@interrupted/murk-secrets": "^0.11.0 || ^0.12.0 || ^0.13.0",
+    "@interrupted/murk-secrets": "^0.11.0 || ^0.12.0 || ^0.13.0 || ^0.14.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {

@@ -1,6 +1,6 @@
 {
   "name": "@interrupted/murk-secrets",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Node.js/TypeScript bindings for murk — encrypted secrets manager",
   "main": "index.js",
   "types": "index.d.ts",
@@ -45,7 +45,7 @@
     "@napi-rs/cli": "^3"
   },
   "engines": {
-    "node": ">= 16"
+    "node": ">=18.17.0 <19 || >=20.3.0"
   },
   "files": [
     "index.js",

@@ -1,10 +1,10 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH exec 1  "exec " 
+.TH murk-exec 1  "exec " 
 .SH NAME
-exec \- Run a command with secrets injected as environment variables
+murk\-exec \- Run a command with secrets injected as environment variables
 .SH SYNOPSIS
-\fBmurk exec\fR [\fB\-\-only\fR] [\fB\-\-tag\fR] [\fB\-\-clean\-env\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fICOMMAND\fR> 
+\fBmurk exec\fR [\fB\-\-only\fR] [\fB\-\-tag\fR] [\fB\-\-clean\-env\fR] [\fB\-\-allow\-reserved\fR] [\fB\-\-vault\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fICOMMAND\fR> 
 .SH DESCRIPTION
 Run a command with secrets injected as environment variables
 .SH OPTIONS
@@ -16,7 +16,10 @@ Only inject these specific keys (repeatable)
 Filter by tag (repeatable)
 .TP
 \fB\-\-clean\-env\fR
-Strip inherited environment (only murk secrets + PATH)
+Start the command with only murk secrets plus PATH, HOME and TERM on Unix (on Windows, PATH and a fixed set of system variables)
+.TP
+\fB\-\-allow\-reserved\fR
+Allow keys named like loader/shell/tool variables (PATH, LD_*, GIT_*, MURK_*, ...)
 .TP
 \fB\-\-vault\fR \fI<VAULT>\fR [default: .murk]
 Vault filename

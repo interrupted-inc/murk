@@ -168,6 +168,18 @@ pub fn lock(vault_path: &Path) -> Result<VaultLock, VaultError> {
 /// Uses write-to-tempfile + rename for atomic writes — if the process is
 /// killed mid-write, the original file remains intact.
 pub fn write(path: &Path, vault: &Vault) -> Result<(), VaultError> {
+    write_impl(path, vault, false)
+}
+
+/// Write a brand-new vault, refusing (with an `AlreadyExists` I/O error) if a
+/// file appeared at `path` since the caller checked, for example from a
+/// `git pull` while `murk init` waited at a prompt. Same atomicity as
+/// [`write`]; the existing file is left untouched.
+pub fn create(path: &Path, vault: &Vault) -> Result<(), VaultError> {
+    write_impl(path, vault, true)
+}
+
+fn write_impl(path: &Path, vault: &Vault, create_new: bool) -> Result<(), VaultError> {
     crate::validate::vault(vault)
         .map_err(|e| VaultError::Parse(format!("refusing to write invalid vault: {e}")))?;
     let json = serde_json::to_string_pretty(vault)
@@ -176,7 +188,8 @@ pub fn write(path: &Path, vault: &Vault) -> Result<(), VaultError> {
         return Err(oversized());
     }
 
-    // Write to a sibling temp file, fsync, then atomically rename.
+    // Write to a sibling temp file, fsync, then atomically rename (or, for a
+    // new vault, link without replacing).
     let dir = path.parent().unwrap_or(Path::new("."));
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
 
@@ -191,7 +204,11 @@ pub fn write(path: &Path, vault: &Vault) -> Result<(), VaultError> {
     tmp.write_all(json.as_bytes())?;
     tmp.write_all(b"\n")?;
     tmp.as_file().sync_all()?;
-    tmp.persist(path).map_err(|e| e.error)?;
+    if create_new {
+        tmp.persist_noclobber(path).map_err(|e| e.error)?;
+    } else {
+        tmp.persist(path).map_err(|e| e.error)?;
+    }
 
     // Fsync the parent directory so the rename is durable across power loss.
     #[cfg(unix)]
@@ -227,6 +244,10 @@ mod tests {
             created: "2026-02-27T00:00:00Z".into(),
             vault_name: ".murk".into(),
             repo: String::new(),
+            vault_id: String::new(),
+            generation: 0,
+            agents: BTreeMap::new(),
+            sig: None,
             recipients: vec![crate::testutil::AGE_PK.into()],
             schema,
             policy: None,
@@ -478,6 +499,26 @@ mod tests {
                 .to_string();
             assert!(err.contains(expected), "want {expected:?}, got {err:?}");
         }
+    }
+
+    #[test]
+    fn legacy_text_that_can_forge_output_still_loads_and_is_named() {
+        let mut v = full_vault_json();
+        v["schema"]["DATABASE_URL"]["description"] = "prod db\rok  vault verified".into();
+        v["vault_name"] = "x\nwarn: none".into();
+        v["schema"]["DATABASE_URL"]["example"] = "abc\u{202e}fed".into();
+        v["repo"] = "github.com/a\u{200b}b".into();
+        let vault = parse(&v.to_string()).expect("legacy header text must not lock a vault");
+        let no_names: [(&String, &String); 0] = [];
+        assert_eq!(
+            crate::unsafe_text_fields(&vault, no_names),
+            [
+                "vault_name",
+                "repo",
+                "schema.DATABASE_URL.description",
+                "schema.DATABASE_URL.example"
+            ]
+        );
     }
 
     #[test]

@@ -34,8 +34,30 @@ pub(crate) fn vault(v: &Vault) -> Result<(), String> {
     timestamp("created", &v.created)?;
     free_text("vault_name", &v.vault_name)?;
     free_text("repo", &v.repo)?;
+    // murk ≤ 0.13 (header 2.x) compared keys as exact strings, so it could
+    // list one key under two spellings; such a vault still loads, `verify`
+    // reports it, and the next save writes the header canonical. murk 0.14
+    // never writes one, so in a 3.x header a second spelling is tampering:
+    // an alias that would survive `circle revoke`.
+    let legacy = v.version.starts_with("2.");
+    let mut seen = std::collections::BTreeSet::new();
     for (i, r) in v.recipients.iter().enumerate() {
         recipient(&format!("recipients[{i}]"), r)?;
+        if !seen.insert(crate::recipients::canonical_recipient(r).into_owned()) && !legacy {
+            return Err(format!(
+                "recipients[{i}]: duplicate of an earlier recipient {}",
+                show(r)
+            ));
+        }
+    }
+    let hex_id = |id: &str| {
+        id.len() == 32
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    };
+    if !v.vault_id.is_empty() && !hex_id(&v.vault_id) {
+        return Err("vault_id: not 32 lowercase hex characters".into());
     }
     for (key, entry) in &v.schema {
         key_name("schema", key)?;
@@ -46,11 +68,20 @@ pub(crate) fn vault(v: &Vault) -> Result<(), String> {
             free_text(&format!("policy.agent_allow_tags[{i}]"), tag)?;
         }
     }
+    for (pk, blob) in &v.agents {
+        recipient("agents key", pk)?;
+        base64(&format!("agents[{}]", show(pk)), blob)?;
+    }
     for (key, entry) in &v.secrets {
         key_name("secrets", key)?;
         secret_entry(key, entry)?;
     }
-    base64("meta", &v.meta)
+    base64("meta", &v.meta)?;
+    if let Some(sig) = &v.sig {
+        recipient("sig.signer", &sig.signer)?;
+        base64("sig.sig", &sig.sig)?;
+    }
+    Ok(())
 }
 
 /// Validate every field of a decrypted meta blob, except the MAC and signature
@@ -62,7 +93,9 @@ pub(crate) fn meta(m: &Meta) -> Result<(), String> {
     }
     for (pk, vk) in &m.signers {
         recipient("meta.signers key", pk)?;
-        base64(&format!("meta.signers[{}]", show(pk)), vk)?;
+        if let Err(why) = crate::signing::check_verifying_key(vk) {
+            return Err(format!("meta.signers[{}]: {why}", show(pk)));
+        }
     }
     if let Some(sig) = &m.sig {
         recipient("meta.sig.signer", &sig.signer)?;
@@ -109,11 +142,18 @@ pub(crate) fn meta(m: &Meta) -> Result<(), String> {
         let g = show(name);
         recipient(&format!("meta.grants[{g}].pubkey"), &grant.pubkey)?;
         recipient(&format!("meta.grants[{g}].issuer"), &grant.issuer)?;
+        for key in &grant.anchors {
+            recipient(&format!("meta.grants[{g}].anchors"), key)?;
+        }
         for key in &grant.scope {
             key_name(&format!("meta.grants[{g}].scope"), key)?;
         }
         timestamp(&format!("meta.grants[{g}].issued_at"), &grant.issued_at)?;
-        timestamp(&format!("meta.grants[{g}].expires_at"), &grant.expires_at)?;
+        // Empty is a grant minted before TTLs existed: it loads, and
+        // `check_grant_expiry` treats it as expired, so it never reads.
+        if !grant.expires_at.is_empty() {
+            timestamp(&format!("meta.grants[{g}].expires_at"), &grant.expires_at)?;
+        }
     }
     Ok(())
 }
@@ -171,8 +211,8 @@ fn group_name(field: &str, name: &str) -> Result<(), String> {
     }
 }
 
-/// `2.MINOR` or `2.MINOR.PATCH`, decimal components without leading zeros.
-/// Any other major is a format this build cannot interpret.
+/// `2.MINOR[.PATCH]` or `3.MINOR[.PATCH]`, decimal components without leading
+/// zeros. Any other major is a format this build cannot interpret.
 fn version(v: &str) -> Result<(), String> {
     let mut parts = v.split('.');
     let major = parts.next().unwrap_or("");
@@ -183,13 +223,22 @@ fn version(v: &str) -> Result<(), String> {
             && s.bytes().all(|b| b.is_ascii_digit())
             && (s == "0" || !s.starts_with('0'))
     };
-    if major == "2" && (1..=2).contains(&rest.len()) && rest.iter().all(|p| numeric(p)) {
+    if matches!(major, "2" | "3")
+        && (1..=2).contains(&rest.len())
+        && rest.iter().all(|p| numeric(p))
+    {
         return Ok(());
     }
     Err(format!(
-        "unsupported vault version: {}. This build of murk supports version 2.x",
+        "unsupported vault version: {}. This build of murk supports versions 2.x and 3.x",
         show(v)
     ))
+}
+
+/// Whether a (validated) version string has major 3: a format whose MAC and
+/// signature cover the header identity fields.
+pub(crate) fn is_v3_version(v: &str) -> bool {
+    v.split('.').next() == Some("3")
 }
 
 fn key_name(field: &str, key: &str) -> Result<(), String> {
@@ -221,9 +270,11 @@ fn timestamp(field: &str, ts: &str) -> Result<(), String> {
         .map_err(|_| format!("{field}: not an RFC 3339 timestamp: {}", show(ts)))
 }
 
-/// Free text (descriptions, tags, names): any Unicode except control
-/// characters other than tab and newline, so a hostile vault cannot smuggle
-/// terminal escape sequences into `info`/`ls`/`doctor` output.
+/// Free text in a vault being read (descriptions, tags, names): any Unicode
+/// except control characters other than tab, newline and carriage return. A
+/// vault written before the stricter [`new_text`] rule must still load:
+/// `murk verify` flags such text ([`unsafe_text_fields`]) and output escapes
+/// it ([`terminal_text`]).
 fn free_text(field: &str, s: &str) -> Result<(), String> {
     if s.chars()
         .all(|c| !c.is_control() || matches!(c, '\t' | '\n' | '\r'))
@@ -232,6 +283,167 @@ fn free_text(field: &str, s: &str) -> Result<(), String> {
     } else {
         Err(format!("{field}: contains control characters"))
     }
+}
+
+/// The rule for text being written now: no control characters other than tab
+/// (and newline when `multiline`, for descriptions), and none of the
+/// [`is_deceptive`] characters. Such text could forge or reorder lines of
+/// output.
+pub fn new_text(s: &str, multiline: bool) -> Result<(), &'static str> {
+    let allowed = |c: char| (c == '\t' || (multiline && c == '\n')) || !c.is_control();
+    if !s.chars().all(allowed) {
+        Err(if multiline {
+            "contains control characters (only tab and newline are allowed)"
+        } else {
+            "contains control characters or line breaks (only tab is allowed)"
+        })
+    } else if s.chars().any(is_deceptive) {
+        Err("contains invisible or text-direction characters")
+    } else {
+        Ok(())
+    }
+}
+
+/// One free-text field of a vault header (or meta recipient name).
+struct TextField<'v> {
+    /// Where it is, for messages: `schema.DB.tags[1]`.
+    field: String,
+    /// Where it is, without list positions: a value counts as already
+    /// present if it was anywhere in the same list before.
+    place: String,
+    value: &'v str,
+    multiline: bool,
+}
+
+fn text_fields<'v>(
+    v: &'v Vault,
+    recipient_names: impl IntoIterator<Item = (&'v String, &'v String)>,
+) -> Vec<TextField<'v>> {
+    let mut fields = Vec::new();
+    let mut add = |field: String, place: String, value: &'v str, multiline: bool| {
+        fields.push(TextField {
+            field,
+            place,
+            value,
+            multiline,
+        });
+    };
+    add(
+        "vault_name".into(),
+        "vault_name".into(),
+        &v.vault_name,
+        false,
+    );
+    add("repo".into(), "repo".into(), &v.repo, false);
+    if let Some(policy) = &v.policy {
+        for (i, tag) in policy.agent_allow_tags.iter().enumerate() {
+            let place = "policy.agent_allow_tags".to_string();
+            add(format!("{place}[{i}]"), place, tag, false);
+        }
+    }
+    for (key, e) in &v.schema {
+        let key = show(key);
+        let field = format!("schema.{key}.description");
+        add(field.clone(), field, &e.description, true);
+        if let Some(ex) = &e.example {
+            let field = format!("schema.{key}.example");
+            add(field.clone(), field, ex, false);
+        }
+        for (i, tag) in e.tags.iter().enumerate() {
+            let place = format!("schema.{key}.tags");
+            add(format!("{place}[{i}]"), place, tag, false);
+        }
+    }
+    for (pk, name) in recipient_names {
+        let field = format!("meta.recipients[{}]", crate::truncate_pubkey(pk));
+        add(field.clone(), format!("meta.recipients[{pk}]"), name, false);
+    }
+    fields
+}
+
+/// Header text fields that would fail [`new_text`]: legacy or hand-edited
+/// text that can forge or reorder output. Named by field, never quoted.
+/// `recipient_names` is the decrypted meta's pubkey → display name map.
+pub fn unsafe_text_fields<'a>(
+    v: &'a Vault,
+    recipient_names: impl IntoIterator<Item = (&'a String, &'a String)>,
+) -> Vec<String> {
+    text_fields(v, recipient_names)
+        .into_iter()
+        .filter(|t| new_text(t.value, t.multiline).is_err())
+        .map(|t| t.field)
+        .collect()
+}
+
+/// The write-time rule, shared by every writer (CLI, bindings): text in
+/// `next` must pass [`new_text`] unless `previous` already held the same
+/// text in the same place, so a vault holding legacy text stays writable
+/// while nothing new of the kind gets in. `previous` is `None` for a new
+/// vault.
+pub(crate) fn new_header_text<'a>(
+    previous: Option<(&'a Vault, &'a std::collections::HashMap<String, String>)>,
+    next: &Vault,
+    next_names: &std::collections::HashMap<String, String>,
+) -> Result<(), String> {
+    let before: std::collections::HashSet<(String, &str)> = previous
+        .map(|(v, names)| {
+            text_fields(v, names)
+                .into_iter()
+                .map(|t| (t.place, t.value))
+                .collect()
+        })
+        .unwrap_or_default();
+    for t in text_fields(next, next_names) {
+        if let Err(why) = new_text(t.value, t.multiline)
+            && !before.contains(&(t.place, t.value))
+        {
+            return Err(format!("{}: {why}", t.field));
+        }
+    }
+    Ok(())
+}
+
+/// Invisible characters that change how text around them renders: bidi
+/// controls (which can reorder a line, as in "Trojan Source"), zero-width
+/// spaces and the byte-order mark. The zero-width joiner and non-joiner are
+/// left out: emoji and several scripts need them.
+pub fn is_deceptive(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061C}'
+            | '\u{200B}'
+            | '\u{200E}'
+            | '\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{FEFF}'
+    )
+}
+
+/// `s` made safe to print to a terminal: control characters (except tab, and
+/// newline when `multiline`) and [`is_deceptive`] characters are shown as
+/// escapes, so a value or header field cannot move the cursor, rewrite earlier
+/// output, or reorder what is shown. Text that needs nothing is borrowed.
+pub fn terminal_text(s: &str, multiline: bool) -> std::borrow::Cow<'_, str> {
+    let unsafe_char =
+        |c: char| (c.is_control() && c != '\t' && !(multiline && c == '\n')) || is_deceptive(c);
+    if !s.chars().any(unsafe_char) {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        match c {
+            c if !unsafe_char(c) => out.push(c),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            c => {
+                use std::fmt::Write;
+                let _ = write!(out, "\\u{{{:x}}}", u32::from(c));
+            }
+        }
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 /// Standard-alphabet base64 with padding (empty allowed: an unset `shared` or
@@ -252,11 +464,67 @@ fn is_base64_char(b: u8) -> bool {
 
 /// Escape and truncate an untrusted value for an error message. The one place
 /// untrusted text is rendered into errors; use it for every repeated value.
-pub(crate) fn show(s: &str) -> String {
+pub fn show(s: &str) -> String {
     const MAX: usize = 80;
     let mut out: String = s.chars().take(MAX).flat_map(char::escape_debug).collect();
     if s.chars().nth(MAX).is_some() {
         out.push('…');
     }
     out
+}
+
+/// [`show`] for a key the user typed. A private key is never echoed: pasted
+/// where a public key belongs, it would otherwise land in scrollback or a CI
+/// log a second time.
+pub(crate) fn show_key(s: &str) -> String {
+    if looks_like_private_key(s) {
+        "(a private key, not shown)".into()
+    } else {
+        show(s)
+    }
+}
+
+/// Whether `s` contains private key material: an age secret key, an age plugin
+/// identity, or a PEM/OpenSSH private key block. Compared in place, so no
+/// uppercased copy of the key is made.
+pub(crate) fn looks_like_private_key(s: &str) -> bool {
+    ["AGE-SECRET-KEY-", "AGE-PLUGIN-", "PRIVATE KEY"]
+        .iter()
+        .any(|marker| {
+            s.as_bytes()
+                .windows(marker.len())
+                .any(|w| w.eq_ignore_ascii_case(marker.as_bytes()))
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{new_text, terminal_text};
+
+    #[test]
+    fn new_text_may_not_forge_or_reorder_lines() {
+        assert!(new_text("first line\n\tsecond line", true).is_ok());
+        assert!(new_text("first line\nsecond line", false).is_err());
+        assert!(new_text("a\rb", true).is_err());
+        assert!(new_text("a\u{2066}b", false).is_err());
+        // Emoji sequences need the zero-width joiner.
+        assert!(new_text("dev \u{1f469}\u{200d}\u{1f4bb}", false).is_ok());
+    }
+
+    #[test]
+    fn terminal_text_escapes_what_a_terminal_would_act_on() {
+        assert_eq!(terminal_text("plain\ttext", false), "plain\ttext");
+        assert_eq!(
+            terminal_text("a\u{1b}]52;c;aGk=\u{7}\rb\u{202e}c\nd", false),
+            "a\\u{1b}]52;c;aGk=\\u{7}\\rb\\u{202e}c\\nd"
+        );
+        assert_eq!(
+            terminal_text("line\nline\u{1b}[2J", true),
+            "line\nline\\u{1b}[2J"
+        );
+        assert!(matches!(
+            terminal_text("-----BEGIN-----\nabc\n", true),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
 }

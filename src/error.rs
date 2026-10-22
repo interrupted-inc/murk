@@ -16,6 +16,10 @@ pub enum MurkError {
     Crypto(CryptoError),
     /// Integrity check failed (MAC mismatch, tampering).
     Integrity(String),
+    /// The vault is intact but this machine does not trust it (unsigned,
+    /// signed by an untrusted key, rolled back, or never trusted here). The
+    /// message names what to review and how to accept it (`murk trust`).
+    Trust(String),
     /// Key resolution or environment configuration.
     Key(String),
     /// Recipient management (authorize, revoke).
@@ -43,6 +47,7 @@ impl std::fmt::Display for MurkError {
             MurkError::Vault(e) => write!(f, "{e}"),
             MurkError::Crypto(e) => write!(f, "{e}"),
             MurkError::Integrity(msg) => write!(f, "integrity check failed: {msg}"),
+            MurkError::Trust(msg) => write!(f, "{msg}"),
             MurkError::Key(msg) => write!(f, "{msg}"),
             MurkError::Recipient(msg) => write!(f, "{msg}"),
             MurkError::Secret(msg) => write!(f, "{msg}"),

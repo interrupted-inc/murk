@@ -6,8 +6,10 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-/// Current vault format version.
-pub const VAULT_VERSION: &str = "2.0";
+/// Current vault format version. Major 3 marks vaults whose MAC (`blake3v8:`)
+/// and signed view (v2) cover the header identity fields; a 2.x murk refuses
+/// them as an unsupported version instead of reporting tampering.
+pub const VAULT_VERSION: &str = "3.0";
 
 /// Default vault filename.
 pub const DEFAULT_VAULT_NAME: &str = ".murk";
@@ -24,6 +26,19 @@ pub struct Vault {
     /// Repository URL, auto-detected from git remote during init.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub repo: String,
+    /// Random vault identity (32 lowercase hex characters), minted at init or on
+    /// the first save of an older vault. Covered by the signature, and recorded
+    /// in the local trust pin, so another vault's file (say `staging.murk`
+    /// copied over `.murk`) is refused rather than accepted as this vault.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vault_id: String,
+    /// Monotonic save counter, covered by the signature. Every save writes
+    /// `max(loaded, highest seen on this machine) + 1`, and a merge writes
+    /// `max(ours, theirs) + 1`. A loader refuses a vault whose counter is below
+    /// the highest it accepted: an older signed revision replayed over the
+    /// current one ("vault rolled back").
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub generation: u64,
     /// Public keys only — no names. Name mappings live in the encrypted meta blob.
     pub recipients: Vec<String>,
     /// Key metadata — public, readable without decryption.
@@ -35,10 +50,26 @@ pub struct Vault {
     /// byte-identical to pre-policy murk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<Policy>,
+    /// Per-grant encrypted blobs: canonical grant pubkey → base64 age ciphertext
+    /// encrypted to that grant pubkey only. Covered by the MAC (`blake3v8:`) and
+    /// the signature. Absent when the vault has no grants.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub agents: BTreeMap<String, String>,
     /// Per-value encrypted secrets. Each value is a separate age ciphertext.
     pub secrets: BTreeMap<String, SecretEntry>,
     /// Encrypted metadata blob: recipient names and integrity MAC.
     pub meta: String,
+    /// Ed25519 signature (signed view v2) over this whole vault serialized with
+    /// `sig` omitted: every header field plus the `meta` and `agents`
+    /// ciphertexts. Kept last and outside the meta so the file alone can be
+    /// verified. Vaults from before 3.0 carry a view-1 signature in the meta.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sig: Option<VaultSignature>,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if passes `&T`
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,11 +95,13 @@ pub struct SchemaEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
     /// Set to the revoke time (ISO-8601 UTC) when a recipient who could read
-    /// this key is revoked and rotation is deferred. Its *presence* is the
-    /// obligation: the revoked recipient can still decrypt the live value from
-    /// git history until it changes. Any value write (`add`/`edit`/`rotate`/
-    /// `import`) clears it, so a set `revoked_at` always means "still owed a
-    /// rotation since this revoke". `doctor` flags it until then.
+    /// this key is revoked and rotation is deferred, or is removed from the
+    /// group holding it. Its *presence* is the obligation: they can still
+    /// decrypt the live value from git history until it changes. A write that
+    /// replaces the shared or group value (`add`, `rotate`, `import`) clears it;
+    /// a personal-override write does not, since the leaver never read that
+    /// value. A set `revoked_at` always means "still owed a rotation since this
+    /// revoke". `doctor` flags it until then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoked_at: Option<String>,
 }
@@ -97,9 +130,11 @@ pub struct SecretEntry {
 /// narrow set of keys. The grant's `pubkey` is also a `Vault::recipients`
 /// entry, and each granted key carries a `scoped` ciphertext under that pubkey —
 /// so the agent's *access* is governed (and MAC-covered) by the scoped entries.
-/// This record is the audit/TTL layer: it lives in the encrypted meta (so an
-/// agent's existence and scope don't leak) and is covered by the keyed MAC
-/// (`blake3v5:`) so TTL, scope, and issuer cannot be tampered with undetected.
+/// This record is the audit/TTL layer: it lives in the encrypted meta (so the
+/// grant's name, timestamps, issuer and recorded scope list stay out of the
+/// plaintext; the pubkey and its `scoped` entries still show which keys it can
+/// read) and is covered by the keyed MAC (`blake3v5:`) so TTL, scope, and issuer
+/// cannot be tampered with undetected.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GrantEntry {
     /// The agent's ephemeral age public key (also in `Vault::recipients`).
@@ -116,6 +151,26 @@ pub struct GrantEntry {
     pub expires_at: String,
     /// Pubkey of the recipient who issued the grant (minimal accountability).
     pub issuer: String,
+    /// The trusted signers written into the grant's key file at mint
+    /// (canonical recipient keys). The grant trusts a vault signed by any of
+    /// them, so revoking one of them as a recipient revokes this grant too.
+    /// Lives in the meta, covered by the signature. Empty for a grant minted
+    /// before this was recorded: its anchor is unknown, so revoking any signer
+    /// revokes it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub anchors: Vec<String>,
+}
+
+/// What an agent grant reads instead of the meta: its own grant record, in the
+/// vault's `agents` blob encrypted to the grant's key alone. It holds no MAC
+/// key, recipient names, groups, signers or other grants, so a grant can
+/// neither see the team's structure nor re-MAC a vault. The grant verifies
+/// the vault by its signature against the trusted signers in its key file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentMeta {
+    /// The grant's name (`murk agent grant --name`).
+    pub name: String,
+    pub grant: GrantEntry,
 }
 
 /// Agent access policy: machine-enforceable guardrails that travel with the
@@ -175,9 +230,10 @@ pub struct Meta {
     /// or `load` fails as tampering.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sig: Option<VaultSignature>,
-    /// BLAKE3 keyed MAC key (hex-encoded, 32 bytes). Generated at init, stored encrypted.
+    /// BLAKE3 keyed MAC key (hex-encoded, 32 bytes). Generated at init, stored
+    /// encrypted, and wiped from memory when the meta is dropped.
     #[serde(default, skip_serializing_if = "Option::is_none", alias = "hmac_key")]
-    pub mac_key: Option<String>,
+    pub mac_key: Option<Zeroizing<String>>,
     /// Pinned GitHub key fingerprints: username → [SHA256:...].
     /// Used for TOFU (Trust On First Use) verification on `authorize github:user`.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -189,8 +245,9 @@ pub struct Meta {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub groups: BTreeMap<String, Vec<String>>,
     /// Short-lived agent grants: grant name → metadata. Stored here (encrypted)
-    /// so an agent's existence and scope do not leak. Covered by the keyed MAC
-    /// (`blake3v5:`) so TTL/scope/issuer are tamper-evident.
+    /// so grant names, timestamps and issuers stay out of the plaintext header.
+    /// Covered by the keyed MAC (`blake3v5:`) so TTL/scope/issuer are
+    /// tamper-evident.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub grants: BTreeMap<String, GrantEntry>,
 }
@@ -217,20 +274,14 @@ impl std::fmt::Debug for Meta {
 /// Outcome of verifying the vault's Ed25519 signature at load time.
 ///
 /// An *invalid* signature never reaches here — it fails the load as tampering.
-/// So the working state distinguishes "signed" from "unsigned" (integrity then
-/// rests on git). The binary warns on `Unsigned`, and on a `Signed` that is not
-/// yet `anchored`.
+/// Whether the signer is *trusted* on this machine is decided by the trust pin
+/// ([`crate::pins`]); `load_vault` refuses an untrusted signer, so a `Signed`
+/// state handed out by it is always a trusted signer.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum SignatureState {
-    /// A valid signature produced by `signer` (a current recipient).
-    ///
-    /// `anchored` is whether the signer's verifying key is trusted independently
-    /// of the (attacker-mutable) meta registry: always true for ssh-ed25519
-    /// signers (the key is in the recipient string), and true for age signers
-    /// whose key matched a prior local pin. When false — an age signer's key seen
-    /// for the first time on this machine — the signature is trust-on-first-use,
-    /// not yet authenticated authorship; git commit signing is the anchor.
-    Signed { signer: String, anchored: bool },
+    /// A valid signature produced by `signer` (a current recipient), over
+    /// signed view `v`.
+    Signed { signer: String, v: u32 },
     /// No signature present — the last writer had no signing-capable identity.
     #[default]
     Unsigned,
@@ -265,14 +316,24 @@ pub struct Murk {
     /// base64 verifying key. `save_vault` carries these forward so every signer's
     /// key persists, then adds/refreshes the current signer's entry.
     pub signers: BTreeMap<String, String>,
-    /// Whether the loaded vault carried a valid signature. `Unsigned` means
-    /// integrity rests on git; the binary surfaces a warning.
+    /// Whether the loaded vault carried a valid signature. `Unsigned` reaches
+    /// callers only for a loader that cannot sign (hardware/plugin/ssh-rsa key);
+    /// integrity then rests on signed git commits and the binary warns.
     pub signature: SignatureState,
-    /// True when this vault loaded signed on this machine before but is now
-    /// unsigned — a stripped signature, or a merge result not yet re-signed. Set
-    /// from the signer-pin continuity check; the CLI warns distinctly, `verify`
-    /// fails, and `MURK_STRICT` refuses the load.
-    pub signature_downgraded: bool,
+    /// Pubkey of the identity that decrypted this state, or `None` for state
+    /// built by hand.
+    pub loaded_by: Option<String>,
+    /// True when `loaded_by` is an agent grant: it opened its own `agents` blob
+    /// (or, for a 2.x vault, the meta lists it as a grant). Decided by what the
+    /// key could open, so a grant record naming an operator's key in the meta
+    /// never makes that operator a grant. The save path refuses writes by a
+    /// grant (see [`crate::ensure_writable`]).
+    pub loaded_as_grant: bool,
+    /// Warnings about a vault the trust rules accepted, set by
+    /// [`crate::load_vault`]: a legacy MAC, an unsigned vault loaded by a key
+    /// that cannot sign, a trust pin that could not be written. The CLI
+    /// prints them; the bindings expose them as `warnings`.
+    pub warnings: Vec<String>,
 }
 
 /// Manual `Debug`: prints key NAMES (schema-level metadata, not secret) but
@@ -292,7 +353,9 @@ impl std::fmt::Debug for Murk {
             .field("github_pins", &self.github_pins)
             .field("signers", &self.signers)
             .field("signature", &self.signature)
-            .field("signature_downgraded", &self.signature_downgraded)
+            .field("loaded_by", &self.loaded_by)
+            .field("loaded_as_grant", &self.loaded_as_grant)
+            .field("warnings", &self.warnings)
             .finish()
     }
 }
@@ -341,7 +404,7 @@ mod tests {
     #[test]
     fn meta_debug_redacts_mac_key() {
         let meta = Meta {
-            mac_key: Some("deadbeefcafef00d-sentinel-mac-key".into()),
+            mac_key: Some(Zeroizing::new("deadbeefcafef00d-sentinel-mac-key".into())),
             ..Default::default()
         };
 

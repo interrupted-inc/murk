@@ -32,7 +32,7 @@ for packagers who want to ship them without running murk.
 
 ## Man pages
 
-Man pages for the root command and every subcommand are committed under
+Man pages for the root command and every documented subcommand are committed under
 [`docs/man/`](https://github.com/interrupted-sh/murk/tree/main/docs/man) in roff format
 (`murk.1`, `murk-init.1`, `murk-agent-plan.1`, …). Install them where your
 `MANPATH` can find them, or read one directly:
@@ -44,7 +44,8 @@ man ./docs/man/murk.1
 ## How they stay in sync
 
 murk's dev-only doc generator produces the completions, man pages, the
-[CLI reference](/reference/cli/), and the [environment variables reference](/reference/env/):
+[CLI reference](/reference/cli/), and the [environment variables reference](/reference/env/)
+(from a hand-kept list):
 
 ```bash
 cargo run --features doc-gen --bin gen-docs
@@ -52,3 +53,5 @@ cargo run --features doc-gen --bin gen-docs
 
 CI runs the same generator with `--check` and fails if any committed artifact is
 stale, so a change to the CLI surface can't merge without regenerating them.
+`--check` cannot notice a new environment variable that is missing from the
+hand-kept list.
