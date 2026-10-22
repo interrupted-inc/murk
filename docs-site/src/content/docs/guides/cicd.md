@@ -52,9 +52,10 @@ never print a decrypted value.
 
 A fresh CI runner has no [trust pin](/concepts/recipients-signatures/#trusting-a-signer),
 and nobody is there to run `murk trust`. Without help, murk refuses the vault
-with "not trusted on this machine yet". Set `MURK_TRUSTED_SIGNERS` to the
-people who write the vault, from a secret, next to
-`MURK_KEY`:
+with "not trusted on this machine yet". A [scoped grant's whole key
+file](#prefer-a-scoped-grant-over-a-full-key) names its own signers. Any other
+key needs `MURK_TRUSTED_SIGNERS`: the people who write the vault, from a
+secret, next to `MURK_KEY`. Pass it to murk-action as `trusted-signers`:
 
 ```yaml
 steps:
@@ -62,10 +63,13 @@ steps:
   - uses: interrupted-sh/murk-action@v1
     with:
       murk-key: ${{ secrets.MURK_KEY }}
-    env:
-      MURK_TRUSTED_SIGNERS: ${{ secrets.MURK_TRUSTED_SIGNERS }}
+      trusted-signers: ${{ secrets.MURK_TRUSTED_SIGNERS }}
   - run: ./deploy.sh
 ```
+
+The `trusted-signers` input needs murk-action v1.2.0 or later, which `@v1`
+gives. On an older murk-action, set `MURK_TRUSTED_SIGNERS` in the step's
+`env:` instead.
 
 Each entry names one signer. An age signer is `age1...:<verifying key>` (the
 recipient, a colon, the base64 Ed25519 verifying key). An `ssh-ed25519`
@@ -91,9 +95,8 @@ directory doesn't carry the signers you named into later jobs that don't set
 it. A runner whose home can't be written only prints a warning when murk
 can't save the pin.
 
-The action has to pass the variable through to the `murk` process. If your
-version of `murk-action` doesn't, run murk yourself with the variable in the
-step's `env:`:
+The action sets the variable only for the murk commands it runs. A later step
+that runs murk itself needs it in its own `env:`:
 
 ```yaml
   - run: murk exec -- ./deploy.sh
@@ -105,11 +108,12 @@ step's `env:`:
 A scoped grant key is the exception. It never reads the pin. It trusts the
 signers named in its key file, which are the `# murk-trusted-signer:` lines that
 `murk agent grant` writes above the key, plus any in `MURK_TRUSTED_SIGNERS`. So
-the whole key file works on a runner with no pin and no variable. `murk-action`
-takes only the bare key line, which names no signer, so a grant run through the
-action needs `MURK_TRUSTED_SIGNERS`. A signer added after you minted the grant
-isn't in its key file. The grant then refuses the vault until you re-mint it
-with `--renew` or list that signer in `MURK_TRUSTED_SIGNERS`.
+the whole key file works on a runner with no pin and no variable. murk-action
+v1.2.0 and later take the whole file as `murk-key`. A bare key line names no
+signer, so a grant passed that way needs `MURK_TRUSTED_SIGNERS`. A signer added
+after you minted the grant isn't in its key file. The grant then refuses the
+vault until you re-mint it with `--renew` or list that signer in
+`MURK_TRUSTED_SIGNERS`.
 
 Two limits to know. A runner with no pin can't detect rollback: an older,
 validly signed revision on the checked-out branch loads. Protect the branch
@@ -125,8 +129,9 @@ Before CI loads a vault written by murk 0.14 or later, do two things:
 
 1. Install murk 0.14 or later on the runner. A 0.14 save writes a signature
    format that 0.13 refuses.
-2. Add `MURK_TRUSTED_SIGNERS` as above. A runner with a 0.13-era setup has no
-   pin, so without the variable the first 0.14 vault is refused.
+2. Give CI its trusted signers: `trusted-signers` or `MURK_TRUSTED_SIGNERS` as
+   above, or a grant's whole key file. A runner with a 0.13-era setup has no
+   pin, so without them the first 0.14 vault is refused.
 
 Upgrade the people who write the vault too. Once a runner or machine has seen
 a vault saved by 0.14, a vault signed by 0.13 is refused as rolled back.
@@ -156,7 +161,7 @@ credentials, not every key in the vault), consider a narrowly scoped
 **agent grant** instead:
 
 ```bash
-murk agent grant --name ci-deploy --only DEPLOY_TOKEN --ttl 30d --out - | grep AGE-SECRET-KEY | gh secret set MURK_KEY
+murk agent grant --name ci-deploy --only DEPLOY_TOKEN --ttl 30d --out - | gh secret set MURK_KEY
 git commit -am "grant ci-deploy" && git push
 ```
 
@@ -165,30 +170,44 @@ straight into the Actions secret. Above the key, the file has
 `# murk-trusted-signer:` lines and the grant's `# murk-grant-id:` and
 `# murk-grant-expires:` lines.
 
-`murk-action` takes only the bare key line, so the `grep` keeps just that
-line. A bare key names no signer, so also give the job `MURK_TRUSTED_SIGNERS`,
-as described above. It carries no expiry either, so only the grant record in
-the vault bounds it, and each `murk` command in the job prints a warning:
+Pass the secret to murk-action as `murk-key`:
 
-```
-warn this grant key file carries no expiry, so only the vault's grant record bounds it — ask the operator to re-mint it (`murk agent grant --renew`)
-```
-
-If the job runs `murk` itself, with no `murk-action`, store the whole key file
-instead. Drop the `grep`:
-
-```bash
-murk agent grant --name ci-deploy --only DEPLOY_TOKEN --ttl 30d --out - | gh secret set MURK_KEY
+```yaml
+steps:
+  - uses: actions/checkout@v4
+  - uses: interrupted-sh/murk-action@v1
+    with:
+      murk-key: ${{ secrets.MURK_KEY }}
+  - run: ./deploy.sh  # DEPLOY_TOKEN is now in the environment
 ```
 
-and pass the secret to the job as `MURK_KEY`. The trusted-signer lines then
-name who may sign the vault, so the job needs no `MURK_TRUSTED_SIGNERS`, and no
-warning prints. The key stops working at the expiry it was minted with,
-whatever a later vault says. When the vault's record would allow more, the
-refusal names the key file's expiry:
+This needs murk-action v1.2.0 or later, which `@v1` gives. The action passes
+the whole file to murk. A job that runs `murk` itself takes the same secret as
+`MURK_KEY`. The trusted-signer lines name who may sign the vault, so the job
+needs no `MURK_TRUSTED_SIGNERS`. One secret is enough. The key
+stops working at the expiry it was minted with, whatever a later vault says.
+When the vault's record would allow more, the refusal names the key file's
+expiry:
 
 ```
 ✕ grant ci-deploy expired 2026-11-20T19:56:49Z (its key file's expiry) — renew with `murk agent grant --renew` or close it with `murk agent revoke ci-deploy`
+```
+
+If you pin a murk-action older than v1.2.0, it takes only the bare key line.
+Keep just that line with `grep`:
+
+```bash
+murk agent grant --name ci-deploy --only DEPLOY_TOKEN --ttl 30d --out - | grep AGE-SECRET-KEY | gh secret set MURK_KEY
+```
+
+A bare key names no signer, so also give the job its signers: the
+`trusted-signers` input on v1.2.0 and later, or `MURK_TRUSTED_SIGNERS` in the
+step's `env:` on any version, as described above. A bare key carries no expiry
+either, so only the grant record in the vault bounds it, and each `murk`
+command in the job prints a warning:
+
+```
+warn this grant key file carries no expiry, so only the vault's grant record bounds it — ask the operator to re-mint it (`murk agent grant --renew`)
 ```
 
 It's the same mechanism murk uses to scope AI agent access. See [AI agents & MCP](/guides/ai-agents-mcp/) for the full grant/revoke
@@ -202,11 +221,11 @@ grant yields only the granted keys; a `murk get` of anything else fails with
 
 ### Renewing the grant
 
-Before the grant expires, run the same two lines with `--renew` (drop the
-`grep` if you store the whole key file):
+Before the grant expires, run the same two lines with `--renew` (add the
+`grep` if you store the bare key line):
 
 ```bash
-murk agent grant --name ci-deploy --only DEPLOY_TOKEN --ttl 30d --renew --out - | grep AGE-SECRET-KEY | gh secret set MURK_KEY
+murk agent grant --name ci-deploy --only DEPLOY_TOKEN --ttl 30d --renew --out - | gh secret set MURK_KEY
 git commit -am "grant ci-deploy" && git push
 ```
 
